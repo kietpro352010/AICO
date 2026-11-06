@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "manifest_version": "1.0.0",
+  "company": {
+    "id": "AICO",
+    "name": "AICO — Personal AI Software Company",
+    "description": "A personal AI software company operating under Founder authority, driven by autonomous AI engineering agents.",
+    "operating_mode": "Hybrid Local-First Multi-Agent Architecture",
+    "status": "active",
+    "founder": {
+      "title": "Founder & Owner",
+      "identity": "Human Principal",
+      "authority": "Ultimate decision-maker with sole veto and approval authority over product direction, high-impact architecture, destructive operations, external deployments, security policies, agent permissions, and quota assignments.",
+      "escalation_rule": "Any operation requiring Founder approval must stop and escalate before execution. Automatic invocation of scarce agents is strictly prohibited."
+    }
+  },
+  "agents": [
+    {
+      "agent_id": "chatgpt-01",
+      "display_name": "ChatGPT",
+      "canonical_role": "CEO / Main Orchestrator",
+      "department": "Executive & Product Strategy",
+      "status": "configured",
+      "ai_provider": "OpenAI",
+      "configured_model": "ChatGPT Go Web",
+      "verified_runtime_model": "Unverified / Web Session",
+      "account_assignment": "ChatGPT Web",
+      "quota_pool": "openai-go-shared",
+      "reasoning_tier": "think",
+      "invocation_policy": {
+        "mode": "manual",
+        "auto_invoke": false,
+        "requires_approval": true,
+        "quota_class": "normal",
+        "usage_tier": "high",
+        "routing_priority": 1
+      },
+      "access_profile": "web_agent_logical",
+      "permission_policy": {
+        "scopes": [
+          "company:read",
+          "tasks:manage",
+          "strategy:write",
+          "workspace:read"
+        ],
+        "can_delegate": true,
+        "can_execute_destructive": false,
+        "can_modify_production_db": false
+      },
+      "capabilities": [
+        "orchestration",
+        "product-strategy",
+        "task-delegation",
+        "architectural-evaluation"
+      ],
+      "notes": "Shares OpenAI Go subscription quota pool with Codex; maintains separate identity, context, and tasks."
+    },
+    {
+      "agent_id": "flash-01",
+      "display_name": "Gemini Flash #1",
+      "canonical_role": "Chief Technology Officer",
+      "department": "Engineering Leadership",
+      "status": "configured",
+      "ai_provider": "Google",
+      "configured_model": "Gemini 3.8 Flash",
+      "verified_runtime_model": "Unverified / Antigravity Account 1",
+      "account_assignment": "Antigravity Pro Account 1",
+      "quota_pool": "google-pro-01",
+      "reasoning_tier": "high",
+      "invocation_policy": {
+        "mode": "automatic",
+        "auto_invoke": true,
+        "requires_approval": false,
+        "quota_class": "normal",
+        "usage_tier": "high",
+        "routing_priority": 1
+      },
+      "access_profile": "local_agent_physical",
+      "permission_policy": {
+        "scopes": [
+          "company:read",
+          "company:write",
+          "architecture:review",
+          "code:review",
+          "code:approve",
+          "workspace:write:self"
+        ],
+        "can_delegate": true,
+        "can_execute_destructive": false,
+        "can_modify_production_db": false
+      },
+      "capabilities": [
+        "technical-leadership",
+        "architecture-review",
+        "code-review",
+        "engineering-standards"
+      ],
+      "notes": "Primary engineering leadership agent. Reviews and approves major technical pull requests."
+    },
+    {
+      "agent_id": "flash-02",
+      "display_name": "Gemini Flash #2",
+      "canonical_role": "Engineering & QA Lead",
+      "department": "Engineering",
+      "status": "configured",
+      "ai_provider": "Google",
+      "configured_model": "Gemini 3.8 Flash",
+      "verified_runtime_model": "Gemini 3.8 Flash (Active Runtime Session on aico_flash2)",
+      "account_assignment": "Antigravity Pro Account 2",
+      "quota_pool": "google-pro-02",
+      "reasoning_tier": "high",
+      "invocation_policy": {
+        "mode": "automatic",
+        "auto_invoke": true,
+        "requires_approval": false,
+        "quota_class": "normal",
+        "usage_tier": "high",
+        "routing_priority": 1
+      },
+      "access_profile": "local_agent_physical",
+      "permission_policy": {
+        "scopes": [
+          "company:read",
+          "company:write",
+          "qa:verify",
+          "audit:inspect",
+          "test:execute",
+          "workspace:write:self"
+        ],
+        "can_delegate": false,
+        "can_execute_destructive": false,
+        "can_modify_production_db": false
+      },
+      "capabilities": [
+        "implementation",
+        "qa-testing",
+        "security-audit",
+        "infrastructure-inspection",
+        "evidence-collection"
+      ],
+      "notes": "Primary execution and QA agent. Conducts audits, writes test suites, and enforces code quality."
+    },
+    {
+      "agent_id": "codex-01",
+      "display_name": "Codex",
+      "canonical_role": "Software Implementation Engineer",
+      "department": "Engineering",
+      "status": "configured",
+      "ai_provider": "OpenAI",
+      "configured_model": "Codex model - pending UI verification",
+      "verified_runtime_model": "Unverified / Process active on host",
+      "account_assignment": "Codex Desktop - ChatGPT Go",
+      "quota_pool": "openai-go-shared",
+      "reasoning_tier": "high",
+      "invocation_policy": {
+        "mode": "manual",
+        "auto_invoke": false,
+        "requires_approval": true,
+        "quota_class": "normal",
+        "usage_tier": "medium",
+        "routing_priority": 2
+      },
+      "access_profile": "local_agent_physical",
+      "permission_policy": {
+        "scopes": [
+          "company:read",
+          "code:write",
+          "test:run",
+          "workspace:write:self"
+        ],
+        "can_delegate": false,
+        "can_execute_destructive": false,
+        "can_modify_production_db": false
+      },
+      "capabilities": [
+        "mcp",
+        "coding",
+        "repository-analysis",
+        "implementation",
+        "testing"
+      ],
+      "notes": "Dedicated software implementation engineer. Shares OpenAI Go subscription with ChatGPT."
+    },
+    {
+      "agent_id": "argon-01",
+      "display_name": "Gemini Argon #1",
+      "canonical_role": "Principal Software Architect",
+      "department": "Architecture",
+      "status": "configured",
+      "ai_provider": "Google",
+      "configured_model": "Gemini 4 Argon",
+      "verified_runtime_model": "Unverified / Standby",
+      "account_assignment": "Gemini Web Account 1",
+      "quota_pool": "gemini-web-01",
+      "reasoning_tier": "high",
+      "invocation_policy": {
+        "mode": "manual",
+        "auto_invoke": false,
+        "requires_approval": true,
+        "quota_class": "scarce",
+        "usage_tier": "low",
+        "routing_priority": 3
+      },
+      "access_profile": "web_agent_logical",
+      "permission_policy": {
+        "scopes": [
+          "company:read",
+          "architecture:design",
+          "system:spec"
+        ],
+        "can_delegate": false,
+        "can_execute_destructive": false,
+        "can_modify_production_db": false
+      },
+      "capabilities": [
+        "deep-reasoning",
+        "distributed-systems-design",
+        "high-impact-architecture"
+      ],
+      "notes": "Scarce resource. Strictly manual invocation. Requires explicit Founder approval before every execution."
+    },
+    {
+      "agent_id": "argon-02",
+      "display_name": "Gemini Argon #2",
+      "canonical_role": "Independent Technical Auditor",
+      "department": "Quality & Audit",
+      "status": "configured",
+      "ai_provider": "Google",
+      "configured_model": "Gemini 4 Argon",
+      "verified_runtime_model": "Unverified / Standby",
+      "account_assignment": "Gemini Web Account 2",
+      "quota_pool": "gemini-web-02",
+      "reasoning_tier": "high",
+      "invocation_policy": {
+        "mode": "manual",
+        "auto_invoke": false,
+        "requires_approval": true,
+        "quota_class": "scarce",
+        "usage_tier": "low",
+        "routing_priority": 3
+      },
+      "access_profile": "web_agent_logical",
+      "permission_policy": {
+        "scopes": [
+          "company:read",
+          "audit:report",
+          "independent-verification"
+        ],
+        "can_delegate": false,
+        "can_execute_destructive": false,
+        "can_modify_production_db": false
+      },
+      "capabilities": [
+        "formal-verification",
+        "independent-technical-audit",
+        "compliance-review"
+      ],
+      "notes": "Scarce resource. Strictly manual invocation. Requires explicit Founder approval before every execution."
+    }
+  ],
+  "quota_pools": [
+    {
+      "pool_id": "google-pro-01",
+      "provider": "Google",
+      "account_label": "Antigravity Pro #1",
+      "quota_class": "normal",
+      "assigned_agents": [
+        "flash-01"
+      ],
+      "notes": "Assigned to Flash #1 (CTO)."
+    },
+    {
+      "pool_id": "google-pro-02",
+      "provider": "Google",
+      "account_label": "Antigravity Pro #2",
+      "quota_class": "normal",
+      "assigned_agents": [
+        "flash-02"
+      ],
+      "notes": "Assigned to Flash #2 (QA Lead)."
+    },
+    {
+      "pool_id": "gemini-web-01",
+      "provider": "Google",
+      "account_label": "Gemini Web #1",
+      "quota_class": "scarce",
+      "assigned_agents": [
+        "argon-01"
+      ],
+      "notes": "Assigned to Argon #1. Scarce quota pool; manual approval required."
+    },
+    {
+      "pool_id": "gemini-web-02",
+      "provider": "Google",
+      "account_label": "Gemini Web #2",
+      "quota_class": "scarce",
+      "assigned_agents": [
+        "argon-02"
+      ],
+      "notes": "Assigned to Argon #2. Scarce quota pool; manual approval required."
+    },
+    {
+      "pool_id": "openai-go-shared",
+      "provider": "OpenAI",
+      "account_label": "ChatGPT Go – shared account",
+      "quota_class": "normal",
+      "assigned_agents": [
+        "chatgpt-01",
+        "codex-01"
+      ],
+      "notes": "Shared subscription between ChatGPT Web and Codex Desktop. Do not assume independent allowances."
+    }
+  ]
+}
