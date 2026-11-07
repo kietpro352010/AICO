@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { IdentityAccessService, type PrincipalContext } from "../services/identity-access-service.js";
+import { DpapiManager } from "./dpapi-manager.js";
 
 export interface StdioPipelineConfig {
   maxFrameSizeBytes?: number;
@@ -23,7 +24,9 @@ export class StdioSecurityPipeline {
     let rawToken: string | null = null;
 
     if (filePath && fs.existsSync(filePath)) {
-      rawToken = fs.readFileSync(filePath, "utf8").trim();
+      rawToken = filePath.endsWith(".dpapi")
+        ? DpapiManager.unprotect(filePath)
+        : fs.readFileSync(filePath, "utf8").trim();
     } else if (process.env.AICO_STDIO_TOKEN) {
       rawToken = process.env.AICO_STDIO_TOKEN.trim();
     }
@@ -52,10 +55,14 @@ export class StdioSecurityPipeline {
       throw new Error("AUTH_NOT_BOOTSTRAPPED: STDIO session not initialized");
     }
 
-    // Live DB verification: check if credential is still active
-    const principal = this.identityService.getPrincipalById(this.sessionPrincipal.principalId);
-    if (!principal) {
-      throw new Error("AUTH_CREDENTIAL_REVOKED: Principal or credential revoked during active STDIO session");
+    // Live DB verification: check if credential is still active and not revoked/expired
+    if (!this.sessionPrincipal.credentialId) {
+      throw new Error("AUTH_CREDENTIAL_REVOKED: Missing credential ID in session");
+    }
+
+    const cred = this.identityService.getCredentialById(this.sessionPrincipal.credentialId);
+    if (!cred || cred.status === "revoked" || (cred.expires_at && new Date(cred.expires_at) <= new Date())) {
+      throw new Error("AUTH_CREDENTIAL_REVOKED: Credential has been revoked or expired during active STDIO session");
     }
 
     return this.sessionPrincipal;

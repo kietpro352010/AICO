@@ -10,8 +10,9 @@ import { restoreDatabase } from "../src/scripts/restore-db-safe.js";
 import { createSandboxTestContext } from "./helpers/test-context.js";
 
 test("T05: Complete 38 MCP Tools & Gateway Allowlist Verification", async () => {
+  const tmpAnchor = path.join(os.tmpdir(), `aico-t05-anchors-${Date.now()}.jsonl`);
   // 1. Verify Full Local/STDIO MCP Server registers all 38 tools
-  const localServer = createFullMcpServer({ isPublicGateway: false });
+  const localServer = createFullMcpServer({ isPublicGateway: false, anchorFilePath: tmpAnchor });
   const localTools = Object.keys((localServer as any)._registeredTools);
 
   assert.equal(localTools.length, 38, `Local server must register exactly 38 tools, got ${localTools.length}`);

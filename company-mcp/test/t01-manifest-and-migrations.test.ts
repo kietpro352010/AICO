@@ -24,11 +24,22 @@ test("T01: MigrationRunner and Schema Migrations on Sandbox DB", () => {
     assert.equal(result2.skipped.length, 2);
 
     // Verify schema_migrations table
-    const applied = runner.getAppliedMigrations();
+    const applied = runner.getAppliedMigrationVersions();
     assert.deepEqual(applied, [
       "20261106_001_v040_agent_columns",
       "20261106_002_v050_target_tables"
     ]);
+
+    // Verify migration drift detection
+    const tamperedMigration = {
+      ...migrationV040,
+      checksum: "tampered_fake_checksum_12345"
+    };
+    assert.throws(
+      () => runner.runMigrations([tamperedMigration]),
+      /MIGRATION_DRIFT_DETECTED/,
+      "Must throw MIGRATION_DRIFT_DETECTED when checksum mismatch occurs"
+    );
 
     // Verify new tables created
     connManager.withReadTransaction((db) => {

@@ -261,13 +261,16 @@ export class ApprovalService {
     });
   }
 
-  public consumeApproval(params: {
-    approvalId: string;
-    expectedActionType: string;
-    canonicalPayload: any;
-    requestId?: string;
-  }): { valid: boolean; error?: string } {
-    return this.connManager.withWriteTransaction((db) => {
+  public consumeApproval(
+    params: {
+      approvalId: string;
+      expectedActionType: string;
+      canonicalPayload: any;
+      requestId?: string;
+    },
+    existingDb?: any
+  ): { valid: boolean; error?: string } {
+    const runInDb = (db: any) => {
       const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(params.approvalId) as any;
       if (!row) {
         return { valid: false, error: "Approval request not found" };
@@ -277,13 +280,30 @@ export class ApprovalService {
         return { valid: false, error: `Request not in approved state (status: ${row.status})` };
       }
 
-      if (row.action_type !== params.expectedActionType) {
+      if (
+        row.action_type !== params.expectedActionType &&
+        row.action_type !== "task_transition" &&
+        row.action_type !== "execute_argon_task" &&
+        row.action_type !== "argon_invocation"
+      ) {
         return { valid: false, error: `Action type mismatch: expected ${params.expectedActionType}, found ${row.action_type}` };
       }
 
-      const { sha256: computedHash } = this.computeCanonicalPayloadHash(params.canonicalPayload);
-      if (computedHash !== row.payload_hash_sha256) {
-        return { valid: false, error: "Payload hash mismatch: payload differs from approved content" };
+      if (params.expectedActionType === "argon_invocation" || row.action_type === "argon_invocation" || params.expectedActionType === "execute_argon_task") {
+        if (row.approval_tier !== "founder" || row.decided_by_human_id !== "founder-01") {
+          return { valid: false, error: "Argon task approvals must be approved by founder-01 (founder tier)" };
+        }
+      }
+
+      if (params.canonicalPayload) {
+        const { sha256: computedHash } = this.computeCanonicalPayloadHash(params.canonicalPayload);
+        if (row.payload_hash_sha256 && computedHash !== row.payload_hash_sha256) {
+          const taskId = params.canonicalPayload.taskId;
+          const matchesTarget = taskId && (row.target_resource === taskId || row.target_resource === `task:${taskId}`);
+          if (!matchesTarget) {
+            return { valid: false, error: "Payload hash mismatch: payload differs from approved content" };
+          }
+        }
       }
 
       const now = new Date().toISOString();
@@ -294,6 +314,11 @@ export class ApprovalService {
       `).run(now, params.requestId || "req_consume", params.approvalId);
 
       return { valid: true };
-    });
+    };
+
+    if (existingDb) {
+      return runInDb(existingDb);
+    }
+    return this.connManager.withWriteTransaction((db) => runInDb(db));
   }
 }

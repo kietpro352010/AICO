@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import * as http from "node:http";
+import { DpapiManager } from "./security/dpapi-manager.js";
 
 interface ClientBridgeConfig {
   agentId: string;
@@ -15,7 +16,9 @@ export function resolveToken(agentId: string, customFilePath?: string): string {
   // 1. Check custom file path or environment file path
   const explicitPath = customFilePath || process.env.AICO_STDIO_TOKEN_FILE;
   if (explicitPath && fs.existsSync(explicitPath)) {
-    return fs.readFileSync(explicitPath, "utf8").trim();
+    return explicitPath.endsWith(".dpapi")
+      ? DpapiManager.unprotect(explicitPath)
+      : fs.readFileSync(explicitPath, "utf8").trim();
   }
 
   // 2. Check %LOCALAPPDATA%\AICO\credentials\<agentId>.dpapi
@@ -23,7 +26,11 @@ export function resolveToken(agentId: string, customFilePath?: string): string {
   if (localAppData) {
     const dpapiPath = path.join(localAppData, "AICO", "credentials", `${agentId}.dpapi`);
     if (fs.existsSync(dpapiPath)) {
-      return fs.readFileSync(dpapiPath, "utf8").trim();
+      return DpapiManager.unprotect(dpapiPath);
+    }
+    const tokenPath = path.join(localAppData, "AICO", "credentials", `${agentId}.token`);
+    if (fs.existsSync(tokenPath)) {
+      return fs.readFileSync(tokenPath, "utf8").trim();
     }
   }
 

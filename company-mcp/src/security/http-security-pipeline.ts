@@ -98,8 +98,8 @@ export class HttpSecurityPipeline {
       const authReq = req as AuthenticatedRequest;
       authReq.requestId = crypto.randomUUID();
 
-      // Step 1: Timeout timer
-      req.setTimeout(this.profile.requestTimeoutMs, () => {
+      // Step 1: Execution Deadline Timer
+      const timeoutHandle = setTimeout(() => {
         if (!res.headersSent) {
           res.status(504).json({
             error_code: "GATEWAY_TIMEOUT",
@@ -107,11 +107,58 @@ export class HttpSecurityPipeline {
             request_id: authReq.requestId
           });
         }
+      }, this.profile.requestTimeoutMs);
+
+      res.on("finish", () => clearTimeout(timeoutHandle));
+      res.on("close", () => clearTimeout(timeoutHandle));
+
+      // Step 2: Request Body Size Enforcement
+      const contentLengthHeader = req.headers["content-length"];
+      if (contentLengthHeader) {
+        const contentLength = parseInt(contentLengthHeader, 10);
+        if (!isNaN(contentLength) && contentLength > this.profile.maxBodySizeBytes) {
+          clearTimeout(timeoutHandle);
+          res.status(413).json({
+            error_code: "PAYLOAD_TOO_LARGE",
+            message: `Request body size ${contentLength} bytes exceeds gateway limit of ${this.profile.maxBodySizeBytes} bytes`,
+            request_id: authReq.requestId
+          });
+          return;
+        }
+      }
+
+      // Stream size monitor for chunked transfers without content-length
+      let receivedBytes = 0;
+      let limitExceeded = false;
+      req.on("data", (chunk: Buffer) => {
+        receivedBytes += chunk.length;
+        if (receivedBytes > this.profile.maxBodySizeBytes && !limitExceeded) {
+          limitExceeded = true;
+          clearTimeout(timeoutHandle);
+          res.status(413).json({
+            error_code: "PAYLOAD_TOO_LARGE",
+            message: `Request stream exceeded maximum allowed size of ${this.profile.maxBodySizeBytes} bytes`,
+            request_id: authReq.requestId
+          });
+          req.destroy();
+        }
       });
 
-      // Step 2: Content-Type & Method validation
+      // Step 3: Endpoint Path Allowlist
+      if (req.path !== "/health" && req.path !== "/mcp") {
+        clearTimeout(timeoutHandle);
+        res.status(404).json({
+          error_code: "RESOURCE_NOT_FOUND",
+          message: `Endpoint '${req.path}' is not exposed on this gateway`,
+          request_id: authReq.requestId
+        });
+        return;
+      }
+
+      // Step 4: Content-Type & HTTP Method Validation
       if (req.path === "/health") {
         if (req.method !== "GET") {
+          clearTimeout(timeoutHandle);
           res.status(405).json({
             error_code: "METHOD_NOT_ALLOWED",
             message: "Only GET allowed on /health",
@@ -119,9 +166,11 @@ export class HttpSecurityPipeline {
           });
           return;
         }
+
         const ip = req.ip || req.socket.remoteAddress || "unknown";
         const rate = this.ipLimiter.consume(ip);
         if (!rate.allowed) {
+          clearTimeout(timeoutHandle);
           res.setHeader("Retry-After", String(rate.retryAfterSeconds));
           res.status(429).json({
             error_code: "RATE_LIMIT_EXCEEDED",
@@ -131,6 +180,7 @@ export class HttpSecurityPipeline {
           return;
         }
 
+        clearTimeout(timeoutHandle);
         res.status(200).json({
           status: "healthy",
           gateway: this.profile.gatewayType,
@@ -139,7 +189,9 @@ export class HttpSecurityPipeline {
         return;
       }
 
-      if (req.path === "/mcp" && req.method !== "POST") {
+      // For /mcp endpoint
+      if (req.method !== "POST") {
+        clearTimeout(timeoutHandle);
         res.status(405).json({
           error_code: "METHOD_NOT_ALLOWED",
           message: "Only POST allowed on /mcp",
@@ -148,12 +200,24 @@ export class HttpSecurityPipeline {
         return;
       }
 
-      // Step 3: Host & Origin validation
+      const contentType = req.headers["content-type"] || "";
+      if (!contentType.includes("application/json")) {
+        clearTimeout(timeoutHandle);
+        res.status(415).json({
+          error_code: "UNSUPPORTED_MEDIA_TYPE",
+          message: "Content-Type must be application/json",
+          request_id: authReq.requestId
+        });
+        return;
+      }
+
+      // Step 5: Host & Origin Header Verification (DNS Rebinding Defense)
       const host = req.headers.host || "";
       const isHostAllowed = this.profile.allowedHosts.some(
         (allowed) => host === allowed || host.startsWith(`${allowed}:`)
       );
       if (!isHostAllowed) {
+        clearTimeout(timeoutHandle);
         res.status(403).json({
           error_code: "AUTH_FORBIDDEN_HOST",
           message: `Invalid Host header: ${host}`,
@@ -168,6 +232,7 @@ export class HttpSecurityPipeline {
           (allowed) => origin === allowed || allowed === "*"
         );
         if (!isOriginAllowed && this.profile.allowedOrigins.length > 0) {
+          clearTimeout(timeoutHandle);
           res.status(403).json({
             error_code: "AUTH_FORBIDDEN_ORIGIN",
             message: `Invalid Origin header: ${origin}`,
@@ -177,10 +242,11 @@ export class HttpSecurityPipeline {
         }
       }
 
-      // Step 4: IP Rate Limiting check
+      // Step 6: Unauthenticated IP Rate Limiting
       const clientIp = req.ip || req.socket.remoteAddress || "127.0.0.1";
       const ipCheck = this.ipLimiter.consume(clientIp);
       if (!ipCheck.allowed) {
+        clearTimeout(timeoutHandle);
         res.setHeader("Retry-After", String(ipCheck.retryAfterSeconds));
         res.status(429).json({
           error_code: "RATE_LIMIT_EXCEEDED",
@@ -190,9 +256,10 @@ export class HttpSecurityPipeline {
         return;
       }
 
-      // Step 5: Authorization header extraction & token verification
+      // Step 7: Bearer Token Extraction & Timing-Safe Verification
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        clearTimeout(timeoutHandle);
         await new Promise((r) => setTimeout(r, 20 + Math.random() * 30));
         res.status(401).json({
           error_code: "AUTH_MISSING_OR_INVALID_TOKEN",
@@ -210,6 +277,7 @@ export class HttpSecurityPipeline {
       );
 
       if (!principal || !principal.authenticated) {
+        clearTimeout(timeoutHandle);
         await new Promise((r) => setTimeout(r, 20 + Math.random() * 30));
         res.status(401).json({
           error_code: "AUTH_MISSING_OR_INVALID_TOKEN",
@@ -219,9 +287,10 @@ export class HttpSecurityPipeline {
         return;
       }
 
-      // Public gateway restrictions
+      // Step 8: Gateway Profile Restrictions
       if (this.profile.gatewayType === "public") {
         if (principal.principalType === "human") {
+          clearTimeout(timeoutHandle);
           res.status(403).json({
             error_code: "AUTH_HUMAN_FORBIDDEN_ON_PUBLIC_GATEWAY",
             message: "Human principal founder-01 is forbidden on Public Gateway",
@@ -231,6 +300,7 @@ export class HttpSecurityPipeline {
         }
 
         if (!principal.allowPublicGateway) {
+          clearTimeout(timeoutHandle);
           res.status(403).json({
             error_code: "AUTH_PUBLIC_GATEWAY_DISALLOWED",
             message: `Principal ${principal.principalId} is not permitted on Public Gateway`,
@@ -240,9 +310,10 @@ export class HttpSecurityPipeline {
         }
       }
 
-      // Step 6: Authenticated Credential Rate Limiting
+      // Step 9: Authenticated Credential Rate Limiting
       const credCheck = this.credLimiter.consume(principal.credentialId);
       if (!credCheck.allowed) {
+        clearTimeout(timeoutHandle);
         res.setHeader("Retry-After", String(credCheck.retryAfterSeconds));
         res.status(429).json({
           error_code: "RATE_LIMIT_EXCEEDED",
@@ -250,6 +321,21 @@ export class HttpSecurityPipeline {
           request_id: authReq.requestId
         });
         return;
+      }
+
+      // Step 10: Secret Scanning on Payload & Request Context Propagation
+      if (req.body && typeof req.body === "object") {
+        const bodyStr = JSON.stringify(req.body);
+        const scan = SecretScanner.scan(bodyStr);
+        if (scan.hasSecret) {
+          clearTimeout(timeoutHandle);
+          res.status(400).json({
+            error_code: "SECRET_LEAK_PREVENTED",
+            message: `Request payload contains sensitive secret pattern: ${scan.patternMatched}`,
+            request_id: authReq.requestId
+          });
+          return;
+        }
       }
 
       authReq.principalContext = principal;

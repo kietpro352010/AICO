@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import { createSandboxTestContext } from "./helpers/test-context.js";
 import { ConnectionManager } from "../src/db/connection-manager.js";
 import { GitMediationService } from "../src/services/git-mediation-service.js";
@@ -92,7 +93,7 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
     assert.equal(reviewed.execution_status, "completed");
 
     // 4. ObservabilityQuotaService & HMAC Audit Chain
-    const obsService = new ObservabilityQuotaService(connManager, "test_secret_key");
+    const obsService = new ObservabilityQuotaService(connManager, "test_secret_key_123456", ctx.anchorPath);
     obsService.initSchema();
 
     const ev1 = obsService.appendAuditEvent({
@@ -123,6 +124,13 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
     const verifyAfterTamper = obsService.verifyAuditChainIntegrity();
     assert.equal(verifyAfterTamper.valid, false, "HMAC audit chain detects SQL tampering");
     assert.equal(verifyAfterTamper.brokenAtEventId, ev1.event_id || ev1.audit_id);
+
+    // Assert that repo backup directory was not contaminated
+    assert.equal(
+      fs.existsSync("D:/AI-COMPANY/backup/audit_anchors.jsonl"),
+      false,
+      "Test execution must never contaminate production backup directory"
+    );
   } finally {
     ctx.cleanup();
   }

@@ -1,54 +1,50 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export const CANONICAL_V030_BACKUP_HASH = "2F73A9602DBBC50DA68B323FA00D2D7808855DF7A21FAA3DBEE64EC3EFD1477A";
 
 export interface TestContext {
   tempDir: string;
   dbPath: string;
+  anchorPath: string;
   cleanup: () => void;
 }
 
 export function createSandboxTestContext(prefix = "aico-test-"): TestContext {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const dbPath = path.join(tempDir, "sandbox.db");
+  const anchorPath = path.join(tempDir, "audit_anchors.jsonl");
 
-  const baseDb = "D:/AI-COMPANY/backup/aico_v030_pre_v221.db";
-  if (fs.existsSync(baseDb)) {
-    fs.copyFileSync(baseDb, dbPath);
-  } else {
-    const db = new DatabaseSync(dbPath);
-    db.exec(`
-      CREATE TABLE agents (
-        agent_id TEXT PRIMARY KEY,
-        display_name TEXT,
-        model TEXT,
-        platform TEXT,
-        role TEXT,
-        department TEXT,
-        status TEXT,
-        capabilities_json TEXT,
-        last_seen_at TEXT,
-        invocation_mode TEXT,
-        auto_invoke INTEGER,
-        requires_approval INTEGER,
-        quota_class TEXT,
-        usage_tier TEXT,
-        routing_priority INTEGER,
-        quota_pool TEXT,
-        reasoning_level TEXT,
-        reasoning_verified INTEGER,
-        model_verified INTEGER
-      );
-      CREATE TABLE quota_pools (
-        pool_id TEXT PRIMARY KEY,
-        provider TEXT,
-        account_label TEXT,
-        notes TEXT
-      );
-    `);
-    db.close();
+  const candidates = [
+    path.resolve(__dirname, "../../../backup/aico_v030_pre_v221.db"),
+    "D:/AI-COMPANY/backup/aico_v030_pre_v221.db"
+  ];
+
+  let baseDb: string | null = null;
+  for (const c of candidates) {
+    if (fs.existsSync(c)) {
+      baseDb = c;
+      break;
+    }
   }
+
+  if (!baseDb) {
+    throw new Error(`BASELINE_FIXTURE_MISSING: Canonical baseline backup 'aico_v030_pre_v221.db' not found in repo.`);
+  }
+
+  const baseBytes = fs.readFileSync(baseDb);
+  const hash = crypto.createHash("sha256").update(baseBytes).digest("hex").toUpperCase();
+  if (hash !== CANONICAL_V030_BACKUP_HASH) {
+    throw new Error(`BASELINE_FIXTURE_CORRUPTED: Expected hash ${CANONICAL_V030_BACKUP_HASH}, got ${hash}`);
+  }
+
+  fs.copyFileSync(baseDb, dbPath);
 
   const cleanup = () => {
     try {
@@ -60,5 +56,5 @@ export function createSandboxTestContext(prefix = "aico-test-"): TestContext {
     }
   };
 
-  return { tempDir, dbPath, cleanup };
+  return { tempDir, dbPath, anchorPath, cleanup };
 }

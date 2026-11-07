@@ -252,6 +252,125 @@ export class WorkspaceArtifactService {
     };
   }
 
+  public listFiles(params: {
+    agentId: string;
+    relativeDir?: string;
+    recursive?: boolean;
+    ctx?: PrincipalContext;
+  }): {
+    files: Array<{
+      relative_path: string;
+      size_bytes: number;
+      modified_at: string;
+      is_directory: boolean;
+    }>;
+    total_files: number;
+    total_bytes: number;
+  } {
+    this.checkOwnershipOrScope(params.ctx, params.agentId);
+    const agentWorkspaceRel = params.relativeDir
+      ? path.join(params.agentId, params.relativeDir)
+      : params.agentId;
+    const safeDirPath = this.validateAndResolveSafePath(agentWorkspaceRel, "workspaces");
+
+    if (!fs.existsSync(safeDirPath)) {
+      return { files: [], total_files: 0, total_bytes: 0 };
+    }
+
+    const results: Array<{
+      relative_path: string;
+      size_bytes: number;
+      modified_at: string;
+      is_directory: boolean;
+    }> = [];
+
+    const agentRootPath = this.validateAndResolveSafePath(params.agentId, "workspaces");
+    let totalBytes = 0;
+
+    const traverse = (dir: string) => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullItemPath = path.join(dir, entry.name);
+        const relToAgent = path.relative(agentRootPath, fullItemPath).replace(/\\/g, "/");
+        try {
+          const stat = fs.statSync(fullItemPath);
+          const isDir = entry.isDirectory();
+          if (!isDir) totalBytes += stat.size;
+          results.push({
+            relative_path: relToAgent,
+            size_bytes: isDir ? 0 : stat.size,
+            modified_at: stat.mtime.toISOString(),
+            is_directory: isDir
+          });
+          if (isDir && (params.recursive ?? true)) {
+            traverse(fullItemPath);
+          }
+        } catch {
+          // Skip inaccessible entries
+        }
+      }
+    };
+
+    traverse(safeDirPath);
+
+    this.logActivity({
+      requestId: params.ctx?.requestId || "req_fs",
+      agentId: params.agentId,
+      workspaceId: `ws_${params.agentId}`,
+      actionType: "list",
+      targetPath: params.relativeDir || "/",
+      status: "succeeded",
+      bytesCount: totalBytes
+    });
+
+    return {
+      files: results,
+      total_files: results.filter((r) => !r.is_directory).length,
+      total_bytes: totalBytes
+    };
+  }
+
+  public getWorkspaceMeta(agentId: string, ctx?: PrincipalContext): {
+    agent_id: string;
+    workspace_id: string;
+    workspace_mode: string;
+    exists: boolean;
+    file_count: number;
+    total_bytes: number;
+    root_directory: string;
+    allowed_subdirectories: string[];
+    created_at: string;
+  } {
+    this.checkOwnershipOrScope(ctx, agentId);
+    const agentRoot = this.validateAndResolveSafePath(agentId, "workspaces");
+    const exists = fs.existsSync(agentRoot);
+    let fileCount = 0;
+    let totalBytes = 0;
+    let createdAt = new Date().toISOString();
+
+    if (exists) {
+      try {
+        const stat = fs.statSync(agentRoot);
+        createdAt = stat.birthtime.toISOString();
+        const listed = this.listFiles({ agentId, recursive: true, ctx });
+        fileCount = listed.total_files;
+        totalBytes = listed.total_bytes;
+      } catch {}
+    }
+
+    return {
+      agent_id: agentId,
+      workspace_id: `ws_${agentId}`,
+      workspace_mode: "isolated_directory",
+      exists,
+      file_count: fileCount,
+      total_bytes: totalBytes,
+      root_directory: `workspaces/${agentId}`,
+      allowed_subdirectories: ["inbox", "reports", "artifacts", "src", "output"],
+      created_at: createdAt
+    };
+  }
+
   public shareArtifact(params: {
     fromAgentId: string;
     toAgentId: string;
@@ -265,13 +384,16 @@ export class WorkspaceArtifactService {
     const baseName = path.basename(params.sourceRelativePath);
     const targetRef = `inbox/${artifactId}_${baseName}`;
 
-    this.writeArtifact({
-      agentId: params.toAgentId,
-      relativePath: targetRef,
-      content: read.content,
-      overwrite: true,
-      ctx: params.ctx
-    });
+    // Safe atomic drop to recipient inbox bypassing cross-agent workspace isolation
+    const fullSubpath = path.join(params.toAgentId, targetRef);
+    const { bytesWritten } = this.safeWriteArtifact(
+      fullSubpath,
+      read.content,
+      "workspaces",
+      true,
+      undefined,
+      params.toAgentId
+    );
 
     this.logActivity({
       requestId: params.ctx?.requestId || "req_fs",

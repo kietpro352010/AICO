@@ -53,11 +53,23 @@ export class ObservabilityQuotaService {
   constructor(
     connManager: ConnectionManager,
     hmacKey?: string,
-    anchorFilePath = "D:/AI-COMPANY/backup/audit_anchors.jsonl"
+    anchorFilePath?: string
   ) {
     this.connManager = connManager;
-    this.hmacKey = process.env.AICO_AUDIT_HMAC_KEY || hmacKey || "aico_audit_hmac_secret_key_v221";
-    this.anchorFilePath = anchorFilePath;
+    const resolvedKey = process.env.AICO_AUDIT_HMAC_KEY || hmacKey;
+    if (!resolvedKey) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY environment variable is mandatory in production");
+      }
+      this.hmacKey = "aico_audit_hmac_dev_secret_key_v221_min32bytes!";
+    } else {
+      if (resolvedKey.length < 16) {
+        throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY must be at least 16 characters");
+      }
+      this.hmacKey = resolvedKey;
+    }
+
+    this.anchorFilePath = anchorFilePath || process.env.AICO_AUDIT_ANCHOR_FILE || path.join(process.cwd(), "backup", "audit_anchors.jsonl");
   }
 
   public initSchema(): void {
@@ -98,8 +110,8 @@ export class ObservabilityQuotaService {
         timestamp: recordedAt
       }) + "\n";
       fs.appendFileSync(this.anchorFilePath, record, "utf8");
-    } catch {
-      // Best-effort anchor file logging
+    } catch (err: any) {
+      console.error(`AUDIT_ANCHOR_WRITE_FAILURE: Could not write anchor record: ${err.message}`);
     }
   }
 
@@ -115,7 +127,9 @@ export class ObservabilityQuotaService {
     const eventCategory = input.eventCategory || (input.resourceType === "branch" ? "git" : input.resourceType === "approval_request" ? "approval" : "system");
     const nowIso = new Date().toISOString();
 
-    return this.connManager.withWriteTransaction((db) => {
+    let anchorToRecord: { auditId: number; eventHash: string; nowIso: string } | null = null;
+
+    const result = this.connManager.withWriteTransaction((db) => {
       const lastRow = db.prepare("SELECT event_hash_hmac_sha256 FROM audit_events ORDER BY audit_id DESC LIMIT 1").get() as any;
       const prevHash = lastRow ? lastRow.event_hash_hmac_sha256 : GENESIS_ANCHOR;
 
@@ -154,7 +168,7 @@ export class ObservabilityQuotaService {
       const auditId = Number(res.lastInsertRowid);
 
       if (auditId % 50 === 0 || auditId === 1) {
-        this.writeAnchorRecord(auditId, eventHash, nowIso);
+        anchorToRecord = { auditId, eventHash, nowIso };
       }
 
       return {
@@ -177,6 +191,14 @@ export class ObservabilityQuotaService {
         recorded_at: nowIso
       };
     });
+
+    // Write anchor after transaction commits
+    const anchor = anchorToRecord as { auditId: number; eventHash: string; nowIso: string } | null;
+    if (anchor) {
+      this.writeAnchorRecord(anchor.auditId, anchor.eventHash, anchor.nowIso);
+    }
+
+    return result;
   }
 
   public verifyAuditChainIntegrity(): { valid: boolean; totalEvents: number; brokenAtEventId?: string | number } {
@@ -185,8 +207,11 @@ export class ObservabilityQuotaService {
       if (rows.length === 0) return { valid: true, totalEvents: 0 };
 
       let expectedPrevHash = GENESIS_ANCHOR;
+      const rowByAuditId = new Map<number, any>();
 
       for (const row of rows) {
+        rowByAuditId.set(row.audit_id, row);
+
         if (row.prev_event_hash !== expectedPrevHash) {
           return { valid: false, totalEvents: rows.length, brokenAtEventId: row.event_id || row.audit_id };
         }
@@ -200,6 +225,38 @@ export class ObservabilityQuotaService {
         }
 
         expectedPrevHash = row.event_hash_hmac_sha256;
+      }
+
+      // Cross-media verification against anchor file if it exists
+      if (fs.existsSync(this.anchorFilePath)) {
+        try {
+          const content = fs.readFileSync(this.anchorFilePath, "utf8");
+          const lines = content.split("\n").filter((l) => l.trim().length > 0);
+          for (const line of lines) {
+            const anchor = JSON.parse(line);
+            const matchingRow = rowByAuditId.get(anchor.last_audit_id);
+            if (!matchingRow) {
+              // Database rollback or truncation detected
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `anchor_rollback_detected_audit_id_${anchor.last_audit_id}`
+              };
+            }
+            if (
+              matchingRow.event_hash_hmac_sha256 !== anchor.event_hash_sha256 &&
+              matchingRow.event_hash_sha256 !== anchor.event_hash_sha256
+            ) {
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `anchor_hash_mismatch_audit_id_${anchor.last_audit_id}`
+              };
+            }
+          }
+        } catch (err: any) {
+          console.error(`AUDIT_ANCHOR_VERIFY_WARNING: ${err.message}`);
+        }
       }
 
       return { valid: true, totalEvents: rows.length };

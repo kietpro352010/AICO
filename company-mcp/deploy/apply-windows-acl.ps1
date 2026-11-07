@@ -53,7 +53,7 @@ Write-Host "2. Enforcing Isolation Boundaries on Scoped Directories..."
 
 $dataDir = Join-Path $AicoRoot "data"
 $logsDir = Join-Path $AicoRoot "logs"
-$agentsDir = Join-Path $AicoRoot "agents"
+$workspacesDir = if (Test-Path "D:\AICO-WORKSPACES") { "D:\AICO-WORKSPACES" } else { Join-Path $AicoRoot "workspaces" }
 
 # Verify if service account exists on host
 $hasServiceAccount = $false
@@ -62,6 +62,29 @@ try {
   if ($LASTEXITCODE -eq 0) { $hasServiceAccount = $true }
 } catch {
   $hasServiceAccount = $false
+}
+
+$agentWorkspaces = @{
+  "flash-01" = "aico_flash1"
+  "flash-02" = "aico_flash2"
+  "codex-01" = "aico_codex"
+}
+
+# If Apply is requested, verify all required Option A accounts are provisioned
+if ($Apply -and $OptionA) {
+  $missingAccounts = @()
+  if (-not $hasServiceAccount) { $missingAccounts += "aico_svc" }
+  foreach ($u in $agentWorkspaces.Values) {
+    try {
+      $uCheck = net user $u 2>&1
+      if ($LASTEXITCODE -ne 0) { $missingAccounts += $u }
+    } catch {
+      $missingAccounts += $u
+    }
+  }
+  if ($missingAccounts.Count -gt 0) {
+    throw "OPTION_A_ACCOUNTS_MISSING: Dedicated Windows accounts missing: $($missingAccounts -join ', '). Cannot enforce Option A ACL without provisioned SIDs."
+  }
 }
 
 # 2.1 Core data directory: Protected (SYSTEM, Administrators, Founder, Service Account)
@@ -96,31 +119,33 @@ if (Test-Path $BackupDir) {
 }
 
 # 2.4 Option A: Agent Workspaces Isolation
-if ($OptionA -and (Test-Path $agentsDir)) {
-  Write-Host "3. Configuring per-agent isolated workspace DACLs (Option A)..."
-  $agentWorkspaces = @{
-    "flash-01" = "aico_flash1"
-    "flash-02" = "aico_flash2"
-    "codex-01" = "aico_codex"
+if ($OptionA) {
+  Write-Host "3. Configuring per-agent isolated workspace DACLs (Option A) on $workspacesDir..."
+  if (-not (Test-Path $workspacesDir)) {
+    New-Item -ItemType Directory -Path $workspacesDir -Force | Out-Null
   }
 
   foreach ($agent in $agentWorkspaces.Keys) {
-    $wsPath = Join-Path $agentsDir $agent
-    if (Test-Path $wsPath) {
-      $agentUser = $agentWorkspaces[$agent]
-      $userExists = $false
-      try {
-        $uCheck = net user $agentUser 2>&1
-        if ($LASTEXITCODE -eq 0) { $userExists = $true }
-      } catch { $userExists = $false }
-
-      $wsGrants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
-      if ($userExists) {
-        $wsGrants += "$agentUser`:(OI)(CI)M"
-      }
-      $wsArgs = @("/grant:r") + $wsGrants + @("/c", "/q")
-      Invoke-IcaclsCommand "$wsPath" $wsArgs
+    $wsPath = Join-Path $workspacesDir $agent
+    if (-not (Test-Path $wsPath)) {
+      New-Item -ItemType Directory -Path $wsPath -Force | Out-Null
     }
+
+    $agentUser = $agentWorkspaces[$agent]
+    $userExists = $false
+    try {
+      $uCheck = net user $agentUser 2>&1
+      if ($LASTEXITCODE -eq 0) { $userExists = $true }
+    } catch { $userExists = $false }
+
+    $wsGrants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
+    if ($userExists) {
+      $wsGrants += "$agentUser`:(OI)(CI)M"
+    } else {
+      Write-Host "     [Audit] Workspace user '$agentUser' not yet provisioned; will be granted upon creation."
+    }
+    $wsArgs = @("/inheritance:r", "/grant:r") + $wsGrants + @("/c", "/q")
+    Invoke-IcaclsCommand "$wsPath" $wsArgs
   }
 }
 

@@ -15,6 +15,7 @@ import { KnowledgeMemoryService } from "./services/knowledge-memory-service.js";
 import { ObservabilityQuotaService } from "./services/observability-quota-service.js";
 import { PUBLIC_TOOL_ALLOWLIST } from "./security/http-security-pipeline.js";
 import { getRequestContext } from "./security/context-store.js";
+import { CompanyKnowledgeMemoryOpsInputSchema } from "./contracts/mcp-tool-schemas.js";
 
 export const DB_PATH = RuntimeConfig.getDbPath();
 export const REGISTRY_VERSION = "0.3.0";
@@ -258,7 +259,13 @@ export function registerCompanyTools(server: McpServer): void {
 // Complete 38-tool implementation for v2.2.1
 export function registerAllV221Tools(
   server: McpServer,
-  options?: { isPublicGateway?: boolean; connManager?: ConnectionManager; workspaceRoot?: string }
+  options?: {
+    isPublicGateway?: boolean;
+    connManager?: ConnectionManager;
+    workspaceRoot?: string;
+    anchorFilePath?: string;
+    hmacKey?: string;
+  }
 ): void {
   const isPublic = options?.isPublicGateway ?? false;
   const conn = options?.connManager ?? new ConnectionManager(RuntimeConfig.getDbPath());
@@ -270,23 +277,72 @@ export function registerAllV221Tools(
     ? new WorkspaceArtifactService(options.workspaceRoot, conn)
     : new WorkspaceArtifactService(conn);
   const gitService = new GitMediationService(conn);
-  const taskService = new ProjectTaskService(conn);
+  const taskService = new ProjectTaskService(conn, approvalService);
   const msgService = new MessagingService(conn);
   const orchService = new OrchestrationService(conn);
   const knowService = new KnowledgeMemoryService(conn);
-  const obsService = new ObservabilityQuotaService(conn);
+  const obsService = new ObservabilityQuotaService(conn, options?.hmacKey, options?.anchorFilePath);
 
-  // Helper to resolve authenticated PrincipalContext fail-closed
+  // Helper to resolve authenticated PrincipalContext fail-closed with live credential revalidation
   function resolvePrincipal(extra?: any): PrincipalContext {
-    const storeCtx = getRequestContext();
-    if (storeCtx && storeCtx.authenticated) {
-      return storeCtx;
+    const storeCtx = getRequestContext() || extra?.principalContext;
+    if (!storeCtx || !storeCtx.authenticated) {
+      throw new Error("AUTH_MISSING_OR_INVALID_TOKEN: Request is unauthenticated or missing security context");
     }
-    if (extra?.principalContext && extra.principalContext.authenticated) {
-      return extra.principalContext;
+
+    // Live DB verification: check if credential is still active and not revoked/expired
+    if (storeCtx.credentialId) {
+      const cred = identityService.getCredentialById(storeCtx.credentialId);
+      if (!cred || cred.status === "revoked" || (cred.expires_at && new Date(cred.expires_at) <= new Date())) {
+        throw new Error("AUTH_CREDENTIAL_REVOKED: Credential has been revoked or expired during active session");
+      }
     }
-    throw new Error("AUTH_MISSING_OR_INVALID_TOKEN: Request is unauthenticated or missing security context");
+
+    return storeCtx;
   }
+
+  // Central Tool Scope Requirements Policy (P0-01)
+  const TOOL_REQUIRED_SCOPES: Record<string, (string | string[])[]> = {
+    company_ping: [],
+    company_get_info: ["company:read"],
+    company_list_agents: ["company:read"],
+    company_get_agent: ["company:read"],
+    company_list_quota_pools: ["company:read"],
+    company_get_manifest: ["company:read"],
+    company_get_my_identity: [],
+    company_check_permission: ["company:read"],
+    company_list_credentials: ["credentials:manage"],
+    company_issue_credential: ["credentials:manage"],
+    company_rotate_credential: ["credentials:manage"],
+    company_revoke_credential: ["credentials:manage"],
+    company_request_approval: ["approvals:request"],
+    company_list_approvals: ["approvals:read"],
+    company_get_approval: ["approvals:read"],
+    company_decide_approval: ["approvals:decide"],
+    company_get_workspace: ["workspace:read:self"],
+    company_list_workspace_files: ["workspace:read:self"],
+    company_read_workspace_file: ["workspace:read:self"],
+    company_write_workspace_file: ["workspace:write:self"],
+    company_share_artifact: [["workspace:write:self", "workspace:share"]],
+    company_get_workspace_activity: [["workspace:audit:read", "workspace:audit", "workspace:read:any"]],
+    company_mediate_git_branch: ["git:mediate"],
+    company_create_project: ["tasks:manage"],
+    company_list_projects: ["company:read"],
+    company_get_project: ["company:read"],
+    company_list_tasks: [["tasks:read", "tasks:read:assigned", "tasks:manage"]],
+    company_get_task: [["tasks:read", "tasks:read:assigned", "tasks:manage"]],
+    company_create_task: ["tasks:manage"],
+    company_claim_task: [["tasks:claim", "tasks:manage", "tasks:update:assigned"]],
+    company_heartbeat_task: [["tasks:heartbeat", "tasks:update:assigned", "tasks:manage"]],
+    company_transition_task: [["tasks:transition", "tasks:manage", "tasks:update:assigned"]],
+    company_review_task: [["tasks:review", "tasks:manage"]],
+    company_recover_leases: ["tasks:manage"],
+    company_send_message: ["messages:send"],
+    company_list_messages: ["messages:read"],
+    company_read_message: ["messages:read"],
+    company_ack_message: ["messages:read"],
+    company_knowledge_memory_ops: [["company:read", "knowledge:read", "observability:read"]]
+  };
 
   const maybeRegister = (toolId: string, name: string, config: any, handler: any) => {
     if (isPublic && !PUBLIC_TOOL_ALLOWLIST.has(name)) {
@@ -295,9 +351,12 @@ export function registerAllV221Tools(
     server.registerTool(name, config, async (args: any, extra: any) => {
       const startTime = Date.now();
       try {
+        const principal = resolvePrincipal(extra);
+        const requiredScopes = TOOL_REQUIRED_SCOPES[name] || [];
+        identityService.assertAuthorized(principal, requiredScopes);
         const result = await handler(args, extra);
         obsService.recordMcpActivity({
-          ctx: getRequestContext() || extra?.principalContext || null,
+          ctx: principal,
           toolName: name,
           durationMs: Date.now() - startTime,
           outcome: "succeeded"
@@ -721,25 +780,15 @@ export function registerAllV221Tools(
     "company_get_workspace",
     {
       title: "Get Workspace Info",
-      description: "Get workspace configuration.",
+      description: "Get workspace configuration and disk status.",
       inputSchema: z.object({ target_agent_id: z.string().optional() })
     },
     async ({ target_agent_id }: { target_agent_id?: string }, extra: any) => {
       const ctx = resolvePrincipal(extra);
       const agentId = target_agent_id || ctx.agentId || "flash-01";
-      workspaceService.checkOwnershipOrScope(ctx, agentId);
-
+      const meta = workspaceService.getWorkspaceMeta(agentId, ctx);
       return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            success: true,
-            agent_id: agentId,
-            workspace_id: `ws_${agentId}`,
-            workspace_mode: "isolated_clone",
-            allowed_relative_paths: ["inbox", "outbox", "tasks", "notes", "reports", "artifacts"]
-          }, null, 2)
-        }]
+        content: [{ type: "text", text: JSON.stringify({ success: true, ...meta }, null, 2) }]
       };
     }
   );
@@ -750,13 +799,17 @@ export function registerAllV221Tools(
     "company_list_workspace_files",
     {
       title: "List Workspace Files",
-      description: "List files within authorized workspace subfolder.",
+      description: "List real files within authorized workspace subfolder.",
       inputSchema: z.object({ subpath: z.string().optional().default(""), target_agent_id: z.string().optional() })
     },
     async ({ subpath, target_agent_id }: { subpath: string; target_agent_id?: string }, extra: any) => {
       const ctx = resolvePrincipal(extra);
       const agentId = target_agent_id || ctx.agentId || "flash-01";
-      workspaceService.checkOwnershipOrScope(ctx, agentId);
+      const listed = workspaceService.listFiles({
+        agentId,
+        relativeDir: subpath,
+        ctx
+      });
 
       return {
         content: [{
@@ -765,7 +818,9 @@ export function registerAllV221Tools(
             success: true,
             agent_id: agentId,
             relative_dir: subpath,
-            files: []
+            total_files: listed.total_files,
+            total_bytes: listed.total_bytes,
+            files: listed.files
           }, null, 2)
         }]
       };
@@ -1296,40 +1351,26 @@ export function registerAllV221Tools(
     }
   );
 
-  // M38: company_knowledge_memory_ops (Unified operations)
+  // M38: company_knowledge_memory_ops (Canonical 8-operation discriminated union)
   maybeRegister(
     "M38",
     "company_knowledge_memory_ops",
     {
       title: "Knowledge and Memory Operations",
       description: "Unified endpoint for knowledge search, memory and observability.",
-      inputSchema: z.object({
-        operation: z.enum([
-          "search_knowledge",
-          "search_memory",
-          "write_memory",
-          "get_system_observability",
-          "record_model_usage"
-        ]),
-        query: z.string().optional(),
-        doc_id: z.string().optional(),
-        scope: z.enum(["company", "project", "agent_private", "task_context"]).optional(),
-        title: z.string().optional(),
-        content: z.string().optional(),
-        project_id: z.string().optional(),
-        task_id: z.string().optional(),
-        input_tokens: z.number().optional(),
-        output_tokens: z.number().optional(),
-        cached_tokens: z.number().optional(),
-        limit: z.number().optional()
-      })
+      inputSchema: CompanyKnowledgeMemoryOpsInputSchema
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
       const agentId = ctx.agentId || "flash-01";
 
       if (isPublic) {
-        const forbiddenPublicOps = ["get_system_observability", "record_model_usage"];
+        const forbiddenPublicOps = [
+          "get_system_observability",
+          "record_model_usage",
+          "propose_knowledge_change",
+          "approve_knowledge_proposal"
+        ];
         if (forbiddenPublicOps.includes(args.operation)) {
           return {
             isError: true,
@@ -1346,10 +1387,42 @@ export function registerAllV221Tools(
 
       switch (args.operation) {
         case "search_knowledge": {
+          identityService.assertAuthorized(ctx, [["knowledge:read", "company:read"]]);
           const results = knowService.searchKnowledge(args.query || "", args.limit || 10);
           return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "search_knowledge", results }, null, 2) }] };
         }
+        case "get_knowledge_doc": {
+          identityService.assertAuthorized(ctx, [["knowledge:read", "company:read"]]);
+          const doc = knowService.getKnowledgeDoc(args.doc_id);
+          if (!doc) {
+            throw new Error(`RESOURCE_NOT_FOUND: Knowledge document '${args.doc_id}' not found`);
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "get_knowledge_doc", document: doc }, null, 2) }] };
+        }
+        case "propose_knowledge_change": {
+          identityService.assertAuthorized(ctx, [["knowledge:propose", "knowledge:write", "company:write"]]);
+          const proposal = knowService.proposeKnowledgeChange({
+            docId: args.doc_id,
+            proposedMarkdown: args.proposed_markdown,
+            rationale: args.rationale,
+            proposerId: ctx.principalId
+          });
+          return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "propose_knowledge_change", ...proposal }, null, 2) }] };
+        }
+        case "approve_knowledge_proposal": {
+          identityService.assertAuthorized(ctx, [["knowledge:approve", "approvals:decide"]]);
+          if (ctx.principalId !== "founder-01" && ctx.principalId !== "flash-01") {
+            throw new Error("PERMISSION_DENIED: Only Founder or CTO can approve knowledge proposals");
+          }
+          const app = knowService.approveKnowledgeProposal({
+            proposalId: args.proposal_id,
+            decision: args.decision,
+            deciderId: ctx.principalId
+          });
+          return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "approve_knowledge_proposal", ...app }, null, 2) }] };
+        }
         case "search_memory": {
+          identityService.assertAuthorized(ctx, [["memory:read", "company:read"]]);
           const results = knowService.searchMemory({
             callerAgentId: agentId,
             query: args.query,
@@ -1361,6 +1434,7 @@ export function registerAllV221Tools(
           return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "search_memory", results }, null, 2) }] };
         }
         case "write_memory": {
+          identityService.assertAuthorized(ctx, [["memory:write", "memory:manage"]]);
           if (!args.content) {
             throw new Error("INVALID_ARGUMENT: write_memory requires 'content'");
           }
@@ -1375,16 +1449,18 @@ export function registerAllV221Tools(
           return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "write_memory", memory: res }, null, 2) }] };
         }
         case "get_system_observability": {
+          identityService.assertAuthorized(ctx, [["observability:read", "observability:admin"]]);
           const obs = obsService.getSystemStatusAndUsage();
           return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "get_system_observability", ...obs }, null, 2) }] };
         }
         case "record_model_usage": {
+          identityService.assertAuthorized(ctx, [["quota:record", "observability:write", "observability:admin"]]);
           obsService.recordModelUsage({
             ctx,
             agentId,
             taskId: args.task_id,
-            inputTokens: args.input_tokens || 0,
-            outputTokens: args.output_tokens || 0,
+            inputTokens: args.input_tokens || args.prompt_tokens || 0,
+            outputTokens: args.output_tokens || args.completion_tokens || 0,
             cachedTokens: args.cached_tokens || 0
           });
           return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "record_model_usage", recorded: true }, null, 2) }] };
@@ -1418,6 +1494,8 @@ export function createFullMcpServer(options?: {
   isPublicGateway?: boolean;
   connManager?: ConnectionManager;
   workspaceRoot?: string;
+  anchorFilePath?: string;
+  hmacKey?: string;
 }): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,

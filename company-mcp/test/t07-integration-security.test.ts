@@ -27,11 +27,16 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
     const idService = new IdentityAccessService(connManager);
     const appService = new ApprovalService(connManager);
     const wsService = new WorkspaceArtifactService(ctx.tempDir, connManager);
-    const taskService = new ProjectTaskService(connManager);
-    const obsService = new ObservabilityQuotaService(connManager);
+    const taskService = new ProjectTaskService(connManager, appService);
+    const obsService = new ObservabilityQuotaService(connManager, undefined, ctx.anchorPath);
 
-    // Initialize full MCP server with sandbox connection and sandbox workspace root
-    const server = createFullMcpServer({ isPublicGateway: false, connManager, workspaceRoot: ctx.tempDir });
+    // Initialize full MCP server with sandbox connection, sandbox workspace root, and sandbox anchor file
+    const server = createFullMcpServer({
+      isPublicGateway: false,
+      connManager,
+      workspaceRoot: ctx.tempDir,
+      anchorFilePath: ctx.anchorPath
+    });
     const registeredTools = (server as any)._registeredTools;
 
     // Issue tokens
@@ -45,7 +50,7 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
 
     const flash1TokenData = idService.issueCredential({
       principal_id: "flash-01",
-      scopes: ["company:read", "tasks:manage", "workspace:read:self", "workspace:write:self"]
+      scopes: ["company:read", "tasks:manage", "workspace:read:self", "workspace:write:self", "approvals:request", "approvals:decide"]
     });
     const flash1Ctx = idService.authenticateToken(flash1TokenData.token, "local", "req_flash1_test");
     assert.equal(flash1Ctx.authenticated, true);
@@ -53,7 +58,7 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
 
     const flash2TokenData = idService.issueCredential({
       principal_id: "flash-02",
-      scopes: ["company:read", "workspace:read:self", "workspace:write:self"]
+      scopes: ["company:read", "workspace:read:self", "workspace:write:self", "tasks:claim", "tasks:heartbeat", "tasks:transition", "tasks:review"]
     });
     const flash2Ctx = idService.authenticateToken(flash2TokenData.token, "local", "req_flash2_test");
     assert.equal(flash2Ctx.authenticated, true);
@@ -92,7 +97,7 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
       }, {});
     });
     assert.equal(agentIssueAttempt.isError, true);
-    assert.match(agentIssueAttempt.content[0].text, /PERMISSION_DENIED.*Only Founder/);
+    assert.match(agentIssueAttempt.content[0].text, /PERMISSION_DENIED/);
 
     // Founder can issue credentials
     const founderIssue = await requestContextStore.run(founderCtx, async () => {
@@ -312,11 +317,45 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
     assert.equal(ctoReview.isError, undefined);
 
     // ------------------------------------------------------------------------
+    // 7b. M38 Operation-Level Scopes (Negative & Positive Enforcement)
+    // ------------------------------------------------------------------------
+    const m38Tool = registeredTools["company_knowledge_memory_ops"];
+    assert.ok(m38Tool);
+
+    // Negative: flash-02 lacks observability:read/admin -> FAILS
+    const obsDeny = await requestContextStore.run(flash2Ctx, async () => {
+      return await m38Tool.handler({ operation: "get_system_observability" }, {});
+    });
+    assert.equal(obsDeny.isError, true);
+    assert.match(obsDeny.content[0].text, /PERMISSION_DENIED.*observability/);
+
+    // Negative: flash-02 lacks memory:write/manage -> FAILS
+    const memDeny = await requestContextStore.run(flash2Ctx, async () => {
+      return await m38Tool.handler({ operation: "write_memory", content: "Unauthorized note" }, {});
+    });
+    assert.equal(memDeny.isError, true);
+    assert.match(memDeny.content[0].text, /PERMISSION_DENIED.*memory/);
+
+    // Positive: founder-01 with * wildcard -> SUCCEEDS
+    const obsFounder = await requestContextStore.run(founderCtx, async () => {
+      return await m38Tool.handler({ operation: "get_system_observability" }, {});
+    });
+    assert.equal(obsFounder.isError, undefined);
+    assert.match(obsFounder.content[0].text, /"success":\s*true/);
+
+    // ------------------------------------------------------------------------
     // 8. HMAC Audit Chain Integrity Verification
     // ------------------------------------------------------------------------
     const chainIntegrity = obsService.verifyAuditChainIntegrity();
     assert.equal(chainIntegrity.valid, true, "HMAC-SHA256 audit chain must be 100% valid");
     assert.ok(chainIntegrity.totalEvents >= 6, "All mutating MCP operations must append audit events");
+
+    // Verify tests never contaminated repo backup directory
+    assert.equal(
+      fs.existsSync("D:/AI-COMPANY/backup/audit_anchors.jsonl"),
+      false,
+      "Test execution must never contaminate production backup directory"
+    );
   } finally {
     ctx.cleanup();
   }

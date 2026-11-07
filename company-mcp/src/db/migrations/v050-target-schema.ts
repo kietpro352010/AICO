@@ -1,14 +1,28 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Migration } from "../migration-runner.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function computeSchemaChecksum(): string {
+  const localSql = path.join(__dirname, "schema-v050-rc2.sql");
+  let sqlBytes = Buffer.alloc(0);
+  if (fs.existsSync(localSql)) {
+    sqlBytes = fs.readFileSync(localSql);
+  }
+  return crypto.createHash("sha256")
+    .update("20261106_002_v050_target_tables_v221")
+    .update(sqlBytes)
+    .digest("hex");
+}
+
 export const migrationV050Schema: Migration = {
   id: "20261106_002_v050_target_tables",
   name: "v0.5.0 RC2 Tables, Constraints and Triggers",
+  checksum: computeSchemaChecksum(),
   up: (db: DatabaseSync) => {
     const localSql = path.join(__dirname, "schema-v050-rc2.sql");
     const fallbackSql = "D:/AICO_V2_2_1_IMPLEMENTATION_PACK/AICO_DATABASE_SCHEMA_V0.5.0_RC2.sql";

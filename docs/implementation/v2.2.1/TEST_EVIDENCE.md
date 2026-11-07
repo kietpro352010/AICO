@@ -75,6 +75,40 @@
   ℹ todo 0
   ℹ duration_ms 1648.4291
   ```
+### Test Run TR-004 (Post-Audit Full Verification: 15 Suites, DPAPI, Black-box HTTP & 26 Transitions)
+- **Timestamp:** 2026-11-07 11:55:56 +07:00
+- **Command:** `Push-Location D:\AI-COMPANY\company-mcp; npm.cmd run typecheck; npm.cmd test`
+- **Exit Code:** `0` (Success)
+- **Typecheck Result:** `tsc --noEmit` exited with code 0 (zero errors).
+- **Raw Summary:**
+  ```text
+  ▶ AICO Quality Baseline Test Suite
+    ✔ 1. Canonical Manifest Integrity (1.7629ms)
+    ✔ 2. AgentIdentityService Token Lifecycle & Timing-Safe Auth (51.6281ms)
+    ✔ 3. WorkspaceManager Path Traversal Defense (72.0555ms)
+    ✔ 4. Registry Core Tools Verification (2.9104ms)
+    ✔ 5. Migration v0.4.1 Manifest Sync Blueprint (8.0217ms)
+  ✔ AICO Quality Baseline Test Suite (317.6555ms)
+  ✔ T01: MigrationRunner and Schema Migrations on Sandbox DB (115.526ms)
+  ✔ T02: Core Services — Identity, Approvals and Workspace Artifact Guard (325.5383ms)
+  ✔ T03: MCP Tool Contracts and Public DTO Leakage Prevention (7.2602ms)
+  ✔ T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machine & HMAC Audit Chain (426.2146ms)
+  ✔ T05: Complete 38 MCP Tools & Gateway Allowlist Verification (7.6408ms)
+  ✔ T06: Backup and Safe Restore Drills on Sandbox Database (68.7483ms)
+  ✔ T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Test Suite (1566.9195ms)
+  ✔ T08: Comprehensive 26-State Transition Matrix (TR-01 to TR-26) & Argon Gate Verification (2224.4462ms)
+  ✔ T09: Black-Box E2E HTTP Transport & Security Pipeline Verification (468.2574ms)
+  ✔ T10: Windows DPAPI Protection, STDIO Frame Limits & Live Token Revocation (2439.7217ms)
+  ℹ tests 15
+  ℹ suites 1
+  ℹ pass 15
+  ℹ fail 0
+  ℹ cancelled 0
+  ℹ skipped 0
+  ℹ todo 0
+  ℹ duration_ms 2856.2593
+  ```
 - **Integrity Verification:**
   - Production DB `D:\AI-COMPANY\data\aico.db` SHA-256 before & after:
     `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416` (100% Unchanged).
+  - Backup Anchor Directory Cleanliness: `D:\AI-COMPANY\backup\audit_anchors.jsonl` does NOT exist (all tests strictly write to temporary sandbox paths).

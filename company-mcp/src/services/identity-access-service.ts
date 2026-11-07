@@ -227,6 +227,30 @@ export class IdentityAccessService {
     });
   }
 
+  public getCredentialById(credentialId: string): CredentialRecord | null {
+    return this.connManager.withReadTransaction((db) => {
+      const row = db.prepare("SELECT * FROM credentials WHERE credential_id = ?").get(credentialId) as any;
+      if (!row) return null;
+      let scopes: string[] = [];
+      try {
+        scopes = JSON.parse(row.scopes_json || "[]");
+      } catch {
+        scopes = [];
+      }
+      return {
+        credential_id: row.credential_id,
+        principal_id: row.principal_id,
+        key_prefix: row.key_prefix || "aico_live_...",
+        status: row.status || (row.is_revoked === 1 ? "revoked" : "active"),
+        scopes,
+        allow_public_gateway: row.allow_public_gateway === 1,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+        last_used_at: row.last_used_at
+      };
+    });
+  }
+
   public rotateCredential(oldCredentialId: string, expiresInDays = 90): {
     new_credential_id: string;
     old_credential_id: string;
@@ -512,9 +536,24 @@ export class IdentityAccessService {
     });
   }
 
+  public hasScope(ctx: PrincipalContext, scope: string): boolean {
+    if (ctx.scopes.has("*") || (ctx.principalType === "human" && ctx.principalId === "founder-01")) {
+      return true;
+    }
+    if (ctx.scopes.has(scope)) {
+      return true;
+    }
+    // Check prefix wildcard e.g. "workspace:*" or "tasks:*"
+    const parts = scope.split(":");
+    if (parts.length > 1 && ctx.scopes.has(parts[0] + ":*")) {
+      return true;
+    }
+    return false;
+  }
+
   public assertAuthorized(
     ctx: PrincipalContext,
-    requiredScopes: string[],
+    requiredScopes: (string | string[])[],
     abacCheck?: (ctx: PrincipalContext) => void
   ): void {
     if (!ctx.authenticated) {
@@ -528,8 +567,16 @@ export class IdentityAccessService {
     }
 
     for (const req of requiredScopes) {
-      if (!ctx.scopes.has(req)) {
-        throw new Error(`PERMISSION_DENIED: Missing required scope '${req}'`);
+      if (Array.isArray(req)) {
+        // Any one of the alternative scopes must match
+        const matched = req.some((s) => this.hasScope(ctx, s));
+        if (!matched) {
+          throw new Error(`PERMISSION_DENIED: Missing one of required scopes [${req.join(", ")}]`);
+        }
+      } else {
+        if (!this.hasScope(ctx, req)) {
+          throw new Error(`PERMISSION_DENIED: Missing required scope '${req}'`);
+        }
       }
     }
 

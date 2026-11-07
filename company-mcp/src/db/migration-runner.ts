@@ -30,10 +30,18 @@ export class MigrationRunner {
     });
   }
 
-  public getAppliedMigrations(): string[] {
+  public getAppliedMigrationVersions(): string[] {
+    return Array.from(this.getAppliedMigrations().keys());
+  }
+
+  public getAppliedMigrations(): Map<string, { name: string; checksum: string }> {
     return this.connManager.withReadTransaction((db) => {
-      const rows = db.prepare("SELECT version FROM schema_migrations ORDER BY version ASC").all() as any[];
-      return rows.map((r) => r.version);
+      const rows = db.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version ASC").all() as any[];
+      const map = new Map<string, { name: string; checksum: string }>();
+      for (const r of rows) {
+        map.set(r.version, { name: r.name, checksum: r.checksum });
+      }
+      return map;
     });
   }
 
@@ -42,15 +50,21 @@ export class MigrationRunner {
     const appliedList: string[] = [];
     const skippedList: string[] = [];
 
-    const existing = new Set(this.getAppliedMigrations());
+    const existingMap = this.getAppliedMigrations();
 
     for (const m of migrations) {
-      if (existing.has(m.id)) {
+      const checksum = m.checksum || crypto.createHash("sha256").update(m.up.toString()).digest("hex");
+
+      if (existingMap.has(m.id)) {
+        const stored = existingMap.get(m.id)!;
+        if (stored.checksum !== checksum) {
+          throw new Error(
+            `MIGRATION_DRIFT_DETECTED: Migration '${m.id}' has been modified after execution! Stored checksum: ${stored.checksum}, Current checksum: ${checksum}`
+          );
+        }
         skippedList.push(m.id);
         continue;
       }
-
-      const checksum = m.checksum || crypto.createHash("sha256").update(m.up.toString()).digest("hex");
 
       this.connManager.withWriteTransaction((db) => {
         m.up(db);

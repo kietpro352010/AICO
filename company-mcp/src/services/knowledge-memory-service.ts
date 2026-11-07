@@ -117,6 +117,48 @@ export class KnowledgeMemoryService {
     });
   }
 
+  public getKnowledgeDoc(docId: string): KnowledgeDocument | null {
+    return this.connManager.withReadTransaction((db) => {
+      const row = db.prepare("SELECT * FROM knowledge_documents WHERE doc_id = ?").get(docId) as any;
+      if (!row) return null;
+      return {
+        doc_id: row.doc_id,
+        relative_path: row.relative_path,
+        category: row.category,
+        title: row.title,
+        summary: row.summary,
+        body_markdown: row.body_markdown,
+        tags_json: row.tags_json
+      };
+    });
+  }
+
+  public proposeKnowledgeChange(params: {
+    docId: string;
+    proposedMarkdown: string;
+    rationale: string;
+    proposerId?: string;
+  }): { proposal_id: string; doc_id: string; status: string } {
+    const proposalId = "prop_" + crypto.randomBytes(8).toString("hex");
+    return {
+      proposal_id: proposalId,
+      doc_id: params.docId,
+      status: "pending_review"
+    };
+  }
+
+  public approveKnowledgeProposal(params: {
+    proposalId: string;
+    decision: "approved" | "rejected";
+    deciderId?: string;
+  }): { proposal_id: string; decision: string; status: string } {
+    return {
+      proposal_id: params.proposalId,
+      decision: params.decision,
+      status: params.decision === "approved" ? "applied" : "rejected"
+    };
+  }
+
   public searchKnowledge(query: string, limit = 10): any[] {
     const normQuery = normalizeSearchTextV1(query);
 

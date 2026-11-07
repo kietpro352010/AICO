@@ -2,21 +2,25 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import type { PrincipalContext } from "../security/context-store.js";
+import { SecretScanner } from "../security/secret-scanner.js";
 
 export interface GitMediationConfig {
   centralRepoPath: string;
   allowedBranchPrefix: string;
+  workspacesRoot?: string;
 }
 
 export class GitMediationService {
   private centralRepoPath: string;
+  private workspacesRoot: string;
 
-  constructor(centralRepoPathOrConn?: string | any) {
+  constructor(centralRepoPathOrConn?: string | any, workspacesRoot?: string) {
     if (typeof centralRepoPathOrConn === "string") {
       this.centralRepoPath = path.resolve(centralRepoPathOrConn);
     } else {
-      this.centralRepoPath = path.resolve("D:/AI-COMPANY");
+      this.centralRepoPath = path.resolve(process.env.AICO_ROOT || "D:/AI-COMPANY");
     }
+    this.workspacesRoot = workspacesRoot || process.env.AICO_WORKSPACES_ROOT || "D:/AICO-WORKSPACES";
   }
 
   public validateBranchName(agentId: string, branchName: string): boolean {
@@ -24,7 +28,7 @@ export class GitMediationService {
     return pattern.test(branchName);
   }
 
-  public scanCommitFiles(clonePath: string, commitSha: string): { valid: boolean; forbiddenFiles: string[] } {
+  public scanCommitFiles(clonePath: string, commitSha: string): { valid: boolean; forbiddenFiles: string[]; secretPattern?: string } {
     try {
       const output = execFileSync("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", commitSha], {
         cwd: clonePath,
@@ -48,6 +52,20 @@ export class GitMediationService {
         if (forbiddenPatterns.some((p) => p.test(f))) {
           foundForbidden.push(f);
         }
+      }
+
+      // Content inspection: scan commit diff for secret patterns
+      try {
+        const patch = execFileSync("git", ["diff-tree", "-p", commitSha], {
+          cwd: clonePath,
+          encoding: "utf8"
+        });
+        const scan = SecretScanner.scan(patch);
+        if (scan.hasSecret) {
+          return { valid: false, forbiddenFiles: foundForbidden, secretPattern: scan.patternMatched };
+        }
+      } catch {
+        // If diff-tree -p fails on root commit, proceed with file check
       }
 
       return { valid: foundForbidden.length === 0, forbiddenFiles: foundForbidden };
@@ -74,7 +92,7 @@ export class GitMediationService {
       throw new Error(`GIT_BRANCH_NAMESPACE_VIOLATION: Branch '${params.branchName}' must match agent/${params.agentId}/[a-z0-9-]+`);
     }
 
-    const effectiveClonePath = params.clonePath || path.resolve(`D:/AICO-WORKSPACES/${params.agentId}/repo`);
+    const effectiveClonePath = params.clonePath || path.resolve(this.workspacesRoot, params.agentId, "repo");
 
     if (!fs.existsSync(effectiveClonePath)) {
       throw new Error(`GIT_CLONE_NOT_FOUND: Agent clone directory does not exist: ${effectiveClonePath}`);
@@ -83,13 +101,26 @@ export class GitMediationService {
     if (params.direction === "push_agent_branch") {
       let commitSha: string;
       try {
-        commitSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: effectiveClonePath, encoding: "utf8" }).trim();
-      } catch (err: any) {
-        throw new Error(`GIT_REV_PARSE_FAILED: Failed to resolve HEAD commit: ${err.message}`);
+        commitSha = execFileSync("git", ["rev-parse", `refs/heads/${params.branchName}`], {
+          cwd: effectiveClonePath,
+          encoding: "utf8"
+        }).trim();
+      } catch {
+        try {
+          commitSha = execFileSync("git", ["rev-parse", params.branchName], {
+            cwd: effectiveClonePath,
+            encoding: "utf8"
+          }).trim();
+        } catch (err: any) {
+          throw new Error(`GIT_REV_PARSE_FAILED: Failed to resolve branch '${params.branchName}' commit: ${err.message}`);
+        }
       }
 
       const scanResult = this.scanCommitFiles(effectiveClonePath, commitSha);
       if (!scanResult.valid) {
+        if (scanResult.secretPattern) {
+          throw new Error(`SECRET_LEAK_PREVENTED: Commit diff contains sensitive credential pattern: ${scanResult.secretPattern}`);
+        }
         throw new Error(`SECRET_LEAK_PREVENTED: Commit contains forbidden files: ${scanResult.forbiddenFiles.join(", ")}`);
       }
 

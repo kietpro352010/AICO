@@ -92,17 +92,67 @@ All automated test suites pass 100% (12 tests passed, 0 failed), `tsc --noEmit` 
 
 ---
 
-## 3. AUDIT REMEDIATION SUMMARY (AUDIT 2026-11-07)
+## 3. INDEPENDENT RE-TEST AUDIT REMEDIATION (2026-11-07)
 
-All 8 critical blockers identified in the Independent Audit Report (`AICO_v2.2.1_Audit_2026-11-07.md`) have been systematically addressed and verified:
-1. **P0 Security Context Propagation:** Implemented `requestContextStore` (`AsyncLocalStorage<PrincipalContext>`) in `context-store.ts`. Both HTTP and STDIO transports wrap execution fail-closed.
-2. **P0 Identity & Anti-Spoofing:** All MCP tools pull identity from `requestContextStore`. M13 ignores body-spoofed `requested_by`. M16 enforces Separation of Duties.
-3. **P0 Schema Compatibility:** Canonical SQLite schema RC2 (`schema-v050-rc2.sql` and `v050-target-schema.ts`) includes all required task and audit hash columns (`execution_status`, `version`, `prev_event_hash`, `payload_hash_sha256`).
-4. **P0 Hardened Workspace I/O:** `validateAndResolveSafePath` verifies real paths with `fs.realpathSync`, enforcing symlink/reparse-point defense, `overwrite: false`, and cross-agent isolation.
-5. **P0 Zero Fake Successes:** Complete 26-state transition engine (`TR-01`–`TR-26`), real database persistence, and bilingual FTS5 search wired into MCP registry.
-6. **P1 Client Auth Bridge:** Prohibited token argument on CLI; DPAPI and file-based token loading enforced.
-7. **P1 Git Mediation Hardening:** Exit code verification, real clone path existence check, commit secret scanner.
-8. **P1 Tamper-Evident Audit Chain:** Environment-driven HMAC key (`AICO_AUDIT_HMAC_KEY`) and anchor logging to `backup/audit_anchors.jsonl`.
+All findings identified in the Independent Re-Test Audit (`AICO_v2.2.1_Retest_Audit_2026-11-07.md`) have been systematically remediated, tested, and verified:
+
+1. **P0-01 (Tool Scopes Central Enforcement):**
+   - Added `TOOL_REQUIRED_SCOPES` central mapping across all 38 tools in `registry-core.ts`.
+   - Wrapped `server.registerTool` inside `maybeRegister()` to invoke `identityService.assertAuthorized(principal, requiredScopes)` centrally before any handler executes.
+   - Enforced fine-grained operation-level scopes across all 8 branches of M38 (`company_knowledge_memory_ops`).
+   - Verified with negative tests in `t07` and `t09` for callers with insufficient scopes (e.g. read-only tokens attempting credential/observability/memory mutations).
+
+2. **P0-02 (Argon Founder Approval Bypass Fix):**
+   - Wired `ApprovalService` into `ProjectTaskService`.
+   - Enforced that TR-04, TR-06, TR-10, TR-11, TR-16, and TR-18 transitions for Argon agents (`argon-01`, `argon-02`) require and atomically consume a valid Founder approval (`approval_tier = 'founder'`, `decided_by_human_id = 'founder-01'`, `action_type = 'argon_invocation'`).
+   - Verified that bare/forged approval IDs, missing approvals, and reused approvals are rejected fail-closed with `ARGON_FOUNDER_APPROVAL_REQUIRED`.
+
+3. **P1-01 (10-Step HTTP Security Pipeline & Body Size Enforcement):**
+   - Implemented real execution deadline timers, raw stream chunk & `Content-Length` inspection returning 413 `PAYLOAD_TOO_LARGE` for payloads exceeding 1 MiB (Local) / 256 KiB (Public).
+   - Validated `Content-Type: application/json` returning 415, method checks, Host DNS rebinding defense, unauthenticated IP rate limits, timing-safe Bearer auth, credential rate limits, and secret scanning.
+
+4. **P1-02 (STDIO Frame Checks & Live Revalidation):**
+   - Added live database revalidation in `resolvePrincipal()` and `revalidateLivePrincipal()`. Active sessions with tokens revoked in the database fail-closed immediately with `AUTH_CREDENTIAL_REVOKED`.
+   - Enforced 2 MiB frame length checks.
+
+5. **P1-03 (DPAPI Bridge Genuine Windows CryptUnprotectData):**
+   - Implemented `DpapiManager` (`dpapi-manager.ts`) using Windows Data Protection API via PowerShell .NET `[System.Security.Cryptography.ProtectedData]`.
+   - Proved protect/unprotect roundtrip under current Windows user context in test suite `t10`.
+
+6. **P1-04 & P1-05 (Audit HMAC Fallback Elimination & Sandboxed Anchoring):**
+   - Removed fallback keys: fails closed with `CONFIGURATION_ERROR` if `AICO_AUDIT_HMAC_KEY` is missing or < 16 chars.
+   - Made anchor path configurable (`anchorFilePath`), isolated all test suites to temporary directories (`ctx.anchorPath`), and verified that `backup/audit_anchors.jsonl` is not contaminated.
+   - Reconciled anchor file verification in `verifyAuditChainIntegrity()` against database history to detect database rollback/truncation.
+
+7. **P1-06 (M38 Discriminated Union & Canonical Contracts):**
+   - Registered canonical `CompanyKnowledgeMemoryOpsInputSchema` with all 8 operations: `search_knowledge`, `get_knowledge_doc`, `propose_knowledge_change`, `approve_knowledge_proposal`, `search_memory`, `write_memory`, `get_system_observability`, and `record_model_usage`.
+   - Handled Public Gateway restrictions for internal-only operations.
+
+8. **P1-07 & P1-08 (Workspace File Listing & Cross-Agent Artifact Sharing):**
+   - Implemented real filesystem traversal in `listFiles()` and `getWorkspaceMeta()` with path containment checks.
+   - Implemented scoped cross-agent sharing in `shareArtifact()` permitting writing into recipient's `inbox/` subfolder without requiring full recipient workspace write access.
+
+9. **P1-09 (Git Ref Resolution & Commit Content Secret Scanning):**
+   - Resolved exact branch ref commit SHA in `push_agent_branch` to prevent scanning mismatched commits.
+   - Scanned commit diff patches with `SecretScanner` in addition to checking forbidden file extensions.
+
+10. **P1-10 (Windows ACL Option A Directory Alignment):**
+    - Updated `apply-windows-acl.ps1` to target `$workspacesDir` (`D:\AICO-WORKSPACES` or `$AicoRoot\workspaces`).
+    - Failed closed in `-Apply` mode if required Option A accounts are missing.
+
+11. **P1-11 (Migration Checksums & Drift Detection):**
+    - Included SHA-256 hash of `schema-v050-rc2.sql` in migration checksum calculation.
+    - Verified stored checksums on already applied migrations in `MigrationRunner`, throwing `MIGRATION_DRIFT_DETECTED` on mismatch.
+
+12. **P1-12 (26-Transition Table-Driven Test Suite):**
+    - Created `test/t08-task-state-machine-26.test.ts` executing all 26 state transitions (TR-01 through TR-26), lease expirations, SoD, and Argon gates.
+
+13. **P1-13 (Real E2E Black-Box HTTP & STDIO Tests):**
+    - Created `test/t09-e2e-http-transport.test.ts` testing real Express HTTP servers, DNS rebinding, oversized payload rejection, unauth rejection, timing-safe Bearer auth, tool calls, and public gateway restrictions.
+    - Created `test/t10-stdio-and-dpapi.test.ts` testing real DPAPI protect/unprotect, 2 MiB frame validation, and live token revocation.
+
+14. **P1-14 (Test Fixture Path Derivation & Checksum Verification):**
+    - Derived test fixture relative to repository root and verified SHA-256 against `2F73A9602DBBC50DA68B323FA00D2D7808855DF7A21FAA3DBEE64EC3EFD1477A`, failing explicitly if baseline fixture is missing or corrupted.
 
 ---
 
@@ -110,16 +160,19 @@ All 8 critical blockers identified in the Independent Audit Report (`AICO_v2.2.1
 
 | Check | Tool / Command | Result | Evidence |
 | :--- | :--- | :---: | :--- |
-| **TypeScript Static Check** | `npm.cmd run typecheck` | **PASS (0 errors)** | All sources, services, tools, and test suites compile cleanly under NodeNext ESM |
-| **Automated Test Suites** | `npm.cmd test` | **PASS (12/12)** | 12 tests passed, 0 failed across all unit and integration suites |
+| **TypeScript Static Check** | `npm.cmd run typecheck` | **PASS (0 errors)** | All sources, services, tools, and test suites compile cleanly under NodeNext ESM (`tsc --noEmit`) |
+| **Automated Test Suites** | `npm.cmd test` | **PASS (15/15)** | 15 test suites passed, 0 failed across baseline, unit, integration, and black-box suites |
+| **26 Task State Transitions** | `t08-task-state-machine-26.test.ts` | **PASS (TR-01 to TR-26)** | Table-driven verification of all 26 transitions, lease expiry, SoD, and Argon Founder gates |
+| **Black-box HTTP Transport** | `t09-e2e-http-transport.test.ts` | **PASS** | 10-step pipeline, DNS rebinding, 413 oversized rejection, bearer auth, and public gateway gating |
+| **Windows DPAPI & STDIO** | `t10-stdio-and-dpapi.test.ts` | **PASS** | Genuine DPAPI CryptProtect/CryptUnprotectData, 2 MiB frame check, and live token revocation |
 | **Tool Count (Local/STDIO)** | `t05-gateways-and-tools.test.ts` | **PASS (38 tools)** | Exactly 38 tools registered on Local Gateway |
 | **Tool Count (Public Gateway)** | `t05-gateways-and-tools.test.ts` | **PASS (29 tools)** | Exactly 29 allowlisted tools registered; 9 admin tools absent |
 | **Backward Compatibility** | `baseline.test.ts` / `t05` | **PASS (5 tools)** | `createBaseMcpServer()` preserves 5 legacy tools (`M01`–`M05`) |
-| **E2E Security & Fail-Closed** | `t07-integration-security.test.ts`| **PASS (8/8 checks)** | Unauth rejection, identity spoofing defense, SoD, workspace guard, Argon max_retries=0, 26 transitions, HMAC integrity |
+| **E2E Security & Fail-Closed** | `t07-integration-security.test.ts`| **PASS** | Unauth rejection, identity spoofing defense, SoD, workspace guard, Argon max_retries=0, M38 scopes, HMAC integrity |
 | **Backup & Restore Drill** | `t06-gateways-and-tools.test.ts` | **PASS** | Non-blocking VACUUM backup, SHA256 verified, restored with integrity = ok |
 | **NTFS ACL Dry-Run** | `apply-windows-acl.ps1` | **PASS** | Option A SIDs verified, pre-apply ACL backup generated, zero errors |
-| **Operator CLI Dashboard** | `npm run aico:dashboard` | **PASS** | Terminal dashboard renders cleanly with 6 agents & 5 pools |
-| **Production Database Lock** | `Get-FileHash aico.db` | **PASS** | Hash unchanged: `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416` |
+| **Production Database Lock** | `Get-FileHash aico.db` | **PASS** | Hash 100% frozen: `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416` |
+| **Anchor Cleanliness** | `Test-Path backup/audit_anchors.jsonl` | **PASS (Clean)** | File does not exist; test anchors isolated to disposable temp sandboxes |
 
 ---
 

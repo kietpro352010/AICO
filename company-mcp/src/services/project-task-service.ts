@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
 import type { PrincipalContext } from "../security/context-store.js";
+import { ApprovalService } from "./approval-service.js";
 
 export type TaskExecutionStatus =
   | "draft"
@@ -92,9 +93,53 @@ export interface TransitionInput {
 
 export class ProjectTaskService {
   private connManager: ConnectionManager;
+  private approvalService?: ApprovalService;
 
-  constructor(connManager: ConnectionManager) {
+  constructor(connManager: ConnectionManager, approvalService?: ApprovalService) {
     this.connManager = connManager;
+    this.approvalService = approvalService;
+  }
+
+  private verifyAndConsumeArgonApproval(
+    db: any,
+    taskId: string,
+    targetAgentId: string,
+    approvalId?: string
+  ): void {
+    if (!approvalId) {
+      throw new Error(`ARGON_FOUNDER_APPROVAL_REQUIRED: Argon agent '${targetAgentId}' task execution/dispatch requires an explicit Founder approval ID`);
+    }
+
+    if (this.approvalService) {
+      const res = this.approvalService.consumeApproval({
+        approvalId,
+        expectedActionType: "argon_invocation",
+        canonicalPayload: { taskId, targetAgentId },
+        requestId: `req_argon_${taskId}`
+      }, db);
+      if (!res.valid) {
+        throw new Error(`ARGON_FOUNDER_APPROVAL_REQUIRED: Argon Founder approval verification failed: ${res.error}`);
+      }
+      return;
+    }
+
+    // Direct DB check inside transaction when approvalService is not injected
+    const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(approvalId) as any;
+    if (!row) {
+      throw new Error(`ARGON_FOUNDER_APPROVAL_REQUIRED: Approval request '${approvalId}' not found`);
+    }
+    if (row.status !== "approved") {
+      throw new Error(`ARGON_FOUNDER_APPROVAL_REQUIRED: Approval '${approvalId}' is not approved (status: ${row.status})`);
+    }
+    if (row.approval_tier !== "founder" || row.decided_by_human_id !== "founder-01") {
+      throw new Error("ARGON_FOUNDER_APPROVAL_REQUIRED: Argon task approvals must be approved by founder-01");
+    }
+
+    db.prepare(`
+      UPDATE approval_requests
+      SET status = 'consumed', consumed_at = ?, consumed_by_request_id = ?
+      WHERE approval_id = ?
+    `).run(new Date().toISOString(), `req_argon_${taskId}`, approvalId);
   }
 
   public initSchema(): void {
@@ -512,6 +557,7 @@ export class ProjectTaskService {
       let newRetryCount = task.retry_count;
       let newStartedAt = task.started_at;
       let newCompletedAt = task.completed_at;
+      let newApprovalRequestId = task.approval_request_id;
 
       const isArgon = task.assigned_agent_id === "argon-01" || task.assigned_agent_id === "argon-02";
 
@@ -530,6 +576,10 @@ export class ProjectTaskService {
         newDispatchStatus = "approval_pending";
       } else if (fromStatus === "waiting_approval" && toStatus === "queued") {
         // TR-04
+        if (isArgon) {
+          this.verifyAndConsumeArgonApproval(db, task.task_id, task.assigned_agent_id, input.approvalId);
+          newApprovalRequestId = input.approvalId || null;
+        }
         newDispatchStatus = "handoff_ready";
       } else if (fromStatus === "waiting_approval" && toStatus === "cancelled") {
         // TR-05
@@ -540,6 +590,13 @@ export class ProjectTaskService {
           throw new Error("TASK_INVALID_STATE_TRANSITION: Cannot assign task without assigned_agent_id");
         }
         if (isArgon) {
+          if (!task.approval_request_id && !input.approvalId) {
+            throw new Error("ARGON_FOUNDER_APPROVAL_REQUIRED: Assigning Argon task requires explicit Founder approval");
+          }
+          if (input.approvalId) {
+            this.verifyAndConsumeArgonApproval(db, task.task_id, task.assigned_agent_id, input.approvalId);
+            newApprovalRequestId = input.approvalId;
+          }
           newDispatchStatus = "awaiting_operator_delivery";
         } else {
           newDispatchStatus = "queued_for_client_pull";
@@ -565,12 +622,30 @@ export class ProjectTaskService {
         if (task.assigned_agent_id && task.assigned_agent_id !== claimer && actorId !== "founder-01") {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can claim task`);
         }
+        if (isArgon) {
+          if (!task.approval_request_id && !input.approvalId) {
+            throw new Error("ARGON_FOUNDER_APPROVAL_REQUIRED: Claiming Argon task requires explicit Founder approval");
+          }
+          if (input.approvalId) {
+            this.verifyAndConsumeArgonApproval(db, task.task_id, task.assigned_agent_id, input.approvalId);
+            newApprovalRequestId = input.approvalId;
+          }
+        }
         newLeaseOwner = task.assigned_agent_id || claimer;
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
       } else if (fromStatus === "claimed" && toStatus === "in_progress") {
         // TR-11
         if (task.lease_expires_at && new Date(task.lease_expires_at) <= now) {
           throw new Error("TASK_LEASE_EXPIRED: Cannot move expired lease to in_progress");
+        }
+        if (isArgon) {
+          if (!task.approval_request_id && !input.approvalId) {
+            throw new Error("ARGON_FOUNDER_APPROVAL_REQUIRED: Moving Argon task to in_progress requires explicit Founder approval");
+          }
+          if (input.approvalId) {
+            this.verifyAndConsumeArgonApproval(db, task.task_id, task.assigned_agent_id, input.approvalId);
+            newApprovalRequestId = input.approvalId;
+          }
         }
         newStartedAt = newStartedAt || nowIso;
         if (isArgon || task.assigned_agent_id === "chatgpt-01") {
@@ -598,8 +673,10 @@ export class ProjectTaskService {
         newLeaseExpiresAt = null;
       } else if (fromStatus === "blocked" && toStatus === "in_progress") {
         // TR-16
-        if (isArgon && !input.approvalId) {
-          throw new Error("TASK_INVALID_STATE_TRANSITION: Unblocking Argon requires explicit Founder approval");
+        if (isArgon) {
+          this.verifyAndConsumeArgonApproval(db, task.task_id, task.assigned_agent_id, input.approvalId);
+          newApprovalRequestId = input.approvalId || null;
+          newDispatchStatus = "external_running";
         }
         newLeaseOwner = task.assigned_agent_id;
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
@@ -607,6 +684,11 @@ export class ProjectTaskService {
         // TR-17
       } else if (fromStatus === "waiting_approval" && toStatus === "in_progress") {
         // TR-18
+        if (isArgon) {
+          this.verifyAndConsumeArgonApproval(db, task.task_id, task.assigned_agent_id, input.approvalId);
+          newApprovalRequestId = input.approvalId || null;
+          newDispatchStatus = "external_running";
+        }
         newLeaseOwner = task.assigned_agent_id;
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
       } else if (fromStatus === "in_progress" && toStatus === "failed") {
@@ -669,6 +751,7 @@ export class ProjectTaskService {
         SET execution_status = ?, dispatch_status = ?, lease_owner_agent_id = ?,
             lease_expires_at = ?, retry_count = ?, started_at = ?, completed_at = ?,
             output_artifact_ids_json = ?, verification_evidence = ?,
+            approval_request_id = ?,
             version = version + 1, updated_at = ?
         WHERE task_id = ?
       `).run(
@@ -681,6 +764,7 @@ export class ProjectTaskService {
         newCompletedAt,
         outputArtifactsJson,
         verificationEvidence,
+        newApprovalRequestId,
         nowIso,
         input.taskId
       );
