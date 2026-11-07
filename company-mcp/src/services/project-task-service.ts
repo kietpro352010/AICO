@@ -123,9 +123,16 @@ export class ProjectTaskService {
       ? { taskId: task.task_id, targetAgentId: task.assigned_agent_id }
       : { taskId: task.task_id, riskClass: task.risk_class, priority: task.priority };
 
+    const expectedTargetResource = `task:${task.task_id}`;
+    const expectedTargetAgentId = isArgon
+      ? task.assigned_agent_id
+      : (task.assigned_agent_id || undefined);
+
     let res = this.approvalService.consumeApproval({
       approvalId,
       expectedActionType: actionType,
+      expectedTargetAgentId: expectedTargetAgentId || undefined,
+      expectedTargetResource,
       canonicalPayload: payload,
       requestId: `req_${isArgon ? "argon" : "crit"}_${task.task_id}`
     }, db);
@@ -553,22 +560,24 @@ export class ProjectTaskService {
     reason?: string;
     reviewerId?: string;
   }): TaskRecord {
-    const reviewerId = params.ctx?.principalId || params.reviewerId;
-    if (!reviewerId || (params.ctx && !params.ctx.authenticated)) {
+    if (!params.ctx) {
       throw new Error("AUTHENTICATION_REQUIRED: reviewTask requires an authenticated PrincipalContext");
     }
+    if (params.ctx.authenticated !== true) {
+      throw new Error("AUTHENTICATION_REQUIRED: reviewTask requires an authenticated PrincipalContext (ctx.authenticated must be true)");
+    }
+    if (!params.ctx.principalId || typeof params.ctx.principalId !== "string" || params.ctx.principalId.trim().length === 0) {
+      throw new Error("AUTHENTICATION_REQUIRED: reviewTask requires a valid principalId in PrincipalContext");
+    }
+    if (!params.ctx.principalType || (params.ctx.principalType !== "human" && params.ctx.principalType !== "agent")) {
+      throw new Error("AUTHENTICATION_REQUIRED: reviewTask requires a valid principalType ('human' | 'agent') in PrincipalContext");
+    }
+
+    const reviewerId = params.ctx.principalId;
     const toStatus: TaskExecutionStatus = params.decision === "completed" ? "completed" : "rework";
-    const effectiveCtx = params.ctx || ({
-      authenticated: true,
-      principalId: reviewerId,
-      principalType: reviewerId === "founder-01" ? "human" : "agent",
-      displayName: reviewerId,
-      agentId: reviewerId === "founder-01" ? null : reviewerId,
-      scopes: new Set(["tasks:review", "tasks:transition"])
-    } as any);
 
     return this.transitionTask({
-      ctx: effectiveCtx,
+      ctx: params.ctx,
       taskId: params.taskId,
       expectedVersion: params.expectedVersion as any,
       toStatus,

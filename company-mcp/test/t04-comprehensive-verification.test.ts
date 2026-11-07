@@ -83,13 +83,31 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
       db.prepare("UPDATE tasks SET execution_status = 'review_required' WHERE task_id = 'task_100'").run();
     });
 
+    const flash2Ctx = {
+      authenticated: true,
+      principalId: "flash-02",
+      principalType: "agent",
+      displayName: "flash-02",
+      agentId: "flash-02",
+      scopes: new Set(["tasks:review", "tasks:transition"])
+    } as any;
+
+    const flash1Ctx = {
+      authenticated: true,
+      principalId: "flash-01",
+      principalType: "agent",
+      displayName: "flash-01",
+      agentId: "flash-01",
+      scopes: new Set(["tasks:review", "tasks:transition"])
+    } as any;
+
     assert.throws(
-      () => ptService.reviewTask({ taskId: "task_100", reviewerId: "flash-02", decision: "completed" }),
+      () => ptService.reviewTask({ ctx: flash2Ctx, taskId: "task_100", decision: "completed" }),
       /ABAC_OWNERSHIP_OR_SOD_VIOLATION/
     );
 
     // Founder or CTO can review
-    const reviewed = ptService.reviewTask({ taskId: "task_100", reviewerId: "flash-01", decision: "completed" });
+    const reviewed = ptService.reviewTask({ ctx: flash1Ctx, taskId: "task_100", decision: "completed" });
     assert.equal(reviewed.execution_status, "completed");
 
     // 4. ObservabilityQuotaService & HMAC Audit Chain

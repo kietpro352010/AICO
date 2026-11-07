@@ -304,7 +304,7 @@ test("T08: Comprehensive 26-State Transition Matrix (TR-01 to TR-26) & Argon Gat
         toStatus: "queued",
         approvalId: mismatchedPayloadAppr.approval_id
       }),
-      /ARGON_FOUNDER_APPROVAL_REQUIRED.*Payload hash mismatch/i
+      /ARGON_FOUNDER_APPROVAL_REQUIRED.*(Payload hash mismatch|TARGET_AGENT_MISMATCH)/i
     );
 
     // Legitimate Founder Approval Flow:

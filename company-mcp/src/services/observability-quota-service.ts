@@ -234,7 +234,7 @@ export class ObservabilityQuotaService {
         if (fs.existsSync(this.anchorFilePath)) {
           try {
             const content = fs.readFileSync(this.anchorFilePath, "utf8");
-            const lines = content.split("\n").filter((l) => l.trim().length > 0);
+            const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
             if (lines.length > 0) {
               return {
                 valid: false,
@@ -306,7 +306,7 @@ export class ObservabilityQuotaService {
 
         try {
           const content = fs.readFileSync(this.anchorFilePath, "utf8");
-          const lines = content.split("\n").filter((l) => l.trim().length > 0);
+          const lines = content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
           if (lines.length === 0) {
             return {
               valid: false,
@@ -315,69 +315,82 @@ export class ObservabilityQuotaService {
             };
           }
 
-          let latestAnchor: any = null;
-          for (const line of lines) {
-            const anchor = JSON.parse(line);
-            latestAnchor = anchor;
-            const matchingRow = rowByAuditId.get(anchor.last_audit_id);
-            if (!matchingRow) {
-              // Database rollback or truncation detected
-              return {
-                valid: false,
-                totalEvents: rows.length,
-                brokenAtEventId: `anchor_rollback_detected_audit_id_${anchor.last_audit_id}`
-              };
-            }
-            if (
-              matchingRow.event_hash_hmac_sha256 !== anchor.event_hash_sha256 &&
-              matchingRow.event_hash_sha256 !== anchor.event_hash_sha256
-            ) {
-              return {
-                valid: false,
-                totalEvents: rows.length,
-                brokenAtEventId: `anchor_hash_mismatch_audit_id_${anchor.last_audit_id}`
-              };
-            }
+          // Strict coverage check: anchor records must match the DB events count
+          if (lines.length < rows.length) {
+            return {
+              valid: false,
+              totalEvents: rows.length,
+              brokenAtEventId: `ANCHOR_COVERAGE_DEFICIT: Expected ${rows.length} anchor record(s) for ${rows.length} DB events, but found ${lines.length} (truncation/deletion detected)`
+            };
+          }
+          if (lines.length > rows.length) {
+            return {
+              valid: false,
+              totalEvents: rows.length,
+              brokenAtEventId: `ANCHOR_COVERAGE_EXCESS: Found ${lines.length} anchor record(s) but database only has ${rows.length} events (potential DB rollback/truncation)`
+            };
           }
 
-          const lastRow = rows[rows.length - 1];
+          let prevAnchorId = 0;
+          for (let i = 0; i < lines.length; i++) {
+            let anchor: any;
+            try {
+              anchor = JSON.parse(lines[i]);
+            } catch (err: any) {
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `MALFORMED_ANCHOR_RECORD: line ${i + 1} is not valid JSON (${err.message})`
+              };
+            }
 
-          // Reconcile latest anchor with latest DB state
-          if (latestAnchor) {
-            if (lastRow.audit_id < latestAnchor.last_audit_id) {
+            if (!anchor || typeof anchor.last_audit_id !== "number" || !anchor.event_hash_sha256) {
               return {
                 valid: false,
                 totalEvents: rows.length,
-                brokenAtEventId: `TAIL_TRUNCATION_DETECTED: Last DB audit_id (${lastRow.audit_id}) is earlier than latest anchor (${latestAnchor.last_audit_id})`
+                brokenAtEventId: `MALFORMED_ANCHOR_RECORD: line ${i + 1} has invalid structure`
               };
             }
-            if (lastRow.audit_id > latestAnchor.last_audit_id) {
+
+            // Check strictly increasing sequence / duplicate / reordering
+            if (anchor.last_audit_id <= prevAnchorId) {
               return {
                 valid: false,
                 totalEvents: rows.length,
-                brokenAtEventId: `UNANCHORED_DB_EVENTS_DETECTED: Database has ${lastRow.audit_id - latestAnchor.last_audit_id} unanchored event(s) (db_max=${lastRow.audit_id}, latest_anchor=${latestAnchor.last_audit_id})`
+                brokenAtEventId: `DUPLICATE_OR_REORDERED_ANCHOR: line ${i + 1} has audit_id ${anchor.last_audit_id} <= previous ${prevAnchorId}`
               };
             }
-            if (
-              lastRow.event_hash_hmac_sha256 !== latestAnchor.event_hash_sha256 &&
-              lastRow.event_hash_sha256 !== latestAnchor.event_hash_sha256
-            ) {
+
+            // Exact 1-to-1 matching with rows[i]
+            const expectedRow = rows[i];
+            if (anchor.last_audit_id !== expectedRow.audit_id) {
               return {
                 valid: false,
                 totalEvents: rows.length,
-                brokenAtEventId: `ANCHOR_HASH_MISMATCH: DB tail hash does not match latest anchor hash (audit_id=${lastRow.audit_id})`
+                brokenAtEventId: `ANCHOR_SEQUENCE_MISMATCH: line ${i + 1} has audit_id ${anchor.last_audit_id}, but expected DB audit_id is ${expectedRow.audit_id}`
               };
             }
+
+            const expectedHash = expectedRow.event_hash_hmac_sha256 || expectedRow.event_hash_sha256;
+            if (anchor.event_hash_sha256 !== expectedHash) {
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `ANCHOR_HASH_MISMATCH: line ${i + 1} (audit_id ${anchor.last_audit_id}) hash does not match DB hash`
+              };
+            }
+
+            prevAnchorId = anchor.last_audit_id;
           }
 
           // Tail truncation check via sqlite_sequence
           try {
             const seqRow = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'audit_events'").get() as any;
-            if (seqRow && Number(seqRow.seq) > lastRow.audit_id) {
+            if (seqRow && Number(seqRow.seq) > rows[rows.length - 1].audit_id) {
               return {
                 valid: false,
                 totalEvents: rows.length,
-                brokenAtEventId: `TAIL_TRUNCATION_DETECTED: sqlite_sequence indicates tail deletion (seq=${seqRow.seq}, max_id=${lastRow.audit_id})`
+                brokenAtEventId: `TAIL_TRUNCATION_DETECTED: sqlite_sequence indicates tail deletion (seq=${seqRow.seq}, max_id=${rows[rows.length - 1].audit_id})`
               };
             }
           } catch {
@@ -397,23 +410,103 @@ export class ObservabilityQuotaService {
   }
 
   public reconcileUnanchoredEvents(): { reconciledCount: number; latestAnchorAuditId: number } {
-    return this.connManager.withReadTransaction((db) => {
+    return this.connManager.withWriteTransaction((db) => {
+      const rows = db.prepare("SELECT * FROM audit_events ORDER BY audit_id ASC").all() as any[];
+      if (rows.length === 0) {
+        return { reconciledCount: 0, latestAnchorAuditId: 0 };
+      }
+
+      // 1. STEP 1: Verify HMAC chain integrity for all events in DB
+      let expectedPrevHash = GENESIS_ANCHOR;
+      for (const row of rows) {
+        if (row.prev_event_hash !== expectedPrevHash) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Database HMAC chain is corrupted at audit_id ${row.audit_id}. Cannot reconcile unanchored events on invalid DB state.`);
+        }
+
+        let detailsParsed: any = {};
+        try {
+          detailsParsed = JSON.parse(row.sanitized_details_json || "{}");
+        } catch {
+          detailsParsed = {};
+        }
+
+        const canonicalPayload = {
+          action_name: row.action_name,
+          credential_id: row.credential_id || "",
+          details: detailsParsed,
+          error_code: row.error_code || "",
+          event_category: row.event_category,
+          event_id: row.event_id || "",
+          outcome: row.outcome,
+          prev_event_hash: expectedPrevHash,
+          principal_id: row.principal_id,
+          principal_type: row.principal_type,
+          recorded_at: row.recorded_at,
+          request_id: row.request_id,
+          source_gateway: row.source_gateway,
+          target_resource: row.target_resource
+        };
+        const payloadToSign = rfc8785Canonicalize(canonicalPayload);
+        const hmac = crypto.createHmac("sha256", this.hmacKey);
+        hmac.update(payloadToSign, "utf8");
+        const computedHash = hmac.digest("hex");
+
+        if (computedHash !== row.event_hash_hmac_sha256) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Database HMAC hash mismatch at audit_id ${row.audit_id}. Cannot reconcile unanchored events on tampered DB.`);
+        }
+
+        expectedPrevHash = row.event_hash_hmac_sha256;
+      }
+
+      // 2. STEP 2: Validate existing anchor file (fail-closed if malformed, corrupted, or tampered)
       let latestAnchorAuditId = 0;
+      const rowByAuditId = new Map<number, any>();
+      for (const r of rows) {
+        rowByAuditId.set(r.audit_id, r);
+      }
+
       if (fs.existsSync(this.anchorFilePath)) {
         const content = fs.readFileSync(this.anchorFilePath, "utf8");
-        const lines = content.split("\n").filter((l) => l.trim().length > 0);
-        for (const line of lines) {
+        const lines = content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+        let prevAnchorId = 0;
+
+        for (let i = 0; i < lines.length; i++) {
+          let anchor: any;
           try {
-            const anchor = JSON.parse(line);
-            if (anchor.last_audit_id > latestAnchorAuditId) {
-              latestAnchorAuditId = anchor.last_audit_id;
-            }
-          } catch {
-            // ignore corrupt line
+            anchor = JSON.parse(lines[i]);
+          } catch (err: any) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Malformed anchor JSON at line ${i + 1}: ${err.message}. Fail-closed: manual intervention required.`);
           }
+
+          if (!anchor || typeof anchor.last_audit_id !== "number" || !anchor.event_hash_sha256) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Malformed anchor record structure at line ${i + 1}. Fail-closed.`);
+          }
+
+          if (anchor.last_audit_id <= prevAnchorId) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file contains duplicate or out-of-order audit_id ${anchor.last_audit_id} at line ${i + 1}. Fail-closed.`);
+          }
+
+          const matchingRow = rowByAuditId.get(anchor.last_audit_id);
+          if (!matchingRow) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor audit_id ${anchor.last_audit_id} does not exist in database (rollback detected). Fail-closed.`);
+          }
+
+          const expectedHash = matchingRow.event_hash_hmac_sha256 || matchingRow.event_hash_sha256;
+          if (anchor.event_hash_sha256 !== expectedHash) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor hash mismatch at audit_id ${anchor.last_audit_id}. Fail-closed.`);
+          }
+
+          // Check continuity: anchor i must match row i
+          if (anchor.last_audit_id !== rows[i].audit_id) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file has gap at line ${i + 1}: expected audit_id ${rows[i].audit_id}, found ${anchor.last_audit_id}. Fail-closed.`);
+          }
+
+          prevAnchorId = anchor.last_audit_id;
+          latestAnchorAuditId = anchor.last_audit_id;
         }
       }
 
+      // 3. STEP 3: Only recover strictly unanchored events (audit_id > latestAnchorAuditId)
       const unanchoredRows = db.prepare(
         "SELECT * FROM audit_events WHERE audit_id > ? ORDER BY audit_id ASC"
       ).all(latestAnchorAuditId) as any[];
@@ -434,7 +527,7 @@ export class ObservabilityQuotaService {
     });
   }
 
-  public recordMcpActivity(params: {
+    public recordMcpActivity(params: {
     ctx: PrincipalContext | null;
     toolName: string;
     durationMs: number;

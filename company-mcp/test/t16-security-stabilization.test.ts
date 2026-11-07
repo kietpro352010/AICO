@@ -359,6 +359,44 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
         () => appService.decideApproval({ ctx: founderCtx, approval_id: selfReqAppr.approval_id, decision: "approved" }),
         /SOD_VIOLATION: Approver cannot be the same entity that requested approval/
       );
+
+      // Requirement 3: decideApproval with ctx authenticated=false
+      assert.throws(
+        () => appService.decideApproval({
+          ctx: { authenticated: false, principalId: "founder-01", principalType: "human" } as any,
+          approval_id: apprFounder.approval_id,
+          decision: "approved"
+        }),
+        /AUTHENTICATION_REQUIRED.*ctx\.authenticated must be true/
+      );
+
+      // Requirement 4: decideApproval with ctx missing authenticated
+      assert.throws(
+        () => appService.decideApproval({
+          ctx: { principalId: "founder-01", principalType: "human" } as any,
+          approval_id: apprFounder.approval_id,
+          decision: "approved"
+        }),
+        /AUTHENTICATION_REQUIRED.*ctx\.authenticated must be true/
+      );
+
+      // Malformed context: empty principalId or invalid principalType
+      assert.throws(
+        () => appService.decideApproval({
+          ctx: { authenticated: true, principalId: "", principalType: "human" } as any,
+          approval_id: apprFounder.approval_id,
+          decision: "approved"
+        }),
+        /AUTHENTICATION_REQUIRED.*Valid principalId is required/
+      );
+      assert.throws(
+        () => appService.decideApproval({
+          ctx: { authenticated: true, principalId: "founder-01", principalType: "invalid_type" } as any,
+          approval_id: apprFounder.approval_id,
+          decision: "approved"
+        }),
+        /AUTHENTICATION_REQUIRED.*Valid principalType/
+      );
     });
 
     await t.test("2.4 P1-02 Approval target binding — expectedTargetAgentId & expectedTargetResource negative tests", () => {
@@ -472,6 +510,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       const exactAppr = appService.createApprovalRequest({
         ctx: flash1Ctx,
         action_type: "critical_task_approval",
+        target_agent_id: critTask.assigned_agent_id || undefined,
         target_resource: `task:${critTask.task_id}`,
         canonical_payload: { taskId: critTask.task_id, riskClass: "critical", priority: "P0" },
         approval_tier: "founder"
@@ -586,6 +625,40 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
         () => (taskService as any).reviewTask({ taskId: tAuth.task_id, decision: "completed" }),
         /AUTHENTICATION_REQUIRED: reviewTask requires an authenticated PrincipalContext/
       );
+
+      // Requirement 1: reviewTask with reviewerId but without ctx throws AUTHENTICATION_REQUIRED
+      assert.throws(
+        () => (taskService as any).reviewTask({ reviewerId: "flash-01", taskId: tAuth.task_id, decision: "completed" }),
+        /AUTHENTICATION_REQUIRED: reviewTask requires an authenticated PrincipalContext/
+      );
+
+      // Requirement 2: reviewTask with ctx authenticated=false throws AUTHENTICATION_REQUIRED
+      assert.throws(
+        () => taskService.reviewTask({
+          ctx: { authenticated: false, principalId: "flash-01", principalType: "agent" } as any,
+          taskId: tAuth.task_id,
+          decision: "completed"
+        }),
+        /AUTHENTICATION_REQUIRED.*ctx\.authenticated must be true/
+      );
+
+      // Malformed reviewTask context: empty principalId or invalid principalType
+      assert.throws(
+        () => taskService.reviewTask({
+          ctx: { authenticated: true, principalId: "", principalType: "agent" } as any,
+          taskId: tAuth.task_id,
+          decision: "completed"
+        }),
+        /AUTHENTICATION_REQUIRED.*valid principalId/
+      );
+      assert.throws(
+        () => taskService.reviewTask({
+          ctx: { authenticated: true, principalId: "flash-01", principalType: "system" } as any,
+          taskId: tAuth.task_id,
+          decision: "completed"
+        }),
+        /AUTHENTICATION_REQUIRED.*valid principalType/
+      );
     });
 
     await t.test("3.4 P1-04 Reviewer authorization: null reviewer_agent_id requires executive leadership", () => {
@@ -636,6 +709,82 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       // 3. Executive leadership (flash-01 or founder-01) CAN approve task with null reviewer
       const compByExec = taskService.transitionTask({ ctx: flash1Ctx, taskId: tNoReviewer.task_id, expectedVersion: 6, toStatus: "completed" });
       assert.equal(compByExec.execution_status, "completed");
+    });
+
+    await t.test("3.5 P1-03 End-to-end task execution target binding in transitionTask", () => {
+      // Create Argon task (Argon tasks strictly start in waiting_approval, version 1)
+      const argonTask = taskService.createTask({
+        ctx: flash1Ctx,
+        title: "Argon Security Audit",
+        assignedAgentId: "argon-01",
+        riskClass: "critical",
+        priority: "P0"
+      });
+      assert.equal(argonTask.execution_status, "waiting_approval");
+
+      // Requirement 5: Task execution with approval having WRONG TARGET AGENT (argon-02 instead of argon-01)
+      const wrongAgentAppr = appService.createApprovalRequest({
+        ctx: flash1Ctx,
+        action_type: "argon_invocation",
+        target_agent_id: "argon-02", // Task assigned to argon-01!
+        target_resource: `task:${argonTask.task_id}`,
+        canonical_payload: { taskId: argonTask.task_id, targetAgentId: "argon-01" },
+        approval_tier: "founder"
+      });
+      appService.decideApproval({ ctx: founderCtx, approval_id: wrongAgentAppr.approval_id, decision: "approved" });
+
+      assert.throws(
+        () => taskService.transitionTask({
+          ctx: flash1Ctx,
+          taskId: argonTask.task_id,
+          expectedVersion: 1,
+          toStatus: "queued",
+          approvalId: wrongAgentAppr.approval_id
+        }),
+        /TARGET_AGENT_MISMATCH/
+      );
+
+      // Requirement 6: Task execution with approval having WRONG TARGET RESOURCE
+      const wrongResourceAppr = appService.createApprovalRequest({
+        ctx: flash1Ctx,
+        action_type: "argon_invocation",
+        target_agent_id: "argon-01",
+        target_resource: "task:different_task_999", // Mismatched resource!
+        canonical_payload: { taskId: argonTask.task_id, targetAgentId: "argon-01" },
+        approval_tier: "founder"
+      });
+      appService.decideApproval({ ctx: founderCtx, approval_id: wrongResourceAppr.approval_id, decision: "approved" });
+
+      assert.throws(
+        () => taskService.transitionTask({
+          ctx: flash1Ctx,
+          taskId: argonTask.task_id,
+          expectedVersion: 1,
+          toStatus: "queued",
+          approvalId: wrongResourceAppr.approval_id
+        }),
+        /TARGET_RESOURCE_MISMATCH/
+      );
+
+      // Exact match approval succeeds: moves waiting_approval -> queued
+      const exactAppr = appService.createApprovalRequest({
+        ctx: flash1Ctx,
+        action_type: "argon_invocation",
+        target_agent_id: "argon-01",
+        target_resource: `task:${argonTask.task_id}`,
+        canonical_payload: { taskId: argonTask.task_id, targetAgentId: "argon-01" },
+        approval_tier: "founder"
+      });
+      appService.decideApproval({ ctx: founderCtx, approval_id: exactAppr.approval_id, decision: "approved" });
+
+      const queued = taskService.transitionTask({
+        ctx: flash1Ctx,
+        taskId: argonTask.task_id,
+        expectedVersion: 1,
+        toStatus: "queued",
+        approvalId: exactAppr.approval_id
+      });
+      assert.equal(queued.execution_status, "queued");
     });
 
     // ------------------------------------------------------------------------
@@ -793,7 +942,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       assert.equal(verifyTailTruncation.valid, false, "Tail truncation after anchor must be detected");
       assert.match(
         String(verifyTailTruncation.brokenAtEventId),
-        /TAIL_TRUNCATION_DETECTED|anchor_rollback_detected/,
+        /TAIL_TRUNCATION_DETECTED|anchor_rollback_detected|ANCHOR_COVERAGE_EXCESS/,
         "Must flag tail truncation or anchor rollback"
       );
 
@@ -880,7 +1029,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       // 3. Verification MUST detect unanchored event at DB tail!
       const unanchoredCheck = drillObs.verifyAuditChainIntegrity();
       assert.equal(unanchoredCheck.valid, false, "Must detect that DB tail is ahead of latest anchor");
-      assert.match(String(unanchoredCheck.brokenAtEventId), /UNANCHORED_DB_EVENTS_DETECTED/);
+      assert.match(String(unanchoredCheck.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT|UNANCHORED_DB_EVENTS_DETECTED/);
 
       // 4. RECONCILIATION: Reconcile unanchored events to catch up anchor log
       const reconcileRes = drillObs.reconcileUnanchoredEvents();
@@ -895,6 +1044,177 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       if (fs.existsSync(freshAnchorPath)) {
         fs.unlinkSync(freshAnchorPath);
       }
+    });
+
+    // Requirement 7: Xóa anchor ở giữa file (Middle anchor deletion detected)
+    await t.test("5.3 P1-04 Coverage verification: middle anchor deletion detection", () => {
+      const middleAnchorPath = path.join(os.tmpdir(), `aico-anchor-mid-${Date.now()}.jsonl`);
+      const obsMid = new ObservabilityQuotaService(conn, "test_hmac_secret_key_v221_32bytes_long", middleAnchorPath);
+
+      // Clean DB table for clean test environment
+      conn.withWriteTransaction((db: any) => {
+        db.exec("DELETE FROM audit_events;");
+      });
+
+      // Insert 3 audit events
+      for (let i = 1; i <= 3; i++) {
+        obsMid.appendAuditEvent({
+          ctx: flash1Ctx,
+          sourceGateway: "local",
+          principalType: "agent",
+          principalId: "flash-01",
+          credentialId: "cred_01",
+          eventCategory: "task",
+          actionName: `mid_event_${i}`,
+          targetResource: `res:${i}`,
+          outcome: "succeeded",
+          errorCode: null,
+          sanitizedDetails: { step: i }
+        });
+      }
+
+      // Initial integrity check passes
+      assert.equal(obsMid.verifyAuditChainIntegrity().valid, true);
+
+      // Delete the middle anchor line (line 2 of 3)
+      const content = fs.readFileSync(middleAnchorPath, "utf8");
+      const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+      assert.equal(lines.length, 3);
+      // Write lines [0, 2] omitting line 1
+      fs.writeFileSync(middleAnchorPath, lines[0] + "\n" + lines[2] + "\n", "utf8");
+
+      // Verification MUST detect missing middle anchor (coverage deficit or sequence mismatch)
+      const midCheck = obsMid.verifyAuditChainIntegrity();
+      assert.equal(midCheck.valid, false, "Must detect middle anchor deletion");
+      assert.match(String(midCheck.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT|ANCHOR_SEQUENCE_MISMATCH/);
+
+      if (fs.existsSync(middleAnchorPath)) fs.unlinkSync(middleAnchorPath);
+    });
+
+    // Requirement 8: Anchor duplicate / reordered / malformed records detected
+    await t.test("5.4 P1-04 Anchor duplicate, reordered, and malformed records detected", () => {
+      const dupAnchorPath = path.join(os.tmpdir(), `aico-anchor-dup-${Date.now()}.jsonl`);
+      const obsDup = new ObservabilityQuotaService(conn, "test_hmac_secret_key_v221_32bytes_long", dupAnchorPath);
+
+      conn.withWriteTransaction((db: any) => {
+        db.exec("DELETE FROM audit_events;");
+      });
+
+      for (let i = 1; i <= 3; i++) {
+        obsDup.appendAuditEvent({
+          ctx: flash1Ctx,
+          sourceGateway: "local",
+          principalType: "agent",
+          principalId: "flash-01",
+          credentialId: "cred_01",
+          eventCategory: "task",
+          actionName: `dup_event_${i}`,
+          targetResource: `res:${i}`,
+          outcome: "succeeded",
+          errorCode: null,
+          sanitizedDetails: { step: i }
+        });
+      }
+
+      const validContent = fs.readFileSync(dupAnchorPath, "utf8");
+      const lines = validContent.split(/\r?\n/).filter(l => l.trim().length > 0);
+      assert.equal(lines.length, 3);
+
+      // 8a. Malformed JSON line
+      fs.writeFileSync(dupAnchorPath, lines[0] + "\n{corrupt_json_line\n" + lines[2] + "\n", "utf8");
+      const malformedCheck = obsDup.verifyAuditChainIntegrity();
+      assert.equal(malformedCheck.valid, false);
+      assert.match(String(malformedCheck.brokenAtEventId), /MALFORMED_ANCHOR_RECORD/);
+
+      // 8b. Duplicate anchor line [lines[0], lines[1], lines[1], lines[2]]
+      fs.writeFileSync(dupAnchorPath, lines[0] + "\n" + lines[1] + "\n" + lines[1] + "\n" + lines[2] + "\n", "utf8");
+      const duplicateCheck = obsDup.verifyAuditChainIntegrity();
+      assert.equal(duplicateCheck.valid, false);
+      assert.match(String(duplicateCheck.brokenAtEventId), /ANCHOR_COVERAGE_EXCESS|DUPLICATE_OR_REORDERED_ANCHOR/);
+
+      // 8c. Reordered anchor lines [lines[1], lines[0], lines[2]]
+      fs.writeFileSync(dupAnchorPath, lines[1] + "\n" + lines[0] + "\n" + lines[2] + "\n", "utf8");
+      const reorderedCheck = obsDup.verifyAuditChainIntegrity();
+      assert.equal(reorderedCheck.valid, false);
+      assert.match(String(reorderedCheck.brokenAtEventId), /DUPLICATE_OR_REORDERED_ANCHOR|ANCHOR_SEQUENCE_MISMATCH/);
+
+      if (fs.existsSync(dupAnchorPath)) fs.unlinkSync(dupAnchorPath);
+    });
+
+    // Requirement 9: Reconcile trên HMAC chain bị sửa (Refuses to reconcile tampered DB)
+    await t.test("5.5 P1-05 Safe reconciliation refuses to reconcile on tampered HMAC chain", () => {
+      const tamperAnchorPath = path.join(os.tmpdir(), `aico-anchor-tamper-${Date.now()}.jsonl`);
+      const obsTamper = new ObservabilityQuotaService(conn, "test_hmac_secret_key_v221_32bytes_long", tamperAnchorPath);
+
+      conn.withWriteTransaction((db: any) => {
+        db.exec("DELETE FROM audit_events;");
+      });
+
+      for (let i = 1; i <= 3; i++) {
+        obsTamper.appendAuditEvent({
+          ctx: flash1Ctx,
+          sourceGateway: "local",
+          principalType: "agent",
+          principalId: "flash-01",
+          credentialId: "cred_01",
+          eventCategory: "task",
+          actionName: `tamper_event_${i}`,
+          targetResource: `res:${i}`,
+          outcome: "succeeded",
+          errorCode: null,
+          sanitizedDetails: { step: i }
+        });
+      }
+
+      // Tamper DB row for event 2
+      conn.withWriteTransaction((db: any) => {
+        db.prepare("UPDATE audit_events SET target_resource = 'tampered:res' WHERE audit_id = (SELECT MAX(audit_id) - 1 FROM audit_events)").run();
+      });
+
+      // Safe reconciliation MUST refuse to run and throw fail-closed
+      assert.throws(
+        () => obsTamper.reconcileUnanchoredEvents(),
+        /SAFE_RECONCILIATION_REFUSED: Database HMAC/
+      );
+
+      if (fs.existsSync(tamperAnchorPath)) fs.unlinkSync(tamperAnchorPath);
+    });
+
+    // Requirement 10: Reconcile khi anchor file bị hỏng (Refuses to reconcile when anchor file is corrupted)
+    await t.test("5.6 P1-05 Safe reconciliation refuses to reconcile when anchor file is corrupted", () => {
+      const corruptAnchorPath = path.join(os.tmpdir(), `aico-anchor-corrupt-${Date.now()}.jsonl`);
+      const obsCorrupt = new ObservabilityQuotaService(conn, "test_hmac_secret_key_v221_32bytes_long", corruptAnchorPath);
+
+      conn.withWriteTransaction((db: any) => {
+        db.exec("DELETE FROM audit_events;");
+      });
+
+      for (let i = 1; i <= 3; i++) {
+        obsCorrupt.appendAuditEvent({
+          ctx: flash1Ctx,
+          sourceGateway: "local",
+          principalType: "agent",
+          principalId: "flash-01",
+          credentialId: "cred_01",
+          eventCategory: "task",
+          actionName: `corrupt_event_${i}`,
+          targetResource: `res:${i}`,
+          outcome: "succeeded",
+          errorCode: null,
+          sanitizedDetails: { step: i }
+        });
+      }
+
+      // Corrupt anchor file with invalid JSON
+      fs.appendFileSync(corruptAnchorPath, "\n{invalid_json_garbage_data\n", "utf8");
+
+      // Safe reconciliation MUST refuse to run and throw fail-closed
+      assert.throws(
+        () => obsCorrupt.reconcileUnanchoredEvents(),
+        /SAFE_RECONCILIATION_REFUSED: Malformed anchor/
+      );
+
+      if (fs.existsSync(corruptAnchorPath)) fs.unlinkSync(corruptAnchorPath);
     });
 
     // ------------------------------------------------------------------------

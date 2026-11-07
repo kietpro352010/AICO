@@ -238,11 +238,20 @@ export class ApprovalService {
     const approvalId = params.approvalId || params.approval_id;
     if (!approvalId) throw new Error("Approval ID required");
 
-    if (!params.ctx || !params.ctx.principalId) {
+    if (!params.ctx) {
       throw new Error("AUTHENTICATION_REQUIRED: Authenticated PrincipalContext is mandatory to decide approval");
     }
+    if (params.ctx.authenticated !== true) {
+      throw new Error("AUTHENTICATION_REQUIRED: Authenticated PrincipalContext is mandatory to decide approval (ctx.authenticated must be true)");
+    }
+    if (!params.ctx.principalId || typeof params.ctx.principalId !== "string" || params.ctx.principalId.trim().length === 0) {
+      throw new Error("AUTHENTICATION_REQUIRED: Valid principalId is required in PrincipalContext to decide approval");
+    }
+    if (!params.ctx.principalType || (params.ctx.principalType !== "human" && params.ctx.principalType !== "agent")) {
+      throw new Error("AUTHENTICATION_REQUIRED: Valid principalType ('human' | 'agent') is required in PrincipalContext to decide approval");
+    }
     const deciderId = params.ctx.principalId;
-    const deciderType = params.ctx.principalType || "agent";
+    const deciderType = params.ctx.principalType;
     const note = params.decision_note || params.reason || `Decision: ${params.decision}`;
     const now = new Date();
     const nowIso = now.toISOString();
@@ -280,13 +289,13 @@ export class ApprovalService {
         }
         decidedByHumanId = "founder-01";
       } else {
-        // Technical tier
-        if (deciderId === "founder-01") {
+        // Technical tier: must be authenticated human founder-01 or authenticated agent flash-01
+        if (deciderId === "founder-01" && deciderType === "human") {
           decidedByHumanId = "founder-01";
-        } else if (deciderId === "flash-01") {
+        } else if (deciderId === "flash-01" && deciderType === "agent") {
           decidedByAgentId = "flash-01";
         } else {
-          throw new Error("PERMISSION_DENIED: Technical tier approvals can only be decided by founder-01 or flash-01");
+          throw new Error("PERMISSION_DENIED: Technical tier approvals can only be decided by authenticated founder-01 (human) or flash-01 (agent)");
         }
       }
 
