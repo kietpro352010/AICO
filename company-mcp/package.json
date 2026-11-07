@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --import tsx --test \"test/**/*.test.ts\""
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "aico:dashboard": "tsx src/scripts/aico-founder-cli.ts dashboard"
   },
   "keywords": [],
   "author": "",
@@ -20,5 +22,10 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }

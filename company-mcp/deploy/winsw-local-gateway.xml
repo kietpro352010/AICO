@@ -1,0 +1,18 @@
+<service>
+  <id>AicoLocalGateway</id>
+  <name>AICO Local MCP Gateway (:3334)</name>
+  <description>AICO Autonomous AI Company Local MCP Gateway Service on port 3334</description>
+  <executable>node.exe</executable>
+  <arguments>node_modules/tsx/dist/cli.mjs src/http-registry.ts</arguments>
+  <workingdirectory>D:\AI-COMPANY\company-mcp</workingdirectory>
+  <logpath>D:\AI-COMPANY\logs\winsw-local</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>10</keepFiles>
+  </log>
+  <onfailure action="restart" delay="10000" />
+  <env name="NODE_ENV" value="production" />
+  <env name="AICO_PORT" value="3334" />
+  <env name="AICO_DB_PATH" value="D:\AI-COMPANY\data\aico.db" />
+  <env name="AICO_MANIFEST_PATH" value="D:\AI-COMPANY\company-manifest.json" />
+</service>

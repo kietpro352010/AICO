@@ -1,0 +1,19 @@
+<service>
+  <!-- AICO Public Gateway (:3335) - DISABLED BY DEFAULT (FDR-06 / Gate G7 Pending) -->
+  <id>AicoPublicGateway</id>
+  <name>AICO Public MCP Gateway (:3335)</name>
+  <description>AICO Public MCP Gateway Service on port 3335 (Disabled by policy)</description>
+  <executable>node.exe</executable>
+  <arguments>node_modules/tsx/dist/cli.mjs src/http-public.ts</arguments>
+  <workingdirectory>D:\AI-COMPANY\company-mcp</workingdirectory>
+  <logpath>D:\AI-COMPANY\logs\winsw-public</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>10</keepFiles>
+  </log>
+  <onfailure action="none" />
+  <env name="NODE_ENV" value="production" />
+  <env name="AICO_PUBLIC_PORT" value="3335" />
+  <env name="AICO_PUBLIC_GATEWAY_ENABLED" value="false" />
+  <env name="AICO_DB_PATH" value="D:\AI-COMPANY\data\aico.db" />
+</service>

@@ -1,6 +1,14 @@
-﻿on_http_request:
-  - actions:
-      - type: add-headers
-        config:
-          headers:
-            host: localhost
+# AICO Ngrok Policy - Hardened Configuration (v2.2.1)
+# Status: DISABLED by default until Founder explicit G7 release gate approval.
+# Notice: Host header rewrite (host: localhost) has been strictly removed.
+# Port 4040 payload inspection disabled to prevent sensitive token/payload caching.
+
+version: 2
+authtoken_from_env: true
+
+tunnels:
+  aico_public:
+    proto: http
+    addr: 127.0.0.1:3335
+    inspect: false
+    bind_tls: true

@@ -29,6 +29,13 @@ export class ConnectionManager {
     };
   }
 
+  public getDatabase(): DatabaseSync {
+    const db = new DatabaseSync(this.dbPath);
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.exec("PRAGMA foreign_keys = ON;");
+    return db;
+  }
+
   public withReadTransaction<T>(operation: (db: DatabaseSync) => T): T {
     const { db, close } = this.getConnection();
     try {

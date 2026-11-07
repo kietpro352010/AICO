@@ -24,3 +24,17 @@ export function loadRuntimeConfig(): AicoConfig {
     environment: (process.env.NODE_ENV as AicoConfig["environment"]) || "development"
   };
 }
+
+export class RuntimeConfig {
+  public static getDbPath(): string {
+    return loadRuntimeConfig().dbPath;
+  }
+
+  public static getManifestPath(): string {
+    return loadRuntimeConfig().manifestPath;
+  }
+
+  public static getConfig(): AicoConfig {
+    return loadRuntimeConfig();
+  }
+}

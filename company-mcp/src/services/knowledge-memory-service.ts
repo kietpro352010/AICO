@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { ConnectionManager } from "../db/connection-manager.js";
 
@@ -102,12 +103,14 @@ export class KnowledgeMemoryService {
 
   public searchMemory(params: {
     callerAgentId: string;
+    query?: string;
     scope?: string;
     projectId?: string;
     taskId?: string;
+    limit?: number;
   }): any[] {
     return this.connManager.withReadTransaction((db) => {
-      return db.prepare(`
+      let sql = `
         SELECT * FROM memory_entries
         WHERE (
           (memory_scope = 'company' AND status = 'verified') OR
@@ -115,18 +118,36 @@ export class KnowledgeMemoryService {
           (memory_scope = 'project' AND project_id = ?) OR
           (memory_scope = 'task_context' AND task_id = ?)
         )
-      `).all(params.callerAgentId, params.projectId || null, params.taskId || null);
+      `;
+      const sqlParams: any[] = [params.callerAgentId, params.projectId || null, params.taskId || null];
+
+      if (params.scope) {
+        sql += " AND memory_scope = ?";
+        sqlParams.push(params.scope);
+      }
+      if (params.query) {
+        sql += " AND content_markdown LIKE ?";
+        sqlParams.push(`%${params.query}%`);
+      }
+
+      sql += " ORDER BY created_at DESC LIMIT ?";
+      sqlParams.push(params.limit || 20);
+
+      return db.prepare(sql).all(...sqlParams);
     });
   }
 
   public writeMemory(entry: {
-    memoryId: string;
-    scope: "company" | "agent_private" | "project" | "task_context";
+    memoryId?: string;
+    scope: string;
+    callerAgentId?: string;
     ownerAgentId?: string;
     projectId?: string;
     taskId?: string;
     content: string;
-  }): void {
+  }): { memory_id: string; scope: string; status: string } {
+    const memoryId = entry.memoryId || "mem_" + crypto.randomBytes(12).toString("hex");
+    const ownerId = entry.ownerAgentId || entry.callerAgentId || null;
     const status = entry.scope === "company" ? "proposed" : "verified";
 
     this.connManager.withWriteTransaction((db) => {
@@ -135,9 +156,9 @@ export class KnowledgeMemoryService {
           memory_id, memory_scope, owner_agent_id, project_id, task_id, status, content_markdown, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        entry.memoryId,
+        memoryId,
         entry.scope,
-        entry.ownerAgentId || null,
+        ownerId,
         entry.projectId || null,
         entry.taskId || null,
         status,
@@ -145,5 +166,7 @@ export class KnowledgeMemoryService {
         new Date().toISOString()
       );
     });
+
+    return { memory_id: memoryId, scope: entry.scope, status };
   }
 }

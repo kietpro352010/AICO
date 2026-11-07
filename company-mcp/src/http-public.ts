@@ -1,125 +1,57 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import type { Request, Response, NextFunction } from "express";
+import { createFullMcpServer } from "./registry-core.js";
+import { ConnectionManager } from "./db/connection-manager.js";
+import { RuntimeConfig } from "./config/runtime-config.js";
+import { IdentityAccessService } from "./services/identity-access-service.js";
 import {
-  createBaseMcpServer,
-  REGISTRY_VERSION,
-  SERVER_NAME
-} from "./registry-core.js";
+  HttpSecurityPipeline,
+  PUBLIC_GATEWAY_PROFILE
+} from "./security/http-security-pipeline.js";
 
-const REQUIRED_TOKEN = process.env.AICO_MCP_PUBLIC_TOKEN;
+// FDR-06: Public Gateway (:3335) is strictly DISABLED by default
+const IS_ENABLED = process.env.AICO_PUBLIC_GATEWAY_ENABLED === "true";
 
-if (!REQUIRED_TOKEN || REQUIRED_TOKEN.trim().length === 0) {
-  console.error("FATAL: AICO_MCP_PUBLIC_TOKEN is not configured in environment. Public gateway startup aborted.");
-  process.exit(1);
+if (!IS_ENABLED) {
+  console.log("AICO MCP Public Gateway (:3335) is DISABLED by policy (FDR-06 / Gate G7 pending).");
+  console.log("To enable under Founder authorization, set AICO_PUBLIC_GATEWAY_ENABLED=true.");
+  process.exit(0);
 }
 
 const HOST = "127.0.0.1";
 const PORT = 3335;
 
-// Allowed hostnames for the public prototype: localhost loopback and the designated ngrok domain
-const ALLOWED_HOSTS = [
-  "localhost",
-  "127.0.0.1",
-  "[::1]",
-  "scribble-boundless-treble.ngrok-free.dev"
-];
+const conn = new ConnectionManager(RuntimeConfig.getDbPath());
+const identityService = new IdentityAccessService(conn);
+const pipeline = new HttpSecurityPipeline(PUBLIC_GATEWAY_PROFILE, identityService);
 
 function createServer() {
-  return createBaseMcpServer();
+  // Public Gateway only registers 29 allowlisted tools; 9 admin/physical tools are strictly blocked
+  return createFullMcpServer({ isPublicGateway: true, connManager: conn });
 }
 
 const handler = createMcpHandler(createServer);
-const nodeHandler = toNodeHandler(handler);
-
-// Independent Express app with explicitly configured allowedHosts
 const app = createMcpExpressApp({
   host: HOST,
-  allowedHosts: ALLOWED_HOSTS
+  allowedHosts: PUBLIC_GATEWAY_PROFILE.allowedHosts
 });
+const nodeHandler = toNodeHandler(handler);
 
-// Bearer Token authentication middleware
-function requireBearerToken(req: Request, res: Response, next: NextFunction): void {
-  const authHeader = req.headers.authorization;
+// Attach 10-step security pipeline (enforcing body size 256 KiB, 15s timeout, Bearer token, agent-only)
+app.use(pipeline.middleware());
 
-  if (!authHeader) {
-    res.status(401).json({
-      jsonrpc: "2.0",
-      error: {
-        code: -32001,
-        message: "Unauthorized: Missing Authorization header. Bearer token required."
-      },
-      id: null
-    });
-    return;
-  }
-
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2 || parts[0].toLowerCase() !== "bearer") {
-    res.status(401).json({
-      jsonrpc: "2.0",
-      error: {
-        code: -32001,
-        message: "Unauthorized: Invalid Authorization header format. Expected 'Bearer <token>'."
-      },
-      id: null
-    });
-    return;
-  }
-
-  const token = parts[1];
-  if (token !== REQUIRED_TOKEN) {
-    res.status(401).json({
-      jsonrpc: "2.0",
-      error: {
-        code: -32001,
-        message: "Unauthorized: Invalid Bearer token."
-      },
-      id: null
-    });
-    return;
-  }
-
-  next();
-}
-
-// Public health endpoint: DOES NOT expose metadata or agent lists without auth
-app.get("/health", (req, res) => {
-  const authHeader = req.headers.authorization;
-  const isAuth = authHeader && authHeader === `Bearer ${REQUIRED_TOKEN}`;
-
-  if (!isAuth) {
-    // Unauthenticated health response: returns strictly minimal status without internal topology
-    res.json({
-      status: "online",
-      gateway: "AICO MCP Public Gateway Prototype"
-    });
-    return;
-  }
-
-  // Authenticated health response: includes version and service info
-  res.json({
-    status: "online",
-    gateway: "AICO MCP Public Gateway Prototype",
-    server: SERVER_NAME,
-    version: REGISTRY_VERSION,
-    auth: "verified"
-  });
-});
-
-// Protected MCP endpoint: Authentication middleware MUST run before nodeHandler
-app.all("/mcp", requireBearerToken, (req, res) => {
+app.all("/mcp", (req, res) => {
   void nodeHandler(req, res, req.body);
 });
 
-const httpServer = app.listen(PORT, HOST, () => {
-  console.log(`[AICO Public Gateway] Server listening on http://${HOST}:${PORT}`);
-  console.log(`[AICO Public Gateway] Allowed hosts: ${ALLOWED_HOSTS.join(", ")}`);
-  console.log(`[AICO Public Gateway] MCP endpoint: http://${HOST}:${PORT}/mcp (Bearer Auth required)`);
+export const httpServer = app.listen(PORT, HOST, () => {
+  console.log(`AICO Company MCP Public Gateway v2.2.1 started on http://${HOST}:${PORT}`);
+  console.log(`Health: http://${HOST}:${PORT}/health`);
+  console.log(`MCP:    http://${HOST}:${PORT}/mcp`);
 });
 
 httpServer.on("error", (error) => {
-  console.error("[AICO Public Gateway] Server error:", error);
+  console.error("AICO Public Gateway error:", error);
   process.exitCode = 1;
 });
