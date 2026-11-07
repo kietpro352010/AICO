@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { TokenBucketRateLimiter } from "./rate-limiter.js";
 import { IdentityAccessService, type PrincipalContext } from "../services/identity-access-service.js";
 import { SecretScanner } from "./secret-scanner.js";
+import { requestContextStore } from "./context-store.js";
 
 export interface GatewaySecurityProfile {
   gatewayType: "local" | "public";
@@ -202,7 +203,11 @@ export class HttpSecurityPipeline {
       }
 
       const rawToken = authHeader.substring(7).trim();
-      const principal = this.identityService.authenticateToken(rawToken, this.profile.gatewayType === "public");
+      const principal = this.identityService.authenticateToken(
+        rawToken,
+        this.profile.gatewayType as "local" | "public",
+        authReq.requestId
+      );
 
       if (!principal || !principal.authenticated) {
         await new Promise((r) => setTimeout(r, 20 + Math.random() * 30));
@@ -248,7 +253,9 @@ export class HttpSecurityPipeline {
       }
 
       authReq.principalContext = principal;
-      next();
+      requestContextStore.run(principal, () => {
+        next();
+      });
     };
   }
 }

@@ -1,17 +1,32 @@
 # AICO Windows NTFS ACL Configuration Script (v2.2.1)
-# Enforces Option A (OS-level isolation with separate SIDs) or fallback logical isolation
+# Enforces Option A (OS-level isolation with dedicated SIDs: aico_svc, aico_flash1, aico_flash2, aico_codex)
 param(
   [switch]$Apply = $false,
+  [switch]$OptionA = $true,
   [string]$AicoRoot = "D:\AI-COMPANY",
   [string]$BackupDir = "D:\AI-COMPANY\backup"
 )
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-IcaclsCommand {
+  param(
+    [string]$Target,
+    [string[]]$ArgsList
+  )
+  Write-Host "   -> icacls $Target $($ArgsList -join ' ')"
+  & icacls $Target @ArgsList
+  if ($LASTEXITCODE -ne 0) {
+    throw "ICACLS_ERROR: icacls returned exit code $LASTEXITCODE for target '$Target'"
+  }
+}
+
 Write-Host "=========================================================="
-Write-Host "  AICO NTFS ACL ENFORCEMENT TOOLKIT (v2.2.1)"
+Write-Host "  AICO NTFS ACL ENFORCEMENT TOOLKIT (v2.2.1) - Option A"
 Write-Host "=========================================================="
-Write-Host "Target Root: $AicoRoot"
+Write-Host "Target Root : $AicoRoot"
+Write-Host "Backup Dir  : $BackupDir"
+Write-Host "Mode        : $(if ($Apply) { 'ENFORCING (-Apply)' } else { 'DRY-RUN (audit only)' })"
 
 if (-not (Test-Path $AicoRoot)) {
   Write-Error "AICO Root directory does not exist: $AicoRoot"
@@ -26,33 +41,87 @@ if (-not (Test-Path $BackupDir)) {
 }
 
 Write-Host "1. Backing up existing NTFS ACLs to: $aclBackupFile"
-icacls "$AicoRoot\*" /save "$aclBackupFile" /t /c /q
+Invoke-IcaclsCommand "$AicoRoot\*" @("/save", "$aclBackupFile", "/t", "/c", "/q")
 
 if (-not $Apply) {
-  Write-Host "[DRY RUN] ACL backup completed. Pass -Apply switch to enforce permissions."
+  Write-Host "[DRY RUN COMPLETE] ACL backup generated at $aclBackupFile."
+  Write-Host "[DRY RUN COMPLETE] Pass -Apply switch when Founder approves Gate G2."
   exit 0
 }
 
 Write-Host "2. Enforcing Isolation Boundaries on Scoped Directories..."
 
-# Core data directory: Protected (Only Founder and Service Account)
 $dataDir = Join-Path $AicoRoot "data"
-if (Test-Path $dataDir) {
-  Write-Host "   - Protecting $dataDir"
-  icacls "$dataDir" /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "kietp:(OI)(CI)F" /c /q
-}
-
-# Logs directory
 $logsDir = Join-Path $AicoRoot "logs"
-if (Test-Path $logsDir) {
-  Write-Host "   - Protecting $logsDir"
-  icacls "$logsDir" /grant:r "kietp:(OI)(CI)F" /c /q
+$agentsDir = Join-Path $AicoRoot "agents"
+
+# Verify if service account exists on host
+$hasServiceAccount = $false
+try {
+  $accountCheck = net user aico_svc 2>&1
+  if ($LASTEXITCODE -eq 0) { $hasServiceAccount = $true }
+} catch {
+  $hasServiceAccount = $false
 }
 
-# Backup directory
+# 2.1 Core data directory: Protected (SYSTEM, Administrators, Founder, Service Account)
+if (Test-Path $dataDir) {
+  Write-Host "   - Configuring $dataDir"
+  $grants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
+  if ($hasServiceAccount) {
+    $grants += "aico_svc:(OI)(CI)M"
+  } else {
+    Write-Warning "User 'aico_svc' not found on system. Service account grant skipped until account creation."
+  }
+  $dataArgs = @("/inheritance:r", "/grant:r") + $grants + @("/c", "/q")
+  Invoke-IcaclsCommand "$dataDir" $dataArgs
+}
+
+# 2.2 Logs directory: Service can write, Founder can read/write
+if (Test-Path $logsDir) {
+  Write-Host "   - Configuring $logsDir"
+  $grants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
+  if ($hasServiceAccount) { $grants += "aico_svc:(OI)(CI)M" }
+  $logsArgs = @("/grant:r") + $grants + @("/c", "/q")
+  Invoke-IcaclsCommand "$logsDir" $logsArgs
+}
+
+# 2.3 Backup directory: Service can write, Founder can read/write
 if (Test-Path $BackupDir) {
-  Write-Host "   - Protecting $BackupDir"
-  icacls "$BackupDir" /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "kietp:(OI)(CI)F" /c /q
+  Write-Host "   - Configuring $BackupDir"
+  $grants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
+  if ($hasServiceAccount) { $grants += "aico_svc:(OI)(CI)M" }
+  $backupArgs = @("/inheritance:r", "/grant:r") + $grants + @("/c", "/q")
+  Invoke-IcaclsCommand "$BackupDir" $backupArgs
+}
+
+# 2.4 Option A: Agent Workspaces Isolation
+if ($OptionA -and (Test-Path $agentsDir)) {
+  Write-Host "3. Configuring per-agent isolated workspace DACLs (Option A)..."
+  $agentWorkspaces = @{
+    "flash-01" = "aico_flash1"
+    "flash-02" = "aico_flash2"
+    "codex-01" = "aico_codex"
+  }
+
+  foreach ($agent in $agentWorkspaces.Keys) {
+    $wsPath = Join-Path $agentsDir $agent
+    if (Test-Path $wsPath) {
+      $agentUser = $agentWorkspaces[$agent]
+      $userExists = $false
+      try {
+        $uCheck = net user $agentUser 2>&1
+        if ($LASTEXITCODE -eq 0) { $userExists = $true }
+      } catch { $userExists = $false }
+
+      $wsGrants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
+      if ($userExists) {
+        $wsGrants += "$agentUser`:(OI)(CI)M"
+      }
+      $wsArgs = @("/grant:r") + $wsGrants + @("/c", "/q")
+      Invoke-IcaclsCommand "$wsPath" $wsArgs
+    }
+  }
 }
 
 Write-Host "=========================================================="

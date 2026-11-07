@@ -17,7 +17,6 @@
     "@modelcontextprotocol/node": "^2.1.2",
     "@modelcontextprotocol/server": "^2.4.0",
     "express": "^5.3.0",
-    "tsx": "^4.23.15",
     "zod": "^4.6.7"
   },
   "allowScripts": {
@@ -26,6 +25,7 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

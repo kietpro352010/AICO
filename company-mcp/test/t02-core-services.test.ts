@@ -44,7 +44,7 @@ test("T02: Core Services — Identity, Approvals and Workspace Artifact Guard", 
     const payload = { action: "deploy", target: "staging", version: "1.0.0" };
 
     const { approvalId, payloadHashSha256 } = appService.createApprovalRequest({
-      actionType: "deploy_action",
+      actionType: "acl_or_service_change",
       requestedBy: "flash-01",
       requiredApprover: "founder-01",
       canonicalPayload: payload
@@ -63,7 +63,7 @@ test("T02: Core Services — Identity, Approvals and Workspace Artifact Guard", 
     // Consume approval once
     const consume1 = appService.consumeApproval({
       approvalId,
-      expectedActionType: "deploy_action",
+      expectedActionType: "acl_or_service_change",
       canonicalPayload: payload
     });
     assert.equal(consume1.valid, true);
@@ -71,7 +71,7 @@ test("T02: Core Services — Identity, Approvals and Workspace Artifact Guard", 
     // Ensure cannot be re-consumed (Replay attack defense)
     const consume2 = appService.consumeApproval({
       approvalId,
-      expectedActionType: "deploy_action",
+      expectedActionType: "acl_or_service_change",
       canonicalPayload: payload
     });
     assert.equal(consume2.valid, false);

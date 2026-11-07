@@ -9,6 +9,7 @@ import {
   HttpSecurityPipeline,
   LOCAL_GATEWAY_PROFILE
 } from "./security/http-security-pipeline.js";
+import { requestContextStore } from "./security/context-store.js";
 
 const HOST = "127.0.0.1";
 const PORT = 3334;
@@ -29,7 +30,14 @@ const nodeHandler = toNodeHandler(handler);
 app.use(pipeline.middleware());
 
 app.all("/mcp", (req, res) => {
-  void nodeHandler(req, res, req.body);
+  const principal = (req as any).principalContext;
+  if (principal) {
+    requestContextStore.run(principal, () => {
+      void nodeHandler(req, res, req.body);
+    });
+  } else {
+    void nodeHandler(req, res, req.body);
+  }
 });
 
 export const httpServer = app.listen(PORT, HOST, () => {

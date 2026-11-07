@@ -66,7 +66,10 @@ describe("AICO Quality Baseline Test Suite", () => {
     assert.ok(existsSync(manifestPath), "company-manifest.json must exist at repository root");
 
     const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    assert.strictEqual(manifest.manifest_version, "1.0.0");
+    assert.ok(
+      manifest.manifest_version === "1.0.0" || manifest.manifest_version === "1.1.0",
+      `manifest_version must be 1.0.0 or 1.1.0 (found ${manifest.manifest_version})`
+    );
     assert.strictEqual(manifest.company.id, "AICO");
     assert.strictEqual(manifest.agents.length, 6, "Exactly 6 agents must be registered");
     assert.strictEqual(manifest.quota_pools.length, 5, "Exactly 5 quota pools must be configured");

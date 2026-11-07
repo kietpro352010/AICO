@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "manifest_version": "1.0.0",
+  "manifest_version": "1.1.0",
   "company": {
     "id": "AICO",
     "name": "AICO — Personal AI Software Company",
@@ -31,6 +31,10 @@
         "mode": "manual",
         "auto_invoke": false,
         "requires_approval": true,
+        "session_mode": "web_manual",
+        "dispatch_mode": "operator_delivered",
+        "invocation_approval_policy": "standard",
+        "action_approval_policy": "risk_based",
         "quota_class": "normal",
         "usage_tier": "high",
         "routing_priority": 1
@@ -69,8 +73,12 @@
       "reasoning_tier": "high",
       "invocation_policy": {
         "mode": "automatic",
-        "auto_invoke": true,
+        "auto_invoke": false,
         "requires_approval": false,
+        "session_mode": "local_cli",
+        "dispatch_mode": "client_pull",
+        "invocation_approval_policy": "standard",
+        "action_approval_policy": "technical_review",
         "quota_class": "normal",
         "usage_tier": "high",
         "routing_priority": 1
@@ -111,8 +119,12 @@
       "reasoning_tier": "high",
       "invocation_policy": {
         "mode": "automatic",
-        "auto_invoke": true,
+        "auto_invoke": false,
         "requires_approval": false,
+        "session_mode": "local_cli",
+        "dispatch_mode": "client_pull",
+        "invocation_approval_policy": "standard",
+        "action_approval_policy": "technical_review",
         "quota_class": "normal",
         "usage_tier": "high",
         "routing_priority": 1
@@ -156,6 +168,10 @@
         "mode": "manual",
         "auto_invoke": false,
         "requires_approval": true,
+        "session_mode": "local_cli",
+        "dispatch_mode": "client_pull",
+        "invocation_approval_policy": "standard",
+        "action_approval_policy": "risk_based",
         "quota_class": "normal",
         "usage_tier": "medium",
         "routing_priority": 2
@@ -197,6 +213,10 @@
         "mode": "manual",
         "auto_invoke": false,
         "requires_approval": true,
+        "session_mode": "manual",
+        "dispatch_mode": "manual_founder_gate",
+        "invocation_approval_policy": "always_require_founder",
+        "action_approval_policy": "always_require_founder",
         "quota_class": "scarce",
         "usage_tier": "low",
         "routing_priority": 3
@@ -235,6 +255,10 @@
         "mode": "manual",
         "auto_invoke": false,
         "requires_approval": true,
+        "session_mode": "manual",
+        "dispatch_mode": "manual_founder_gate",
+        "invocation_approval_policy": "always_require_founder",
+        "action_approval_policy": "always_require_founder",
         "quota_class": "scarce",
         "usage_tier": "low",
         "routing_priority": 3
@@ -302,7 +326,7 @@
     {
       "pool_id": "openai-go-shared",
       "provider": "OpenAI",
-      "account_label": "ChatGPT Go – shared account",
+      "account_label": "ChatGPT Go — shared account",
       "quota_class": "normal",
       "assigned_agents": [
         "chatgpt-01",

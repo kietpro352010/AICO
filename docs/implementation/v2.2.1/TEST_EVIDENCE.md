@@ -47,32 +47,33 @@
 ---
 
 ### Test Run TR-003 (Full End-to-End Test Suite Execution)
-- **Timestamp:** 2026-11-07 07:28:35 +07:00
-- **Command:** `Push-Location D:\AI-COMPANY\company-mcp; npm.cmd test`
+- **Timestamp:** 2026-11-07 10:01:17 +07:00
+- **Command:** `Push-Location D:\AI-COMPANY\company-mcp; npx.cmd tsc --noEmit; npm.cmd test`
 - **Exit Code:** `0` (Success)
 - **Raw Summary:**
   ```text
   ▶ AICO Quality Baseline Test Suite
-    ✔ 1. Canonical Manifest Integrity (1.532ms)
-    ✔ 2. AgentIdentityService Token Lifecycle & Timing-Safe Auth (23.8561ms)
-    ✔ 3. WorkspaceManager Path Traversal Defense (43.0825ms)
-    ✔ 4. Registry Core Tools Verification (2.3074ms)
-    ✔ 5. Migration v0.4.1 Manifest Sync Blueprint (5.3803ms)
-  ✔ AICO Quality Baseline Test Suite (186.3153ms)
-  ✔ T01: MigrationRunner and Schema Migrations on Sandbox DB (100.9069ms)
-  ✔ T02: Core Services — Identity, Approvals and Workspace Artifact Guard (205.0048ms)
-  ✔ T03: MCP Tool Contracts and Public DTO Leakage Prevention (5.685ms)
-  ✔ T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machine & HMAC Audit Chain (263.6826ms)
-  ✔ T05: Complete 38 MCP Tools & Gateway Allowlist Verification (8.5657ms)
-  ✔ T06: Backup and Safe Restore Drills on Sandbox Database (44.6036ms)
-  ℹ tests 11
+    ✔ 1. Canonical Manifest Integrity (1.1559ms)
+    ✔ 2. AgentIdentityService Token Lifecycle & Timing-Safe Auth (28.059ms)
+    ✔ 3. WorkspaceManager Path Traversal Defense (43.2232ms)
+    ✔ 4. Registry Core Tools Verification (2.4811ms)
+    ✔ 5. Migration v0.4.1 Manifest Sync Blueprint (5.7363ms)
+  ✔ AICO Quality Baseline Test Suite (246.5602ms)
+  ✔ T01: MigrationRunner and Schema Migrations on Sandbox DB (111.5984ms)
+  ✔ T02: Core Services — Identity, Approvals and Workspace Artifact Guard (240.2145ms)
+  ✔ T03: MCP Tool Contracts and Public DTO Leakage Prevention (5.8368ms)
+  ✔ T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machine & HMAC Audit Chain (295.604ms)
+  ✔ T05: Complete 38 MCP Tools & Gateway Allowlist Verification (9.2017ms)
+  ✔ T06: Backup and Safe Restore Drills on Sandbox Database (64.1205ms)
+  ✔ T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Test Suite (882.0076ms)
+  ℹ tests 12
   ℹ suites 1
-  ℹ pass 11
+  ℹ pass 12
   ℹ fail 0
   ℹ cancelled 0
   ℹ skipped 0
   ℹ todo 0
-  ℹ duration_ms 751.2868
+  ℹ duration_ms 1648.4291
   ```
 - **Integrity Verification:**
   - Production DB `D:\AI-COMPANY\data\aico.db` SHA-256 before & after:

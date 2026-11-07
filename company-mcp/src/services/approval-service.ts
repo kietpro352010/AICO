@@ -1,18 +1,28 @@
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
+import type { PrincipalContext } from "../security/context-store.js";
 
-export interface ApprovalRequest {
+export interface ApprovalRequestRecord {
   approval_id: string;
+  requested_by_principal_type: "human" | "agent";
+  requested_by_principal_id: string;
+  target_agent_id: string | null;
+  approval_tier: "founder" | "technical";
   action_type: string;
-  requested_by: string;
-  required_approver: string;
+  target_resource: string;
+  payload_canonical_json: string;
   payload_hash_sha256: string;
-  status: "pending" | "approved" | "rejected" | "consumed" | "expired";
-  created_at: string;
+  reason: string;
+  risk_level: "low" | "medium" | "high" | "critical";
+  status: "pending" | "approved" | "rejected" | "expired" | "consumed";
+  requested_at: string;
   expires_at: string;
-  decided_at?: string | null;
-  decided_by?: string | null;
-  reason?: string | null;
+  decided_by_human_id: string | null;
+  decided_by_agent_id: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  consumed_at: string | null;
+  consumed_by_request_id: string | null;
 }
 
 export class ApprovalService {
@@ -22,17 +32,32 @@ export class ApprovalService {
     this.connManager = connManager;
   }
 
+  public computeCanonicalPayloadHash(payload: unknown): { canonicalJson: string; sha256: string } {
+    const canonicalJson = JSON.stringify(payload ?? {}, Object.keys(payload ?? {}).sort());
+    const sha256 = crypto.createHash("sha256").update(canonicalJson).digest("hex");
+    return { canonicalJson, sha256 };
+  }
+
   public createApprovalRequest(params: {
+    ctx?: PrincipalContext;
     actionType?: string;
     action_type?: string;
     requestedBy?: string;
     requested_by?: string;
-    requiredApprover?: string;
-    required_approver?: string;
+    targetAgentId?: string;
+    target_agent_id?: string;
+    targetResource?: string;
+    target_resource?: string;
+    reason?: string;
+    riskLevel?: "low" | "medium" | "high" | "critical";
+    risk_level?: "low" | "medium" | "high" | "critical";
+    approvalTier?: "founder" | "technical";
+    approval_tier?: "founder" | "technical";
     canonicalPayload?: any;
     canonical_payload?: any;
     expiresInHours?: number;
     expires_in_hours?: number;
+    requiredApprover?: string;
   }): {
     approvalId: string;
     approval_id: string;
@@ -44,15 +69,35 @@ export class ApprovalService {
     status: string;
     expires_at: string;
   } {
-    const actionType = params.actionType || params.action_type || "general";
-    const requestedBy = params.requestedBy || params.requested_by || "chatgpt-01";
-    const requiredApprover = params.requiredApprover || params.required_approver || "founder-01";
-    const canonicalPayload = params.canonicalPayload || params.canonical_payload || {};
+    const actionType = params.actionType || params.action_type || "architecture_review";
+    const requestedById = params.ctx?.principalId || params.requestedBy || params.requested_by || "chatgpt-01";
+    const requestedByType: "human" | "agent" = params.ctx?.principalType === "human" ? "human" : "agent";
+    const targetAgentId = params.targetAgentId || params.target_agent_id || null;
+    const targetResource = params.targetResource || params.target_resource || "default_resource";
+    const reason = params.reason || "Operational approval request";
+    const riskLevel = params.riskLevel || params.risk_level || "medium";
+    const rawPayload = params.canonicalPayload || params.canonical_payload || {};
     const expiresInHours = params.expiresInHours || params.expires_in_hours || 24;
 
+    // Determine tier
+    const isArgon = targetAgentId === "argon-01" || targetAgentId === "argon-02" || actionType === "argon_invocation";
+    let approvalTier: "founder" | "technical" = params.approvalTier || params.approval_tier || "technical";
+
+    if (
+      isArgon ||
+      actionType === "argon_invocation" ||
+      actionType === "project_approval" ||
+      actionType === "critical_task_approval" ||
+      actionType === "credential_issue" ||
+      actionType === "db_migration" ||
+      actionType === "public_gateway_release" ||
+      riskLevel === "critical"
+    ) {
+      approvalTier = "founder";
+    }
+
+    const { canonicalJson, sha256: payloadHash } = this.computeCanonicalPayloadHash(rawPayload);
     const approvalId = "appr_" + crypto.randomBytes(12).toString("hex");
-    const canonicalJson = JSON.stringify(canonicalPayload);
-    const payloadHash = crypto.createHash("sha256").update(canonicalJson).digest("hex");
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + expiresInHours * 60 * 60 * 1000).toISOString();
@@ -60,27 +105,36 @@ export class ApprovalService {
     this.connManager.withWriteTransaction((db) => {
       db.prepare(`
         INSERT INTO approval_requests (
-          approval_id, action_type, requested_by, required_approver,
-          payload_hash_sha256, canonical_payload_json, status,
-          created_at, expires_at, decided_at, decided_by, reason
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL)
+          approval_id, requested_by_principal_type, requested_by_principal_id,
+          target_agent_id, approval_tier, action_type, target_resource,
+          payload_canonical_json, payload_hash_sha256, reason, risk_level,
+          status, requested_at, expires_at, decided_by_human_id, decided_by_agent_id,
+          decided_at, decision_note, consumed_at, consumed_by_request_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
       `).run(
         approvalId,
+        requestedByType,
+        requestedById,
+        targetAgentId,
+        approvalTier,
         actionType,
-        requestedBy,
-        requiredApprover,
-        payloadHash,
+        targetResource,
         canonicalJson,
+        payloadHash,
+        reason,
+        riskLevel,
         now.toISOString(),
         expiresAt
       );
     });
 
+    const requiredApprover = approvalTier === "founder" ? "founder-01" : "flash-01";
+
     return {
       approvalId,
       approval_id: approvalId,
       action_type: actionType,
-      requested_by: requestedBy,
+      requested_by: requestedById,
       required_approver: requiredApprover,
       payloadHashSha256: payloadHash,
       payload_hash_sha256: payloadHash,
@@ -89,101 +143,119 @@ export class ApprovalService {
     };
   }
 
-  public getApprovalRequest(approvalId: string): ApprovalRequest | null {
+  public getApprovalRequest(approvalId: string): ApprovalRequestRecord | null {
     return this.connManager.withReadTransaction((db) => {
       const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(approvalId) as any;
       if (!row) return null;
-      return {
-        approval_id: row.approval_id,
-        action_type: row.action_type,
-        requested_by: row.requested_by,
-        required_approver: row.required_approver,
-        payload_hash_sha256: row.payload_hash_sha256,
-        status: row.status,
-        created_at: row.created_at,
-        expires_at: row.expires_at,
-        decided_at: row.decided_at,
-        decided_by: row.decided_by,
-        reason: row.reason
-      };
+      return row as ApprovalRequestRecord;
     });
   }
 
-  public listApprovalRequests(filter?: { status?: string; action_type?: string }): ApprovalRequest[] {
+  public listApprovalRequests(filter?: {
+    status?: string;
+    tier?: string;
+    action_type?: string;
+    limit?: number;
+  }): ApprovalRequestRecord[] {
     return this.connManager.withReadTransaction((db) => {
-      let query = "SELECT * FROM approval_requests";
-      const conditions: string[] = [];
+      let query = "SELECT * FROM approval_requests WHERE 1=1";
       const params: any[] = [];
 
       if (filter?.status) {
-        conditions.push("status = ?");
+        query += " AND status = ?";
         params.push(filter.status);
       }
+      if (filter?.tier) {
+        query += " AND approval_tier = ?";
+        params.push(filter.tier);
+      }
       if (filter?.action_type) {
-        conditions.push("action_type = ?");
+        query += " AND action_type = ?";
         params.push(filter.action_type);
       }
 
-      if (conditions.length > 0) {
-        query += " WHERE " + conditions.join(" AND ");
+      query += " ORDER BY requested_at DESC";
+      if (filter?.limit) {
+        query += " LIMIT ?";
+        params.push(filter.limit);
       }
-      query += " ORDER BY created_at DESC";
 
       const rows = db.prepare(query).all(...params) as any[];
-      return rows.map((row) => ({
-        approval_id: row.approval_id,
-        action_type: row.action_type,
-        requested_by: row.requested_by,
-        required_approver: row.required_approver,
-        payload_hash_sha256: row.payload_hash_sha256,
-        status: row.status,
-        created_at: row.created_at,
-        expires_at: row.expires_at,
-        decided_at: row.decided_at,
-        decided_by: row.decided_by,
-        reason: row.reason
-      }));
+      return rows as ApprovalRequestRecord[];
     });
   }
 
   public decideApproval(params: {
-    approvalId: string;
-    decidedBy: string;
+    ctx?: PrincipalContext;
+    approvalId?: string;
+    approval_id?: string;
     decision: "approved" | "rejected";
+    decidedBy?: string;
+    decided_by?: string;
     reason?: string;
-  }): { success: boolean; status: string; approval_id?: string; decision?: string; decided_by?: string; decided_at?: string; error?: string } {
+    decision_note?: string;
+  }): {
+    success: boolean;
+    approval_id: string;
+    status: "approved" | "rejected";
+    decided_by: string;
+    decided_at: string;
+  } {
+    const approvalId = params.approvalId || params.approval_id;
+    if (!approvalId) throw new Error("Approval ID required");
+
+    const deciderId = params.ctx?.principalId || params.decidedBy || params.decided_by || "founder-01";
+    const deciderType = params.ctx?.principalType || (deciderId === "founder-01" ? "human" : "agent");
+    const note = params.decision_note || params.reason || `Decision: ${params.decision}`;
+    const now = new Date().toISOString();
+
     return this.connManager.withWriteTransaction((db) => {
-      const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(params.approvalId) as any;
+      const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(approvalId) as any;
       if (!row) {
-        return { success: false, status: "not_found", error: "Approval request not found" };
+        throw new Error(`RESOURCE_NOT_FOUND: Approval request ${approvalId} not found`);
       }
 
       if (row.status !== "pending") {
-        return { success: false, status: row.status, error: `Cannot decide request in state: ${row.status}` };
+        throw new Error(`APPROVAL_ALREADY_DECIDED: Request is already ${row.status}`);
       }
 
-      if (new Date(row.expires_at).getTime() < Date.now()) {
-        db.prepare("UPDATE approval_requests SET status = 'expired' WHERE approval_id = ?").run(params.approvalId);
-        return { success: false, status: "expired", error: "Approval request has expired" };
+      // Check tier authorization
+      let decidedByHumanId: string | null = null;
+      let decidedByAgentId: string | null = null;
+
+      if (row.approval_tier === "founder") {
+        if (deciderId !== "founder-01" || deciderType !== "human") {
+          throw new Error("PERMISSION_DENIED: Founder tier approvals can ONLY be decided by founder-01");
+        }
+        decidedByHumanId = "founder-01";
+      } else {
+        // Technical tier
+        if (deciderId === "founder-01") {
+          decidedByHumanId = "founder-01";
+        } else if (deciderId === "flash-01") {
+          decidedByAgentId = "flash-01";
+        } else {
+          throw new Error("PERMISSION_DENIED: Technical tier approvals can only be decided by founder-01 or flash-01");
+        }
       }
 
-      if (row.required_approver !== "any" && row.required_approver !== params.decidedBy && params.decidedBy !== "founder-01") {
-        return { success: false, status: "unauthorized", error: `Only ${row.required_approver} can decide this request` };
+      // Strict Separation of Duties: Requester cannot decide own approval
+      if (row.requested_by_principal_id === deciderId) {
+        throw new Error("SOD_VIOLATION: Approver cannot be the same entity that requested approval");
       }
 
-      const now = new Date().toISOString();
       db.prepare(`
         UPDATE approval_requests
-        SET status = ?, decided_by = ?, decided_at = ?, reason = ?
+        SET status = ?, decided_by_human_id = ?, decided_by_agent_id = ?,
+            decided_at = ?, decision_note = ?
         WHERE approval_id = ?
-      `).run(params.decision, params.decidedBy, now, params.reason || null, params.approvalId);
+      `).run(params.decision, decidedByHumanId, decidedByAgentId, now, note, approvalId);
 
       return {
         success: true,
+        approval_id: approvalId,
         status: params.decision,
-        approval_id: params.approvalId,
-        decision: params.decision,
-        decided_by: params.decidedBy,
+        decided_by: deciderId,
         decided_at: now
       };
     });
@@ -193,33 +265,33 @@ export class ApprovalService {
     approvalId: string;
     expectedActionType: string;
     canonicalPayload: any;
+    requestId?: string;
   }): { valid: boolean; error?: string } {
-    const canonicalJson = JSON.stringify(params.canonicalPayload);
-    const expectedHash = crypto.createHash("sha256").update(canonicalJson).digest("hex");
-
     return this.connManager.withWriteTransaction((db) => {
       const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(params.approvalId) as any;
-      if (!row) return { valid: false, error: "Approval not found" };
+      if (!row) {
+        return { valid: false, error: "Approval request not found" };
+      }
 
       if (row.status !== "approved") {
         return { valid: false, error: `Request not in approved state (status: ${row.status})` };
       }
 
-      if (new Date(row.expires_at).getTime() < Date.now()) {
-        db.prepare("UPDATE approval_requests SET status = 'expired' WHERE approval_id = ?").run(params.approvalId);
-        return { valid: false, error: "Approval has expired" };
-      }
-
       if (row.action_type !== params.expectedActionType) {
-        return { valid: false, error: `Action type mismatch: expected ${params.expectedActionType}, got ${row.action_type}` };
+        return { valid: false, error: `Action type mismatch: expected ${params.expectedActionType}, found ${row.action_type}` };
       }
 
-      if (row.payload_hash_sha256 !== expectedHash) {
-        return { valid: false, error: "Payload hash mismatch: canonical payload differs from approved payload" };
+      const { sha256: computedHash } = this.computeCanonicalPayloadHash(params.canonicalPayload);
+      if (computedHash !== row.payload_hash_sha256) {
+        return { valid: false, error: "Payload hash mismatch: payload differs from approved content" };
       }
 
-      // Exactly-once consumption
-      db.prepare("UPDATE approval_requests SET status = 'consumed' WHERE approval_id = ?").run(params.approvalId);
+      const now = new Date().toISOString();
+      db.prepare(`
+        UPDATE approval_requests
+        SET status = 'consumed', consumed_at = ?, consumed_by_request_id = ?
+        WHERE approval_id = ?
+      `).run(now, params.requestId || "req_consume", params.approvalId);
 
       return { valid: true };
     });

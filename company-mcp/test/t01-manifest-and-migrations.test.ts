@@ -32,9 +32,11 @@ test("T01: MigrationRunner and Schema Migrations on Sandbox DB", () => {
 
     // Verify new tables created
     connManager.withReadTransaction((db) => {
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[];
-      const names = new Set(tables.map((t) => t.name));
-      assert.ok(names.has("credentials"), "credentials table exists");
+      const objects = db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").all() as any[];
+      const names = new Set(objects.map((t) => t.name));
+      assert.ok(names.has("human_credentials"), "human_credentials table exists");
+      assert.ok(names.has("agent_credentials"), "agent_credentials table exists");
+      assert.ok(names.has("credentials"), "credentials view exists");
       assert.ok(names.has("approval_requests"), "approval_requests table exists");
       assert.ok(names.has("projects"), "projects table exists");
       assert.ok(names.has("tasks"), "tasks table exists");

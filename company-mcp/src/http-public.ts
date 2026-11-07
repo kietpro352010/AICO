@@ -9,6 +9,7 @@ import {
   HttpSecurityPipeline,
   PUBLIC_GATEWAY_PROFILE
 } from "./security/http-security-pipeline.js";
+import { requestContextStore } from "./security/context-store.js";
 
 // FDR-06: Public Gateway (:3335) is strictly DISABLED by default
 const IS_ENABLED = process.env.AICO_PUBLIC_GATEWAY_ENABLED === "true";
@@ -42,7 +43,14 @@ const nodeHandler = toNodeHandler(handler);
 app.use(pipeline.middleware());
 
 app.all("/mcp", (req, res) => {
-  void nodeHandler(req, res, req.body);
+  const principal = (req as any).principalContext;
+  if (principal) {
+    requestContextStore.run(principal, () => {
+      void nodeHandler(req, res, req.body);
+    });
+  } else {
+    void nodeHandler(req, res, req.body);
+  }
 });
 
 export const httpServer = app.listen(PORT, HOST, () => {

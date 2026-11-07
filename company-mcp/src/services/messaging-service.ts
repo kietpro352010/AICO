@@ -1,25 +1,37 @@
-import crypto from "node:crypto";
+import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
 import { SecretScanner } from "../security/secret-scanner.js";
+import type { PrincipalContext } from "../security/context-store.js";
 
 export interface SendMessageParams {
-  fromPrincipalId: string;
-  toPrincipalId: string;
+  ctx?: PrincipalContext;
+  fromPrincipalId?: string;
+  from_principal_id?: string;
+  toPrincipalId?: string;
+  to_principal_id?: string;
   subject: string;
-  bodyMarkdown: string;
+  bodyMarkdown?: string;
+  body_markdown?: string;
   threadId?: string;
+  thread_id?: string;
   taskId?: string;
-  priority?: "low" | "normal" | "urgent";
+  task_id?: string;
+  messageType?: "task_handoff" | "question" | "review_request" | "result" | "approval_request" | "alert";
+  message_type?: "task_handoff" | "question" | "review_request" | "result" | "approval_request" | "alert";
+  sensitivity?: "public" | "internal" | "confidential";
+  artifactIds?: string[];
+  artifact_ids?: string[];
 }
 
 export interface MessageView {
   message_id: string;
+  thread_id: string;
   from_principal_id: string;
   to_principal_id: string;
+  message_type: string;
   subject: string;
   body_markdown: string;
-  thread_id?: string;
-  task_id?: string;
+  task_id?: string | null;
   delivery_status: string;
   created_at: string;
 }
@@ -39,156 +51,141 @@ export class MessagingService {
     this.connManager = connManager;
   }
 
+  // Idempotent schema init (database migration is authoritative)
   public initSchema(): void {
-    this.connManager.withWriteTransaction((db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS messages (
-          message_id TEXT PRIMARY KEY,
-          from_principal_id TEXT NOT NULL,
-          subject TEXT NOT NULL,
-          body_markdown TEXT NOT NULL,
-          thread_id TEXT,
-          task_id TEXT,
-          priority TEXT NOT NULL DEFAULT 'normal',
-          created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS message_recipients (
-          recipient_row_id INTEGER PRIMARY KEY AUTOINCREMENT,
-          message_id TEXT NOT NULL,
-          to_principal_id TEXT NOT NULL,
-          delivery_status TEXT NOT NULL DEFAULT 'stored_in_inbox',
-          inbox_file_ref TEXT,
-          acknowledged_at TEXT,
-          created_at TEXT NOT NULL,
-          FOREIGN KEY (message_id) REFERENCES messages(message_id) ON DELETE CASCADE
-        );
-      `);
-    });
+    // No-op - schema-v050-rc2.sql is the single source of truth
   }
 
   public sendMessage(params: SendMessageParams): MessageView {
-    // Secret scanning
-    const scan = SecretScanner.scan(params.bodyMarkdown);
+    const fromPrincipalId = params.ctx?.principalId || params.fromPrincipalId || params.from_principal_id || "founder-01";
+    const fromPrincipalType = params.ctx?.principalType || (fromPrincipalId === "founder-01" ? "human" : "agent");
+    const toPrincipalId = params.toPrincipalId || params.to_principal_id;
+    if (!toPrincipalId) {
+      throw new Error("INVALID_ARGUMENT: toPrincipalId is required");
+    }
+    const toPrincipalType = toPrincipalId === "founder-01" ? "human" : "agent";
+
+    const bodyMarkdown = params.bodyMarkdown || params.body_markdown || "";
+    const subject = params.subject;
+    const threadId = params.threadId || params.thread_id || "thread_" + crypto.randomBytes(8).toString("hex");
+    const taskId = params.taskId || params.task_id || null;
+    const messageType = params.messageType || params.message_type || "question";
+    const sensitivity = params.sensitivity || "internal";
+    const artifactIds = params.artifactIds || params.artifact_ids || [];
+
+    // Pre-flight Secret Scanner
+    const scan = SecretScanner.scan(bodyMarkdown);
     if (scan.hasSecret) {
-      throw new Error("SECRET_LEAK_PREVENTED: Sensitive token or key detected in message body");
+      throw new Error(`SECRET_LEAK_PREVENTED: Message contains sensitive credential pattern: ${scan.patternMatched}`);
     }
 
-    const messageId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    const now = new Date().toISOString();
-
-    const isWebAgent =
-      params.toPrincipalId === "chatgpt-01" ||
-      params.toPrincipalId === "argon-01" ||
-      params.toPrincipalId === "argon-02";
-
-    const deliveryStatus = isWebAgent ? "awaiting_operator_delivery" : "stored_in_inbox";
-    const inboxFileRef = `MSG_${messageId}.md`;
+    const messageId = "msg_" + crypto.randomBytes(12).toString("hex");
+    const nowIso = new Date().toISOString();
 
     return this.connManager.withWriteTransaction((db) => {
       db.prepare(`
         INSERT INTO messages (
-          message_id, from_principal_id, subject, body_markdown,
-          thread_id, task_id, priority, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          message_id, thread_id, task_id, from_principal_type, from_principal_id,
+          message_type, subject, body_markdown, artifact_ids_json, sensitivity, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         messageId,
-        params.fromPrincipalId,
-        params.subject,
-        params.bodyMarkdown,
-        params.threadId || null,
-        params.taskId || null,
-        params.priority || "normal",
-        now
+        threadId,
+        taskId,
+        fromPrincipalType,
+        fromPrincipalId,
+        messageType,
+        subject,
+        bodyMarkdown,
+        JSON.stringify(artifactIds),
+        sensitivity,
+        nowIso
       );
 
       db.prepare(`
         INSERT INTO message_recipients (
-          message_id, to_principal_id, delivery_status, inbox_file_ref, created_at
-        ) VALUES (?, ?, ?, ?, ?)
-      `).run(messageId, params.toPrincipalId, deliveryStatus, inboxFileRef, now);
+          message_id, to_principal_type, to_principal_id, delivery_status,
+          inbox_file_path, delivered_at
+        ) VALUES (?, ?, ?, 'stored_in_inbox', NULL, ?)
+      `).run(
+        messageId,
+        toPrincipalType,
+        toPrincipalId,
+        nowIso
+      );
 
       return {
         message_id: messageId,
-        from_principal_id: params.fromPrincipalId,
-        to_principal_id: params.toPrincipalId,
-        subject: params.subject,
-        body_markdown: params.bodyMarkdown,
-        thread_id: params.threadId,
-        task_id: params.taskId,
-        delivery_status: deliveryStatus,
-        created_at: now
+        thread_id: threadId,
+        from_principal_id: fromPrincipalId,
+        to_principal_id: toPrincipalId,
+        message_type: messageType,
+        subject,
+        body_markdown: bodyMarkdown,
+        task_id: taskId,
+        delivery_status: "stored_in_inbox",
+        created_at: nowIso
       };
     });
   }
 
-  public listInbox(principalId: string): MessageView[] {
-    const db = this.connManager.getDatabase();
-    const rows = db.prepare(`
-      SELECT
-        m.message_id,
-        m.from_principal_id,
-        mr.to_principal_id,
-        m.subject,
-        m.body_markdown,
-        m.thread_id,
-        m.task_id,
-        mr.delivery_status,
-        m.created_at
-      FROM message_recipients mr
-      JOIN messages m ON mr.message_id = m.message_id
-      WHERE mr.to_principal_id = ? OR ? = 'founder-01'
-      ORDER BY m.created_at DESC
-    `).all(principalId, principalId) as any[];
+  public listInbox(principalId: string, filter?: { status?: string; limit?: number }): MessageView[] {
+    return this.connManager.withReadTransaction((db) => {
+      let query = `
+        SELECT m.*, r.to_principal_id, r.delivery_status
+        FROM messages m
+        JOIN message_recipients r ON m.message_id = r.message_id
+        WHERE r.to_principal_id = ?
+      `;
+      const params: any[] = [principalId];
 
-    return rows.map((r) => ({
-      message_id: r.message_id,
-      from_principal_id: r.from_principal_id,
-      to_principal_id: r.to_principal_id,
-      subject: r.subject,
-      body_markdown: r.body_markdown,
-      thread_id: r.thread_id || undefined,
-      task_id: r.task_id || undefined,
-      delivery_status: r.delivery_status,
-      created_at: r.created_at
-    }));
-  }
-
-  public ackMessage(params: { messageId: string; principalId: string }): MessageAckOutput {
-    const now = new Date().toISOString();
-
-    return this.connManager.withWriteTransaction((db) => {
-      const recipient = db.prepare(`
-        SELECT * FROM message_recipients
-        WHERE message_id = ? AND to_principal_id = ?
-      `).get(params.messageId, params.principalId) as any;
-
-      if (!recipient) {
-        throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Message recipient not found or not addressed to caller");
+      if (filter?.status) {
+        query += " AND r.delivery_status = ?";
+        params.push(filter.status);
       }
 
-      if (recipient.delivery_status === "acknowledged") {
-        return {
-          success: true,
-          message_id: params.messageId,
-          recipient_id: params.principalId,
-          delivery_status: "acknowledged",
-          acknowledged_at: recipient.acknowledged_at || now
-        };
+      query += " ORDER BY m.created_at DESC";
+      if (filter?.limit) {
+        query += " LIMIT ?";
+        params.push(filter.limit);
+      }
+
+      const rows = db.prepare(query).all(...params) as any[];
+      return rows.map((r) => ({
+        message_id: r.message_id,
+        thread_id: r.thread_id,
+        from_principal_id: r.from_principal_id,
+        to_principal_id: r.to_principal_id,
+        message_type: r.message_type,
+        subject: r.subject,
+        body_markdown: r.body_markdown,
+        task_id: r.task_id,
+        delivery_status: r.delivery_status,
+        created_at: r.created_at
+      }));
+    });
+  }
+
+  public ackMessage(messageId: string, recipientId: string, note?: string): MessageAckOutput {
+    const nowIso = new Date().toISOString();
+    return this.connManager.withWriteTransaction((db) => {
+      const rec = db.prepare("SELECT * FROM message_recipients WHERE message_id = ? AND to_principal_id = ?").get(messageId, recipientId) as any;
+      if (!rec) {
+        throw new Error(`RESOURCE_NOT_FOUND: Message recipient entry not found for message ${messageId} and recipient ${recipientId}`);
       }
 
       db.prepare(`
         UPDATE message_recipients
-        SET delivery_status = 'acknowledged', acknowledged_at = ?
+        SET delivery_status = 'acknowledged', acknowledged_at = ?, ack_note = ?
         WHERE message_id = ? AND to_principal_id = ?
-      `).run(now, params.messageId, params.principalId);
+      `).run(nowIso, note || null, messageId, recipientId);
 
       return {
         success: true,
-        message_id: params.messageId,
-        recipient_id: params.principalId,
+        message_id: messageId,
+        recipient_id: recipientId,
         delivery_status: "acknowledged",
-        acknowledged_at: now
+        acknowledged_at: nowIso
       };
     });
   }

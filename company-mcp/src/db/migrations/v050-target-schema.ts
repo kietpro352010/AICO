@@ -1,90 +1,105 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Migration } from "../migration-runner.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const migrationV050Schema: Migration = {
   id: "20261106_002_v050_target_tables",
   name: "v0.5.0 RC2 Tables, Constraints and Triggers",
   up: (db: DatabaseSync) => {
-    // T01: agents table already exists, ensure index
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_routing ON agents(routing_priority, agent_id);`);
+    const localSql = path.join(__dirname, "schema-v050-rc2.sql");
+    const fallbackSql = "D:/AICO_V2_2_1_IMPLEMENTATION_PACK/AICO_DATABASE_SCHEMA_V0.5.0_RC2.sql";
 
-    // T02: quota_pools already exists
-    // T03: credentials
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS credentials (
-        credential_id TEXT PRIMARY KEY,
-        principal_id TEXT NOT NULL,
-        token_hash TEXT NOT NULL,
-        scopes_json TEXT NOT NULL DEFAULT '[]',
-        allow_public_gateway INTEGER NOT NULL DEFAULT 0,
-        is_revoked INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        expires_at TEXT,
-        last_used_at TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_credentials_principal ON credentials(principal_id);
-    `);
+    let sqlContent = "";
+    if (fs.existsSync(localSql)) {
+      sqlContent = fs.readFileSync(localSql, "utf8");
+    } else if (fs.existsSync(fallbackSql)) {
+      sqlContent = fs.readFileSync(fallbackSql, "utf8");
+    } else {
+      throw new Error("Canonical schema file schema-v050-rc2.sql not found");
+    }
 
-    // T04: approval_requests
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS approval_requests (
-        approval_id TEXT PRIMARY KEY,
-        action_type TEXT NOT NULL,
-        requested_by TEXT NOT NULL,
-        required_approver TEXT NOT NULL,
-        payload_hash_sha256 TEXT NOT NULL,
-        canonical_payload_json TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        decided_at TEXT,
-        decided_by TEXT,
-        reason TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status);
-    `);
+    db.exec(sqlContent);
 
-    // T05: projects
+    try {
+      db.exec("ALTER TABLE audit_events ADD COLUMN event_id TEXT;");
+    } catch {}
+    try {
+      db.exec("ALTER TABLE audit_events ADD COLUMN event_hash_sha256 TEXT;");
+    } catch {}
+
+    // Seed Human Principal (Founder)
     db.exec(`
-      CREATE TABLE IF NOT EXISTS projects (
-        project_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        created_at TEXT NOT NULL,
-        description TEXT
+      INSERT OR IGNORE INTO human_principals (
+        human_id, display_name, official_title, windows_account, scopes_json, status
+      ) VALUES (
+        'founder-01', 'Company Founder', 'Owner & Principal Decision Maker', 'kietp', '["*"]', 'active'
       );
     `);
 
-    // T06: tasks
+    // Seed default agent workspaces
     db.exec(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        task_id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'CREATED',
-        assigned_to TEXT,
-        created_by TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(project_id) REFERENCES projects(project_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
-      CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
+      INSERT OR IGNORE INTO agent_workspaces (workspace_id, agent_id, relative_root, access_profile, logical_only)
+      VALUES
+        ('ws_flash-01', 'flash-01', 'agents/flash-01', 'standard', 0),
+        ('ws_flash-02', 'flash-02', 'agents/flash-02', 'standard', 0),
+        ('ws_codex-01', 'codex-01', 'agents/codex-01', 'standard', 0),
+        ('ws_chatgpt-01', 'chatgpt-01', 'agents/chatgpt-01', 'logical_only', 1),
+        ('ws_argon-01', 'argon-01', 'agents/argon-01', 'logical_only', 1),
+        ('ws_argon-02', 'argon-02', 'agents/argon-02', 'logical_only', 1);
     `);
 
-    // T07: audit_events (immutable)
+    // Seed default project
     db.exec(`
-      CREATE TABLE IF NOT EXISTS audit_events (
-        event_id TEXT PRIMARY KEY,
-        actor_id TEXT NOT NULL,
-        action TEXT NOT NULL,
-        resource_type TEXT NOT NULL,
-        resource_id TEXT NOT NULL,
-        outcome TEXT NOT NULL,
-        payload_json TEXT,
-        created_at TEXT NOT NULL
+      INSERT OR IGNORE INTO projects (
+        project_id, name, description, status, owner_agent_id, approved_by_human_id, priority, risk_class
+      ) VALUES (
+        'proj_aico_v221', 'AICO v2.2.1 Core Implementation', 'Canonical v2.2.1 Core Architecture & Service Implementation',
+        'active', 'flash-01', 'founder-01', 'P0', 'high'
       );
-      CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+    `);
+
+    // Create compatibility view for credentials
+    db.exec(`
+      CREATE VIEW IF NOT EXISTS credentials AS
+      SELECT 
+        credential_id,
+        human_id AS principal_id,
+        'human' AS principal_type,
+        key_prefix,
+        secret_hash,
+        secret_hash AS token_hash,
+        scopes_json,
+        status,
+        CASE WHEN status = 'revoked' THEN 1 ELSE 0 END AS is_revoked,
+        0 AS allow_public_gateway,
+        expires_at,
+        last_used_at,
+        revoked_at,
+        revoked_reason,
+        created_at
+      FROM human_credentials
+      UNION ALL
+      SELECT 
+        credential_id,
+        agent_id AS principal_id,
+        'agent' AS principal_type,
+        key_prefix,
+        secret_hash,
+        secret_hash AS token_hash,
+        scopes_json,
+        status,
+        CASE WHEN status = 'revoked' THEN 1 ELSE 0 END AS is_revoked,
+        allow_public_gateway,
+        expires_at,
+        last_used_at,
+        revoked_at,
+        revoked_reason,
+        created_at
+      FROM agent_credentials;
     `);
   }
 };

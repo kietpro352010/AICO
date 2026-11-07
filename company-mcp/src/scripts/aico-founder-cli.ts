@@ -69,7 +69,7 @@ export async function showDashboard(): Promise<void> {
       console.log("  No pending approvals.");
     } else {
       for (const ap of pending) {
-        console.log(`- ID: ${ap.approval_id} | Type: ${ap.action_type} | Requested By: ${ap.requested_by} | Approver: ${ap.required_approver}`);
+        console.log(`- ID: ${ap.approval_id} | Type: ${ap.action_type} | Requested By: ${ap.requested_by_principal_id} | Tier: ${ap.approval_tier}`);
       }
     }
   } catch (err: any) {

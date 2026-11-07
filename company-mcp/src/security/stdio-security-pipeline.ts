@@ -32,9 +32,9 @@ export class StdioSecurityPipeline {
       throw new Error("AUTH_MISSING_OR_INVALID_TOKEN: No token file found for STDIO bootstrap");
     }
 
-    const principal = this.identityService.authenticateToken(rawToken);
-    if (!principal) {
-      throw new Error("AUTH_MISSING_OR_INVALID_TOKEN: STDIO bootstrap token is invalid or expired");
+    const principal = this.identityService.authenticateToken(rawToken, "stdio");
+    if (!principal || !principal.authenticated) {
+      throw new Error("AUTH_MISSING_OR_INVALID_TOKEN: STDIO bootstrap token is invalid or expired" + (principal?.error ? `: ${principal.error}` : ""));
     }
 
     this.sessionPrincipal = principal;

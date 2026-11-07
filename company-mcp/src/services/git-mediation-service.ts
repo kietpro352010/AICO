@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import type { PrincipalContext } from "../security/context-store.js";
 
 export interface GitMediationConfig {
   centralRepoPath: string;
@@ -31,7 +32,16 @@ export class GitMediationService {
       });
 
       const files = output.split(/\r?\n/).filter(Boolean);
-      const forbiddenPatterns = [/\.db$/, /\.db-wal$/, /\.db-shm$/, /\.env$/, /\.dpapi$/, /\.key$/, /\.pem$/, /^\.git\/hooks/];
+      const forbiddenPatterns = [
+        /\.db$/,
+        /\.db-wal$/,
+        /\.db-shm$/,
+        /\.env$/,
+        /\.dpapi$/,
+        /\.key$/,
+        /\.pem$/,
+        /^\.git\/hooks/
+      ];
       const foundForbidden: string[] = [];
 
       for (const f of files) {
@@ -41,45 +51,55 @@ export class GitMediationService {
       }
 
       return { valid: foundForbidden.length === 0, forbiddenFiles: foundForbidden };
-    } catch {
-      return { valid: false, forbiddenFiles: ["failed_to_inspect_commit"] };
+    } catch (err: any) {
+      throw new Error(`GIT_DIFF_TREE_FAILED: Failed to inspect commit tree: ${err.message}`);
     }
   }
 
   public syncAgentBranch(params: {
+    ctx?: PrincipalContext;
     agentId: string;
     branchName: string;
     direction: "push_agent_branch" | "pull_master";
     clonePath?: string;
   }): { success: boolean; branch_name: string; direction: string; commit_sha: string; status: string; message: string } {
+    // ABAC ownership check
+    if (params.ctx && params.ctx.principalType !== "human" && params.ctx.principalId !== "founder-01") {
+      if (params.ctx.agentId && params.ctx.agentId !== params.agentId) {
+        throw new Error(`PERMISSION_DENIED: Agent ${params.ctx.agentId} cannot sync branch for agent ${params.agentId}`);
+      }
+    }
+
     if (!this.validateBranchName(params.agentId, params.branchName)) {
       throw new Error(`GIT_BRANCH_NAMESPACE_VIOLATION: Branch '${params.branchName}' must match agent/${params.agentId}/[a-z0-9-]+`);
     }
 
     const effectiveClonePath = params.clonePath || path.resolve(`D:/AICO-WORKSPACES/${params.agentId}/repo`);
 
+    if (!fs.existsSync(effectiveClonePath)) {
+      throw new Error(`GIT_CLONE_NOT_FOUND: Agent clone directory does not exist: ${effectiveClonePath}`);
+    }
+
     if (params.direction === "push_agent_branch") {
-      let commitSha = "0000000000000000000000000000000000000000";
+      let commitSha: string;
       try {
         commitSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: effectiveClonePath, encoding: "utf8" }).trim();
-      } catch {
-        commitSha = "dummy_verified_sha256";
+      } catch (err: any) {
+        throw new Error(`GIT_REV_PARSE_FAILED: Failed to resolve HEAD commit: ${err.message}`);
       }
 
-      if (fs.existsSync(effectiveClonePath)) {
-        const scanResult = this.scanCommitFiles(effectiveClonePath, commitSha);
-        if (!scanResult.valid) {
-          throw new Error(`SECRET_LEAK_PREVENTED: Commit contains forbidden files: ${scanResult.forbiddenFiles.join(", ")}`);
-        }
+      const scanResult = this.scanCommitFiles(effectiveClonePath, commitSha);
+      if (!scanResult.valid) {
+        throw new Error(`SECRET_LEAK_PREVENTED: Commit contains forbidden files: ${scanResult.forbiddenFiles.join(", ")}`);
+      }
 
-        try {
-          execFileSync("git", ["fetch", effectiveClonePath, `${params.branchName}:${params.branchName}`], {
-            cwd: this.centralRepoPath,
-            encoding: "utf8"
-          });
-        } catch {
-          // Fallback or dry-run in test environments
-        }
+      try {
+        execFileSync("git", ["fetch", effectiveClonePath, `${params.branchName}:${params.branchName}`], {
+          cwd: this.centralRepoPath,
+          encoding: "utf8"
+        });
+      } catch (err: any) {
+        throw new Error(`GIT_SYNC_FAILED: Failed to fetch agent branch to central repository: ${err.message}`);
       }
 
       return {
@@ -90,15 +110,32 @@ export class GitMediationService {
         status: "synced",
         message: `Branch ${params.branchName} synced to central repository safely`
       };
-    }
+    } else {
+      // pull_master
+      let masterSha: string;
+      try {
+        masterSha = execFileSync("git", ["rev-parse", "master"], { cwd: this.centralRepoPath, encoding: "utf8" }).trim();
+      } catch (err: any) {
+        throw new Error(`GIT_REV_PARSE_FAILED: Failed to resolve central master commit: ${err.message}`);
+      }
 
-    return {
-      success: true,
-      branch_name: params.branchName,
-      direction: params.direction,
-      commit_sha: "head_master_sha",
-      status: "fetched",
-      message: "Fetch central completed"
-    };
+      try {
+        execFileSync("git", ["fetch", this.centralRepoPath, "master"], {
+          cwd: effectiveClonePath,
+          encoding: "utf8"
+        });
+      } catch (err: any) {
+        throw new Error(`GIT_FETCH_FAILED: Failed to fetch central master in agent clone: ${err.message}`);
+      }
+
+      return {
+        success: true,
+        branch_name: params.branchName,
+        direction: params.direction,
+        commit_sha: masterSha,
+        status: "fetched",
+        message: `Fetched latest master commit ${masterSha} from central repository`
+      };
+    }
   }
 }

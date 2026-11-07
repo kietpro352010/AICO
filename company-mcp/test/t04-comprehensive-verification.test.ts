@@ -117,12 +117,12 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
 
     // Tamper with event 1 outcome directly via SQL
     connManager.withWriteTransaction((db) => {
-      db.prepare("UPDATE audit_events SET outcome = 'failed' WHERE event_id = ?").run(ev1.eventId);
+      db.prepare("UPDATE audit_events SET outcome = 'failed' WHERE event_id = ?").run((ev1.event_id || ev1.audit_id) as string);
     });
 
     const verifyAfterTamper = obsService.verifyAuditChainIntegrity();
     assert.equal(verifyAfterTamper.valid, false, "HMAC audit chain detects SQL tampering");
-    assert.equal(verifyAfterTamper.brokenAtEventId, ev1.eventId);
+    assert.equal(verifyAfterTamper.brokenAtEventId, ev1.event_id || ev1.audit_id);
   } finally {
     ctx.cleanup();
   }

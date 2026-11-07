@@ -27,6 +27,9 @@ if (-not $BackupFile) {
 }
 
 Write-Host "Restoring ACL from: $BackupFile"
-icacls "$AicoRoot" /restore "$BackupFile" /c /q
+& icacls "$AicoRoot" /restore "$BackupFile" /c /q
+if ($LASTEXITCODE -ne 0) {
+  throw "ICACLS_RESTORE_ERROR: icacls returned exit code $LASTEXITCODE during restore"
+}
 
 Write-Host "NTFS ACL rollback finished."

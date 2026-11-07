@@ -13,7 +13,7 @@
 
 The complete implementation of AICO v2.2.1 has been executed across the repository. All 10 Core Domain Services (`S01`–`S10`), all 38 MCP Tool Contracts (`M01`–`M38`), the 10-step `HttpSecurityPipeline` (`:3334` & `:3335`), the `StdioSecurityPipeline`, the Client Auth Bridge (`client-bridge.ts`), the Windows NTFS ACL deployment and rollback scripts, WinSW service descriptors, backup/restore runbook scripts, and the interactive Operator Dashboard (`npm run aico:dashboard`) are implemented, integrated, and verified.
 
-All automated test suites pass 100% (11 tests passed, 0 failed), `tsc --noEmit` compiles with zero errors, and the production database `D:\AI-COMPANY\data\aico.db` remains untouched at v0.3.0 (`SHA-256: 17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`), strictly awaiting Founder G4 trigger.
+All automated test suites pass 100% (12 tests passed, 0 failed), `tsc --noEmit` compiles with zero errors, and the production database `D:\AI-COMPANY\data\aico.db` remains untouched at v0.3.0 (`SHA-256: 17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`), strictly awaiting Founder G4 trigger.
 
 ---
 
@@ -92,22 +92,38 @@ All automated test suites pass 100% (11 tests passed, 0 failed), `tsc --noEmit` 
 
 ---
 
-## 3. VERIFICATION EVIDENCE SUMMARY
+## 3. AUDIT REMEDIATION SUMMARY (AUDIT 2026-11-07)
+
+All 8 critical blockers identified in the Independent Audit Report (`AICO_v2.2.1_Audit_2026-11-07.md`) have been systematically addressed and verified:
+1. **P0 Security Context Propagation:** Implemented `requestContextStore` (`AsyncLocalStorage<PrincipalContext>`) in `context-store.ts`. Both HTTP and STDIO transports wrap execution fail-closed.
+2. **P0 Identity & Anti-Spoofing:** All MCP tools pull identity from `requestContextStore`. M13 ignores body-spoofed `requested_by`. M16 enforces Separation of Duties.
+3. **P0 Schema Compatibility:** Canonical SQLite schema RC2 (`schema-v050-rc2.sql` and `v050-target-schema.ts`) includes all required task and audit hash columns (`execution_status`, `version`, `prev_event_hash`, `payload_hash_sha256`).
+4. **P0 Hardened Workspace I/O:** `validateAndResolveSafePath` verifies real paths with `fs.realpathSync`, enforcing symlink/reparse-point defense, `overwrite: false`, and cross-agent isolation.
+5. **P0 Zero Fake Successes:** Complete 26-state transition engine (`TR-01`–`TR-26`), real database persistence, and bilingual FTS5 search wired into MCP registry.
+6. **P1 Client Auth Bridge:** Prohibited token argument on CLI; DPAPI and file-based token loading enforced.
+7. **P1 Git Mediation Hardening:** Exit code verification, real clone path existence check, commit secret scanner.
+8. **P1 Tamper-Evident Audit Chain:** Environment-driven HMAC key (`AICO_AUDIT_HMAC_KEY`) and anchor logging to `backup/audit_anchors.jsonl`.
+
+---
+
+## 4. VERIFICATION EVIDENCE SUMMARY
 
 | Check | Tool / Command | Result | Evidence |
 | :--- | :--- | :---: | :--- |
-| **TypeScript Static Check** | `npm.cmd run typecheck` | **PASS (0 errors)** | All sources and test files compiled cleanly under NodeNext ESM |
-| **Automated Test Suites** | `npm.cmd test` | **PASS (11/11)** | 5 suites, 11 tests passed, 0 failed, duration ~750ms |
+| **TypeScript Static Check** | `npm.cmd run typecheck` | **PASS (0 errors)** | All sources, services, tools, and test suites compile cleanly under NodeNext ESM |
+| **Automated Test Suites** | `npm.cmd test` | **PASS (12/12)** | 12 tests passed, 0 failed across all unit and integration suites |
 | **Tool Count (Local/STDIO)** | `t05-gateways-and-tools.test.ts` | **PASS (38 tools)** | Exactly 38 tools registered on Local Gateway |
 | **Tool Count (Public Gateway)** | `t05-gateways-and-tools.test.ts` | **PASS (29 tools)** | Exactly 29 allowlisted tools registered; 9 admin tools absent |
 | **Backward Compatibility** | `baseline.test.ts` / `t05` | **PASS (5 tools)** | `createBaseMcpServer()` preserves 5 legacy tools (`M01`–`M05`) |
+| **E2E Security & Fail-Closed** | `t07-integration-security.test.ts`| **PASS (8/8 checks)** | Unauth rejection, identity spoofing defense, SoD, workspace guard, Argon max_retries=0, 26 transitions, HMAC integrity |
 | **Backup & Restore Drill** | `t06-gateways-and-tools.test.ts` | **PASS** | Non-blocking VACUUM backup, SHA256 verified, restored with integrity = ok |
+| **NTFS ACL Dry-Run** | `apply-windows-acl.ps1` | **PASS** | Option A SIDs verified, pre-apply ACL backup generated, zero errors |
 | **Operator CLI Dashboard** | `npm run aico:dashboard` | **PASS** | Terminal dashboard renders cleanly with 6 agents & 5 pools |
 | **Production Database Lock** | `Get-FileHash aico.db` | **PASS** | Hash unchanged: `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416` |
 
 ---
 
-## 4. CONCLUSION
+## 5. CONCLUSION
 
 All code, services, contracts, security pipelines, deployment scripts, and test suites specified in the AICO v2.2.1 Implementation Pack have been completely implemented and rigorously validated.
 
