@@ -1,11 +1,12 @@
 # AICO V3 MASTER BLUEPRINT — EXECUTIVE OVERVIEW & STRATEGIC ROADMAP
 
 **Document ID:** `BP-V3-00`  
-**Version:** `3.0.0-draft`  
+**Version:** `3.1.0-reconciled`  
 **Date:** 2026-11-07  
 **Author:** `flash-02` — Engineering & QA Lead  
 **Design Phase:** Architecture & Contracts Design Only (No Implementation Authorized)  
 **Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Commit `cd749107c4b34e26f61e14a238336e414f78779d`  
+**Actual HEAD:** `21f3aad16911eb076e2245a791bde51178a0d222`  
 **Target Workspace:** `D:\AI-COMPANY`
 
 ---
@@ -17,7 +18,7 @@ AICO (Personal AI Software Company) is evolving from a single-task, tool-driven 
 
 ```mermaid
 flowchart TD
-    Founder[("Founder & Company Owner\n(Human Final Authority)")]
+    Founder[("Founder & Company Owner\n(Human Final Authority - Principal)")]
     CEO["chatgpt-01\nChief Executive Officer\n(Strategy & Main Orchestrator)"]
     CTO["flash-01\nChief Technology Officer\n(Architecture & Tech Lead)"]
     QA["flash-02\nEngineering & QA Lead\n(Verification & Quality Control)"]
@@ -25,14 +26,14 @@ flowchart TD
     Argon1["argon-01\nPrincipal Architect\n(Specialist - Manual Only)"]
     Argon2["argon-02\nIndependent Auditor\n(Specialist - Manual Only)"]
 
-    Founder <== "Ultimate Approval & Policy Override" ==> CEO
+    Founder <== "Human Ed25519 Cryptographic Approval & Policy Override" ==> CEO
     CEO --> "Strategic Directives & Task Intake" --> CTO
     CTO <--> "Peer Architectural Alignment & Design Review" <--> QA
     CTO --> "Technical Delegation" --> SWE
     SWE --> "Code Deliverables" --> QA
     QA --> "Verification Evidence & Gate Sign-off" --> CTO
-    Founder -. "Mandatory Approval Gate (Per Invocation)" .-> Argon1
-    Founder -. "Mandatory Approval Gate (Per Invocation)" .-> Argon2
+    Founder -. "Mandatory Human Approval Gate (Per Invocation)" .-> Argon1
+    Founder -. "Mandatory Human Approval Gate (Per Invocation)" .-> Argon2
 ```
 
 ### 1.2 Strategic Goals
@@ -41,7 +42,7 @@ flowchart TD
 3. **Hierarchical Collaborative Orchestration:** Support full task decomposition into Directed Acyclic Graphs (DAGs), parallel execution via non-conflicting leases, checkpointing, and independent QA sign-offs before completion.
 4. **Dynamic Capability Discovery & Token Diet:** Eliminate bloated system prompts by dynamically matching task requirements to minimal skill profiles, loading tool definitions just-in-time.
 5. **Cost & Token Intelligence:** Track token expenditures across tasks, projects, models, and quota pools with model routing based on task complexity.
-6. **Zero-Trust Security & Inviolable Governance:** Guarantee fail-closed ABAC at the service and data layer, prevent identity spoofing, protect Windows NTFS workspace boundaries, and ensure Argon specialist invocations remain 100% manual and bound to cryptographic Founder approvals.
+6. **Zero-Trust Security & Verifiable Human Governance:** Guarantee fail-closed ABAC at the service and data layer, prevent identity spoofing, protect Windows NTFS workspace boundaries, and ensure Argon specialist invocations remain 100% manual, requiring verifiable human Founder authorization with cryptographic signature and payload hash binding.
 
 ---
 
@@ -54,14 +55,13 @@ flowchart TD
 - **Task Workflow Orchestrator:** Complex DAG task graphs, subtask fan-out/fan-in, lease ownership, heartbeat monitoring, and recovery from offline workers.
 - **Dynamic Capability Registry:** Capability tagging, just-in-time skill activation, and runtime adapter abstractions.
 - **Model Routing & Cost Accounting:** Quota pool telemetry, token budget hard-caps, and intelligent complexity-based model routing.
-- **Security & Separation of Duties (SoD):** Multi-agent role checks, approval lifecycle management, and tamper-evident audit logging.
+- **Security & Separation of Duties (SoD):** Multi-agent role checks, verifiable human Founder approval lifecycle management, and tamper-evident audit logging.
 
 ### 2.2 Non-Goals for V3
 - **No Third-Party Control Plane Replacement:** The AICO MCP server is the canonical control plane. V3 will not outsource its company governance to AutoGen, CrewAI, LangGraph, or any black-box external orchestration platform.
-- **No Premature Microservices:** V3 will not split the backend into distributed microservices communicating over network hops (gRPC/HTTP), nor introduce distributed brokers like Kafka or RabbitMQ. All modular boundaries remain within an in-process Modular Monolith with an asynchronous outbox queue.
-- **No Agent Registry Expansion:** The company roster is strictly fixed to the 6 canonical principal agents (`chatgpt-01`, `flash-01`, `flash-02`, `codex-01`, `argon-01`, `argon-02`). No `flash-03` or Antigravity persona agents will be registered.
-- **No Automated Argon Execution:** Argon agents will never be included in automated fan-outs, background loops, or retry queues under any circumstance.
-- **No Direct Production Database Manipulation:** Production database migration remains deferred behind Gate G4; all V3 development and testing occurs in isolated sandbox environments.
+- **No Autonomous Production DB Migrations:** Gate G4 remains strictly manual and frozen. V3 sandbox implementation under `V3-G7` does NOT implicitly open Gate G4.
+- **No Automatic Argon Invocations:** Under no circumstances will Argon specialists be invoked, retried, or scheduled automatically.
+- **No Public Gateway Exposure:** Port 3335, ngrok, and external network exposures remain strictly disabled.
 
 ---
 
@@ -71,18 +71,18 @@ This Master Blueprint comprises 12 dedicated, highly detailed architecture speci
 
 | Index | Document File | Subsystem / Focus Area |
 | :---: | :--- | :--- |
-| **00** | [00_AICO_V3_MASTER_BLUEPRINT.md](file:///D:/AI-COMPANY/docs/blueprint/v3/00_AICO_V3_MASTER_BLUEPRINT.md) | Executive Blueprint, Vision, System Overview & Phased Roadmap |
-| **01** | [01_CURRENT_STATE_AND_GAP_ANALYSIS.md](file:///D:/AI-COMPANY/docs/blueprint/v3/01_CURRENT_STATE_AND_GAP_ANALYSIS.md) | Baseline Status of v2.2.1, Carry-Over Risk Register & Reusability Matrix |
-| **02** | [02_TARGET_ARCHITECTURE.md](file:///D:/AI-COMPANY/docs/blueprint/v3/02_TARGET_ARCHITECTURE.md) | Hexagonal Modular Monolith, Logical Layers & Architectural Trade-offs |
-| **03** | [03_DOMAIN_AND_DATABASE_DESIGN.md](file:///D:/AI-COMPANY/docs/blueprint/v3/03_DOMAIN_AND_DATABASE_DESIGN.md) | 23 Domain Entities, Schema Evolution & Zero-Loss Migration Paths |
-| **04** | [04_MCP_API_AND_EVENT_CONTRACTS.md](file:///D:/AI-COMPANY/docs/blueprint/v3/04_MCP_API_AND_EVENT_CONTRACTS.md) | Standardized Envelopes, Scope Maps, ABAC Policies & Tool Contracts |
-| **05** | [05_COLLABORATION_AND_CHAT_ROOM_ARCHITECTURE.md](file:///D:/AI-COMPANY/docs/blueprint/v3/05_COLLABORATION_AND_CHAT_ROOM_ARCHITECTURE.md) | Collaboration Hub, Chat Room Lifecycles, Channels, Threads & Visibility |
-| **06** | [06_UNIFIED_CONTEXT_AND_MEMORY_ARCHITECTURE.md](file:///D:/AI-COMPANY/docs/blueprint/v3/06_UNIFIED_CONTEXT_AND_MEMORY_ARCHITECTURE.md) | Scoped Memory Tiers, Provenance Tracking, Snapshots & Leakage Prevention |
-| **07** | [07_TASK_AND_COLLABORATIVE_ORCHESTRATION.md](file:///D:/AI-COMPANY/docs/blueprint/v3/07_TASK_AND_COLLABORATIVE_ORCHESTRATION.md) | DAG Task Workflow Engine, Parallel Leases & 30+ Transition State Machine |
-| **08** | [08_SKILLS_TOOLS_AND_PLUGIN_ECOSYSTEM.md](file:///D:/AI-COMPANY/docs/blueprint/v3/08_SKILLS_TOOLS_AND_PLUGIN_ECOSYSTEM.md) | Dynamic Capability Registry, Token Diet & Sandboxed Connectors |
-| **09** | [09_MODEL_ROUTING_TOKEN_AND_COST_INTELLIGENCE.md](file:///D:/AI-COMPANY/docs/blueprint/v3/09_MODEL_ROUTING_TOKEN_AND_COST_INTELLIGENCE.md) | Token Accounting, Quota Pool Telemetry & Complexity-Based Routing |
-| **10** | [10_SECURITY_GOVERNANCE_AND_RUNTIME_ADAPTERS.md](file:///D:/AI-COMPANY/docs/blueprint/v3/10_SECURITY_GOVERNANCE_AND_RUNTIME_ADAPTERS.md) | Zero-Trust ABAC, SoD, Argon Manual Gate & Runtime Worker Adapters |
-| **11** | [11_TEST_STRATEGY_ACCEPTANCE_GATES_AND_RELEASE_PLAN.md](file:///D:/AI-COMPANY/docs/blueprint/v3/11_TEST_STRATEGY_ACCEPTANCE_GATES_AND_RELEASE_PLAN.md) | Test Strategy, Quality Gates (V3-G0 to V3-G7) & Rollback Runbooks |
+| **00** | [00_AICO_V3_MASTER_BLUEPRINT.md](./00_AICO_V3_MASTER_BLUEPRINT.md) | Executive Blueprint, Vision, System Overview, Traceability & Phased Roadmap |
+| **01** | [01_CURRENT_STATE_AND_GAP_ANALYSIS.md](./01_CURRENT_STATE_AND_GAP_ANALYSIS.md) | Baseline Status of v2.2.1, Carry-Over Risk Register & Reusability Matrix |
+| **02** | [02_TARGET_ARCHITECTURE.md](./02_TARGET_ARCHITECTURE.md) | Hexagonal Modular Monolith, Logical Layers & Architectural Trade-offs |
+| **03** | [03_DOMAIN_AND_DATABASE_DESIGN.md](./03_DOMAIN_AND_DATABASE_DESIGN.md) | 24 Domain Entities, 27 Base Tables, FTS5 Virtual Table, Triggers & Views |
+| **04** | [04_MCP_API_AND_EVENT_CONTRACTS.md](./04_MCP_API_AND_EVENT_CONTRACTS.md) | 28 Standardized MCP Tools, Scope Maps, ABAC Policies & Event Contracts |
+| **05** | [05_COLLABORATION_AND_CHAT_ROOM_ARCHITECTURE.md](./05_COLLABORATION_AND_CHAT_ROOM_ARCHITECTURE.md) | Collaboration Hub, 6 Chat Room Types, Threads, Mentions & Inbox Notifications |
+| **06** | [06_UNIFIED_CONTEXT_AND_MEMORY_ARCHITECTURE.md](./06_UNIFIED_CONTEXT_AND_MEMORY_ARCHITECTURE.md) | Scoped Memory Tiers, Provenance Tracking, Snapshots & Leakage Prevention |
+| **07** | [07_TASK_AND_COLLABORATIVE_ORCHESTRATION.md](./07_TASK_AND_COLLABORATIVE_ORCHESTRATION.md) | DAG Task Workflow Engine, 23 States, 26 Transitions & Partitioned Lease Recovery |
+| **08** | [08_SKILLS_TOOLS_AND_PLUGIN_ECOSYSTEM.md](./08_SKILLS_TOOLS_AND_PLUGIN_ECOSYSTEM.md) | Dynamic Capability Registry, Token Diet & Sandboxed Connectors |
+| **09** | [09_MODEL_ROUTING_TOKEN_AND_COST_INTELLIGENCE.md](./09_MODEL_ROUTING_TOKEN_AND_COST_INTELLIGENCE.md) | Token Accounting, Quota Pool Telemetry & Complexity-Based Routing |
+| **10** | [10_SECURITY_GOVERNANCE_AND_RUNTIME_ADAPTERS.md](./10_SECURITY_GOVERNANCE_AND_RUNTIME_ADAPTERS.md) | Zero-Trust ABAC, SoD, Human Founder Verifiable Gate & Runtime Adapters |
+| **11** | [11_TEST_STRATEGY_ACCEPTANCE_GATES_AND_RELEASE_PLAN.md](./11_TEST_STRATEGY_ACCEPTANCE_GATES_AND_RELEASE_PLAN.md) | 7-Level Test Pyramid, Quality Gates (V3-G0 to V3-G7) & Safe Recovery Runbooks |
 
 ---
 
@@ -93,28 +93,28 @@ The AICO V3 platform is structured into seven high-cohesion, loosely coupled cor
 ```mermaid
 graph TD
     subgraph S1["Module 1: Governance & Security Layer"]
-        Auth[Identity & Credential Service]
+        Auth[Identity & Human Principal Service]
         ABAC[ABAC & Policy Engine]
-        Approval[Approval Lifecycle Service]
+        Approval[Verifiable Human Approval Service]
         Audit[HMAC-SHA256 Audit Anchor Engine]
     end
 
     subgraph S2["Module 2: Communication & Collaboration"]
-        RoomMgr[Chat Room Manager]
+        RoomMgr[Chat Room Manager - 6 Types]
         MsgBroker[Threaded Message Broker]
-        Notify[Ack & Delivery Tracker]
+        Notify[Ack, Delivery & Inbox Tracker]
     end
 
     subgraph S3["Module 3: Unified Memory & Context"]
-        MemPart[Scoped Memory Partitions]
-        ContextEngine[Context Snapshot & Invalidation Engine]
+        MemPart[Scoped Memory Partitions - 5 Tiers]
+        ContextEngine[Context Snapshot Engine]
         KnowSearch[Hybrid FTS5 & Vector Knowledge Index]
     end
 
     subgraph S4["Module 4: Orchestration & Workflow Engine"]
         DAG[Task DAG Decomposition Engine]
-        LeaseMgr[Distributed Lease & Recovery Manager]
-        StateMachine[30+ State Transition Engine]
+        LeaseMgr[Partitioned Lease & Recovery Manager]
+        StateMachine[23-State Canonical Transition Engine]
     end
 
     subgraph S5["Module 5: Capability & Intelligence"]
@@ -125,12 +125,13 @@ graph TD
 
     subgraph S6["Module 6: Runtime Adapters & Gateways"]
         StdioAdapter[STDIO Stream Frame Guard]
-        HttpAdapter[Local Gateway :3334 10-Step Pipeline]
+        HttpAdapter[Local Gateway :3334 Loopback Adapter]
         WorkerBridge[Antigravity / Codex Runtime Bridge]
     end
 
     subgraph S7["Module 7: Persistence & Storage"]
-        SQLite[(SQLite Modular Storage)]
+        SQLite[(SQLite WAL Modular Storage - 27 Tables)]
+        EventOutbox[(Transactional Event Outbox)]
         WorkspaceFs[(Windows NTFS Isolated Workspaces)]
     end
 
@@ -161,38 +162,203 @@ Implementation of V3 will proceed strictly in phased increments, with every phas
 
 ```mermaid
 flowchart LR
-    P0["Phase 0\nFoundation & Risk Remediation"] --> P1["Phase 1\nCollaboration Hub & Chat Rooms"]
-    P1 --> P2["Phase 2\nUnified Context & Memory Engine"]
-    P2 --> P3["Phase 3\nTask DAG & Collaborative Workflow"]
-    P3 --> P4["Phase 4\nCapability Registry & Token Diet"]
-    P4 --> P5["Phase 5\nCost Intelligence & Runtime Adapters"]
-    P5 --> P6["Phase 6\nHardening, Rehearsal & Release"]
+    P0["Phase 0\nFoundation & Risk Remediation"] --> P1["Phase 1\nDomain & Database Sandbox"]
+    P1 --> P2["Phase 2\nIn-Process Event Bus & MCP Core"]
+    P2 --> P3["Phase 3\nCollaboration Hub & Chat Rooms"]
+    P3 --> P4["Phase 4\nUnified Memory & Context Engine"]
+    P4 --> P5["Phase 5\nTask Orchestration & Lease Engine"]
+    P5 --> P6["Phase 6\nCollaborative Multi-Agent Integration"]
+    P6 --> P7["Phase 7\nSandbox Acceptance & V3-G7 Sign-Off"]
 ```
 
-| Phase | Core Objective | Primary Deliverables | Pre-requisite Gate |
-| :--- | :--- | :--- | :---: |
-| **Phase 0: Baseline & Risks** | Freeze baseline, remediate v2.2.1 carry-over risks | Patched approval expiration, lease timer tests, audit truncate defense | `V3-G0` |
-| **Phase 1: Collaboration Hub** | Multi-agent communication | Chat rooms, membership roles, threads, mentions, read acks | `V3-G1` |
-| **Phase 2: Context & Memory** | Scoped memory and context engine | Scoped memory partitions, context snapshots, knowledge search | `V3-G2` |
-| **Phase 3: Workflow Engine** | Complex task collaboration | DAG subtask decomposition, parallel leases, review SoD | `V3-G3` |
-| **Phase 4: Capability & Skills** | Dynamic loading & token diet | Capability profile matching, on-demand skill loader, MCP tools | `V3-G4` |
-| **Phase 5: Intelligence & Cost** | Cost control & multi-runtime | Complexity-based model routing, token quota caps, runtime bridge | `V3-G5` |
-| **Phase 6: Release & Audit** | Full verification & readiness | 100% test coverage, disaster recovery drills, Founder sign-off | `V3-G6` -> `V3-G7` |
+| Phase | Core Objective | Primary Deliverables | Pre-requisite Gate | Target Gate |
+| :--- | :--- | :--- | :---: | :---: |
+| **Phase 0: Baseline & Risks** | Freeze baseline, remediate v2.2.1 carry-over risks | Patched approval expiration, lease timer tests, audit truncate defense | Pre-V3 | `V3-G0` |
+| **Phase 1: Domain & DB** | Build isolated SQLite sandbox schema | 27 tables, 1 virtual table, 3 triggers, 4 views in test sandbox | `V3-G0` | `V3-G1` |
+| **Phase 2: Event & MCP** | Core protocol and security pipeline | Event bus, Zod contracts, token auth, error mapping | `V3-G1` | `V3-G2` |
+| **Phase 3: Collaboration Hub** | Multi-agent communication | 6 chat room types, memberships, threads, mentions, notifications inbox | `V3-G2` | `V3-G3` |
+| **Phase 4: Context & Memory** | Scoped memory and context engine | 5-tier memory partitions, context snapshots, FTS5 search | `V3-G3` | `V3-G4` |
+| **Phase 5: Workflow Engine** | Complex task collaboration | DAG decomposition, 23 states, 26 transitions, partitioned lease recovery | `V3-G4` | `V3-G5` |
+| **Phase 6: Multi-Agent E2E** | Integrated agent collaboration | JIT skill loader, complexity routing, token caps, E2E test suite | `V3-G5` | `V3-G6` |
+| **Phase 7: Sandbox Sign-Off** | Full sandbox verification & audit | 100% test pass, zero vulnerabilities, traceability report | `V3-G6` | `V3-G7` |
 
 ---
 
-## 6. QUALITY & ACCEPTANCE GATES (V3 SPECIFIC)
+## 6. UNIFIED V3 QUALITY GATES (`V3-G0` TO `V3-G7`)
 
-To avoid conflation with existing operational gates (such as Gate G4 for database migration), AICO V3 defines seven distinct strategic approval gates:
+To ensure absolute consistency across all 12 Master Blueprint documents, the definition of Gates `V3-G0` through `V3-G7` is strictly unified as follows:
 
-- **`V3-G0`: Baseline & Risk Freeze Gate** — Acceptance of the v2.2.1 risk register and baseline freeze.
-- **`V3-G1`: Product Requirements & Architecture Gate** — Founder approval of the complete Master Blueprint package.
-- **`V3-G2`: Domain Model & Database Schema Gate** — Approval of the 23 domain entities and backward-compatible migration plan.
-- **`V3-G3`: API, MCP & Event Contracts Gate** — Approval of all MCP tool contracts and ABAC policies.
-- **`V3-G4`: Security, SoD & Governance Gate** — Independent verification of Argon manual gates and threat mitigations.
-- **`V3-G5`: Test Suite & Verification Harness Gate** — Approval of automated test suites and black-box verification scenarios.
-- **`V3-G6`: Stage Acceptance & Production Readiness Gate** — 100% pass across all test suites on the staging sandbox.
-- **`V3-G7`: Founder Implementation & Release Authorization** — Final human Founder authorization to apply changes to production environments.
+- **`V3-G0`: Master Blueprint & Architecture Sign-Off** — Formal human Founder approval of the complete Master Blueprint specification package (`BP-V3-00` through `BP-V3-11`).
+- **`V3-G1`: Domain Model & Database Schema Sandbox Validation** — Independent verification of DDL, SQLite WAL configuration, triggers, and compatibility views in an isolated sandbox database. (Production DB remains untouched).
+- **`V3-G2`: Event Bus & MCP Core Transport Validation** — 100% pass of contract and security pipeline tests across STDIO and HTTP loopback (:3334).
+- **`V3-G3`: Collaboration Hub & Chat Room Engine Validation** — Verification of the 6 room types, thread lifecycle, mention parsing, and notifications inbox in sandbox.
+- **`V3-G4`: Unified Context & Multi-Tier Memory Validation** — Verification of the 5-tier memory store, FTS5 sync triggers, context snapshotting, and strict partition isolation.
+- **`V3-G5`: Task Orchestration, Lease & State Machine Validation** — Verification of the canonical 23-state, 26-transition engine, DAG cycle detection, partitioned lease recovery (Argon to `BLOCKED_MANUAL_INTERVENTION`), and SoD enforcement.
+- **`V3-G6`: Multi-Agent Collaborative Integration Validation** — Successful end-to-end multi-agent execution of complex feature workflows in the sandbox environment.
+- **`V3-G7`: Sandbox Implementation Sign-Off** — Final independent QA audit sign-off by `flash-02` proving 100% test pass, zero security defects, and complete traceability.
 
-> [!IMPORTANT]
-> **Implementation Prohibition:** Under no circumstances will implementation code, migrations, or tool changes begin prior to formal human Founder approval of Gate `V3-G1`.
+> [!CAUTION]
+> **CRITICAL BOUNDARY ENFORCEMENT:**  
+> **Gate `V3-G7` authorizes sandbox implementation completion ONLY.**  
+> `V3-G7` does **NOT** authorize production deployment, does **NOT** apply Windows NTFS ACLs, and does **NOT** open production database Gate G4. Production Gate G4 is a separate, human-gated operational milestone that requires independent, explicit human Founder authorization.
+
+---
+
+## 7. CANONICAL REQUIREMENTS SPECIFICATION (`REQ-V3-xxx`)
+
+The architecture and contracts of AICO V3 satisfy 32 canonical engineering requirements:
+
+### Architecture & Transports
+- **`REQ-V3-001`:** The system must implement a Hexagonal Modular Monolith where dependencies flow strictly inward.
+- **`REQ-V3-002`:** All inter-subsystem domain communications must use typed in-process domain events adhering to `aico.event.v3`.
+- **`REQ-V3-003`:** The system must expose tools via standard Model Context Protocol (MCP) JSON-RPC 2.0 over STDIO and HTTP loopback (`127.0.0.1:3334`).
+- **`REQ-V3-004`:** Public Gateway (:3335) and external network tunnels (ngrok) must remain disabled by default.
+- **`REQ-V3-005`:** STDIO transport must enforce a strict raw frame guard (2 MiB cap) and never write non-JSON logs to stdout.
+
+### Domain & Storage
+- **`REQ-V3-006`:** The domain model must encapsulate exactly 24 core domain entities.
+- **`REQ-V3-007`:** The physical database schema must comprise exactly 27 base tables, 1 virtual table (`memory_fts`), 3 triggers, and 4 compatibility views.
+- **`REQ-V3-008`:** Database connections must enforce SQLite WAL mode (`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;`).
+- **`REQ-V3-009`:** The system must implement a Transactional Outbox pattern (`event_outbox`) for atomic domain event dispatch.
+- **`REQ-V3-010`:** The system must maintain 4 backward-compatible views (`v_tasks_legacy`, `v_agents_legacy`, `v_quota_legacy`, `v_approvals_legacy`).
+
+### Collaboration Hub
+- **`REQ-V3-011`:** The system must support exactly 6 chat room types: `EXECUTIVE_BOARDROOM`, `ANNOUNCEMENTS`, `DEPARTMENT_OFFICE`, `PROJECT_ROOM`, `TASK_ROOM`, and `DIRECT_MESSAGE`.
+- **`REQ-V3-012`:** Messages must be typed (`TEXT`, `DIRECTIVE`, `PROPOSAL`, `REVIEW_FEEDBACK`, `GATE_STATUS`, `SYSTEM_NOTICE`).
+- **`REQ-V3-013`:** Discussion threads must have a full lifecycle (`OPEN`, `RESOLVED`, `CLOSED`) with resolution summaries stored in memory.
+- **`REQ-V3-014`:** `@agent-id` mentions must be extracted and routed to `notifications_inbox` without bloated context dumps.
+- **`REQ-V3-015`:** Ephemeral task rooms must auto-provision on complex task creation and auto-archive on task completion.
+
+### Unified Memory & Context
+- **`REQ-V3-016`:** Memory must enforce a 5-tier hierarchy: `COMPANY`, `PROJECT`, `TASK`, `ROOM`, `AGENT_PRIVATE`.
+- **`REQ-V3-017`:** `AGENT_PRIVATE` memory must be strictly partitioned; zero cross-agent leakage.
+- **`REQ-V3-018`:** Context Snapshots must capture verified facts, active hypotheses, and pending steps in <1,500 tokens.
+- **`REQ-V3-019`:** Knowledge must support provenance tracking (agent, commit/file ref, confidence score) and tombstoning soft deletion.
+- **`REQ-V3-020`:** SQLite FTS5 search must synchronize automatically via database triggers on `memory_entries`.
+
+### Task Orchestration & Workflow
+- **`REQ-V3-021`:** The task state machine must enforce exactly 23 states and 26 valid transitions.
+- **`REQ-V3-022`:** Task dependencies must form a Directed Acyclic Graph (DAG) with automated cycle detection (Kahn's algorithm).
+- **`REQ-V3-023`:** Concurrent task claims must require exclusive leases with nonce tracking and 60-second heartbeats.
+- **`REQ-V3-024`:** Stale lease recovery must partition tasks: standard tasks forfeit to queue; expired Argon tasks transition to `BLOCKED_MANUAL_INTERVENTION`.
+- **`REQ-V3-025`:** Technical reviews and QA verifications must enforce the Four-Eyes Principle (Separation of Duties).
+
+### Capabilities & Model Intelligence
+- **`REQ-V3-026`:** The Capability Registry must profile tasks and dynamically inject only 1-2 relevant skills per turn (Context Diet).
+- **`REQ-V3-027`:** Model routing must match task complexity (`TRIVIAL`, `STANDARD`, `COMPLEX`, `SPECIALIST`) to cost-optimal models.
+- **`REQ-V3-028`:** Token usage must be tracked per task and enforce soft warnings (80%) and hard cut-offs (100%).
+
+### Security, Governance & Verification
+- **`REQ-V3-029`:** The Founder must be modeled as a human security principal, strictly separate from AI agents.
+- **`REQ-V3-030`:** Founder approvals must require verifiable human authorization: payload SHA-256 match, human authentication, Ed25519 signature verification, and atomic single-use consumption.
+- **`REQ-V3-031`:** Argon specialists (`argon-01`, `argon-02`) must NEVER be auto-invoked, retried, or scheduled.
+- **`REQ-V3-032`:** Audit events must form an immutable forward-hash chain in SQLite with external JSONL anchoring and truncation defense.
+
+---
+
+## 8. COMPLETE TRACEABILITY MATRIX
+
+| Req ID | Subsystem / Architecture | Domain Entity | MCP Tool / Event | Security Rule | Acceptance Test | Phase & Gate |
+| :--- | :--- | :--- | :--- | :--- | :--- | :---: |
+| `REQ-V3-001` | Hexagonal Architecture | Core Domain | `aico.event.v3` | Layer Inward Rule | `test/unit/arch-boundary.test.ts` | P0 / `V3-G0` |
+| `REQ-V3-002` | Event Bus | `EVENT_OUTBOX` | `AicoDomainEvent` | Payload Tamper Hash | `test/contracts/event-envelope.test.ts` | P2 / `V3-G2` |
+| `REQ-V3-003` | Protocol Adapters | N/A | `company_*` Tools | Timing-Safe Auth | `test/integration/http-adapter.test.ts` | P2 / `V3-G2` |
+| `REQ-V3-004` | Gateway Security | N/A | Local Loopback | Localhost Binding | `test/security/gateway-binding.test.ts` | P2 / `V3-G2` |
+| `REQ-V3-005` | STDIO Security | N/A | STDIO Protocol | 2 MiB Frame Cap | `test/integration/stdio-adapter.test.ts` | P2 / `V3-G2` |
+| `REQ-V3-006` | Domain Model | 24 Entities | Repository Interfaces | Entity Integrity | `test/unit/domain-entities.test.ts` | P1 / `V3-G1` |
+| `REQ-V3-007` | Database Persistence| 27 Tables, Views | SQLite WAL | Foreign Keys ON | `test/integration/sqlite-wal.test.ts` | P1 / `V3-G1` |
+| `REQ-V3-008` | SQLite Engine | `ConnectionManager`| WAL + Timeout | 5000ms Busy Timeout | `test/integration/sqlite-busy.test.ts` | P1 / `V3-G1` |
+| `REQ-V3-009` | Outbox Pattern | `EVENT_OUTBOX` | Event Dispatcher | Transactional Atomicity| `test/integration/outbox-dispatch.test.ts`| P2 / `V3-G2` |
+| `REQ-V3-010` | Backward Compat | 4 Views | Legacy Tool Wrappers| Schema View Parity | `test/integration/legacy-views.test.ts` | P1 / `V3-G1` |
+| `REQ-V3-011` | Collaboration Hub | `CHAT_ROOM` | `company_create_room` | Room Role Matrix | `test/integration/chat-rooms.test.ts` | P3 / `V3-G3` |
+| `REQ-V3-012` | Chat Broker | `MESSAGE` | `company_post_message`| ABAC Room Member | `test/contracts/message-schema.test.ts` | P3 / `V3-G3` |
+| `REQ-V3-013` | Thread Engine | `THREAD` | `company_resolve_thread`| Decision Capture | `test/integration/threads.test.ts` | P3 / `V3-G3` |
+| `REQ-V3-014` | Mention Engine | `NOTIFICATIONS_INBOX`| `aico.chat.mention` | Scoped Inbox Read | `test/integration/mentions.test.ts` | P3 / `V3-G3` |
+| `REQ-V3-015` | Room Lifecycle | `CHAT_ROOM` | Task Room Lifecycle | Auto-Archive on DONE | `test/integration/room-lifecycle.test.ts` | P3 / `V3-G3` |
+| `REQ-V3-016` | Scoped Memory | `MEMORY_ENTRY` | `company_store_memory`| 5-Tier Scoping | `test/unit/memory-scoping.test.ts` | P4 / `V3-G4` |
+| `REQ-V3-017` | Memory Isolation | `MEMORY_ENTRY` | `company_query_memory`| ABAC Private Guard | `test/security/memory-leakage.test.ts` | P4 / `V3-G4` |
+| `REQ-V3-018` | Context Snapshot | `CONTEXT_SNAPSHOT` | `company_create_snapshot`| <1,500 Token Cap | `test/unit/context-snapshot.test.ts` | P4 / `V3-G4` |
+| `REQ-V3-019` | Knowledge Tracking | `KNOWLEDGE_DOCUMENT`| Knowledge Indexer | Provenance & Tombstone | `test/unit/knowledge-provenance.test.ts` | P4 / `V3-G4` |
+| `REQ-V3-020` | Full-Text Search | `memory_fts` | SQLite FTS5 Search | Trigger Auto-Sync | `test/integration/fts5-sync.test.ts` | P4 / `V3-G4` |
+| `REQ-V3-021` | Workflow Engine | `TASK` | 26 State Transitions | Transition Matrix | `test/unit/state-machine-23.test.ts` | P5 / `V3-G5` |
+| `REQ-V3-022` | DAG Engine | `TASK_DEPENDENCY` | `company_create_task` | Kahn's Cycle Check | `test/unit/dag-validator.test.ts` | P5 / `V3-G5` |
+| `REQ-V3-023` | Lease Engine | `TASK_LEASE` | `company_claim_task` | Nonce & Heartbeat | `test/stress/lease-contention.test.ts` | P5 / `V3-G5` |
+| `REQ-V3-024` | Lease Recovery | `TASK_LEASE` | Lease Sweeper Cron | Partitioned Recovery | `test/recovery/lease-timeout.test.ts` | P5 / `V3-G5` |
+| `REQ-V3-025` | Review SoD | `TASK_EXECUTION` | `company_approve_review`| Four-Eyes Principle | `test/security/sod-enforcement.test.ts` | P5 / `V3-G5` |
+| `REQ-V3-026` | Capability Registry | `SKILL`, `CAPABILITY` | JIT Skill Loader | Task Profile Match | `test/unit/token-diet.test.ts` | P6 / `V3-G6` |
+| `REQ-V3-027` | Model Routing | `TOKEN_USAGE` | Complexity Router | Complexity Tiering | `test/unit/model-router.test.ts` | P6 / `V3-G6` |
+| `REQ-V3-028` | Token Budgeting | `TOKEN_USAGE` | Usage Guardrails | Hard 100% Cut-Off | `test/security/budget-cutoff.test.ts` | P6 / `V3-G6` |
+| `REQ-V3-029` | Human Principal | `PRINCIPAL` | Identity Service | Human vs Agent Check | `test/security/principal-auth.test.ts` | P0 / `V3-G0` |
+| `REQ-V3-030` | Verifiable Approval | `APPROVAL` | `company_decide_approval`| 5-Step Human Pipeline| `test/security/verifiable-approval.test.ts`| P0 / `V3-G0` |
+| `REQ-V3-031` | Argon Isolation | `APPROVAL` | Specialist Invocation| Zero Auto-Invocation | `test/security/argon-gate.test.ts` | P0 / `V3-G0` |
+| `REQ-V3-032` | Audit Hash Chain | `AUDIT_EVENT` | `company_query_audit` | Monotonic SHA-256 | `test/security/audit-chain.test.ts` | P0 / `V3-G0` |
+
+---
+
+## 9. OPEN ARCHITECTURAL DECISIONS (`OPEN_DECISIONS`)
+
+The following design decisions have been analyzed and formulated with engineering trade-offs. Each decision is submitted for formal Founder review:
+
+### `DEC-V3-001`: Vector Search Storage Engine Selection
+- **Decision Owner:** Founder (Human) & CTO (`flash-01`)
+- **Context:** Memory retrieval in Phase 4 requires semantic vector similarity search in addition to keyword FTS5.
+- **Options Considered:**
+  1. *Option A (Recommended):* Embedded `sqlite-vec` extension compiled for Windows x64.
+  2. *Option B:* In-process JavaScript Float32Array cosine similarity index stored in SQLite BLOBs.
+  3. *Option C:* External standalone vector database (e.g. Qdrant / Chroma).
+- **Trade-off Analysis:**
+  - Option A provides native SQL vector queries (`MATCH knn`), high speed, and zero external services. Requires pre-built native DLL on Windows.
+  - Option B has zero native dependencies and runs purely in Node.js, but scales poorly beyond 50,000 vectors.
+  - Option C violates the local-first single-process Tenet and adds substantial operational overhead.
+- **Engineering Recommendation:** Adopt **Option B** for Phase 4 sandbox baseline (100% portable pure TypeScript), with an abstraction port allowing transparent upgrade to **Option A** (`sqlite-vec`) when database scale exceeds 10,000 entries.
+- **Approval Status:** `PENDING_FOUNDER_DECISION`
+
+### `DEC-V3-002`: Human Founder Authentication Mechanism
+- **Decision Owner:** Founder (Human)
+- **Context:** To satisfy `REQ-V3-030`, Founder approvals require cryptographic proof of human authorization rather than simple bearer tokens.
+- **Options Considered:**
+  1. *Option A (Recommended):* Local Ed25519 CLI Keypair stored in Windows DPAPI / SSH agent; signs approval payloads via local CLI helper (`aico-sign.exe` / script).
+  2. *Option B:* Local WebAuthn / FIDO2 hardware token portal served on `127.0.0.1:3336`.
+  3. *Option C:* Time-based One-Time Password (TOTP) entered via CLI prompt.
+- **Trade-off Analysis:**
+  - Option A provides mathematical non-repudiation, deterministic verification in Node.js `crypto.verify`, and seamless CLI integration.
+  - Option B provides touch-based physical security, but requires browser redirection and WebAuthn ceremony complexity.
+  - Option C provides authentication but lacks cryptographic binding to the approval payload hash.
+- **Engineering Recommendation:** Adopt **Option A** (Local Ed25519 Keypair with DPAPI private key protection).
+- **Approval Status:** `PENDING_FOUNDER_DECISION`
+
+### `DEC-V3-003`: Local Background Worker Process Architecture
+- **Decision Owner:** CTO (`flash-01`) & QA Lead (`flash-02`)
+- **Context:** Background maintenance tasks (stale lease sweeper, message compaction, audit log anchoring) must run periodically.
+- **Options Considered:**
+  1. *Option A (Recommended):* In-process Node.js `setInterval` timers within the MCP server process.
+  2. *Option B:* Separate OS background process managed via Windows Task Scheduler or Windows Service (WinSW).
+  3. *Option C:* Worker Threads within the main Node.js process.
+- **Trade-off Analysis:**
+  - Option A shares SQLite connection pools and memory state with zero IPC overhead, but stops if the MCP server process terminates.
+  - Option B ensures background sweeps continue when no agent is connected, but introduces multi-process SQLite write lock contention.
+  - Option C provides thread isolation while remaining in the same OS process.
+- **Engineering Recommendation:** Adopt **Option A** for the V3 sandbox implementation to maintain a strictly unified single-process architecture, designing the background worker as an independent interactor that can be extracted to Option B if continuous 24/7 autonomous maintenance is required.
+- **Approval Status:** `PENDING_FOUNDER_DECISION`
+
+### `DEC-V3-004`: Outbox Dispatcher Triggering Mechanism
+- **Decision Owner:** CTO (`flash-01`)
+- **Context:** The `event_outbox` table must publish pending domain events to registered handlers.
+- **Options Considered:**
+  1. *Option A (Recommended):* Synchronous post-commit in-process event trigger with fallback background poll (hybrid).
+  2. *Option B:* Pure polling sweeper running every 500ms.
+  3. *Option C:* SQLite `update_hook` native callback.
+- **Trade-off Analysis:**
+  - Option A provides immediate, zero-latency event handling for normal flows while guaranteeing zero lost events via the polling fallback.
+  - Option B introduces 500ms latency to event handling and wastes CPU cycles when idle.
+  - Option C relies on undocumented native SQLite driver hooks that can destabilize `better-sqlite3`.
+- **Engineering Recommendation:** Adopt **Option A** (Immediate in-process event notification with 30-second sweeper fallback).
+- **Approval Status:** `PENDING_FOUNDER_DECISION`
+
+---
+
+## 10. REMAINING ARCHITECTURAL RISKS
+
+1. **Windows NTFS Path Latency:** Windows file system operations on deep directories can exhibit higher latency than Linux; all artifact scanning and Git operations must employ cached tree hashes.
+2. **SQLite Write Concurrency Under Load:** Although WAL mode allows unlimited concurrent readers, write transactions are serialized. High-burst multi-agent message volume must utilize batching and retry backoffs.
+3. **Model Context Window Asymmetry:** Agents utilize different models (Gemini 1M, Claude 200k, GPT-4o 128k); context snapshots must strictly format for the lowest common denominator (<128k) to avoid truncation when tasks are reassigned.

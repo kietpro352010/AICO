@@ -1,20 +1,31 @@
 # AICO V3 MASTER BLUEPRINT — DOMAIN MODEL & DATABASE ARCHITECTURE
 
 **Document ID:** `BP-V3-03`  
-**Version:** `3.0.0-draft`  
+**Version:** `3.1.0-reconciled`  
 **Date:** 2026-11-07  
 **Author:** `flash-02` — Engineering & QA Lead  
 **Design Phase:** Architecture & Contracts Design Only (No Implementation Authorized)  
 **Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Commit `cd749107c4b34e26f61e14a238336e414f78779d`  
+**Actual HEAD:** `21f3aad16911eb076e2245a791bde51178a0d222`  
 **Target Workspace:** `D:\AI-COMPANY`
 
 ---
 
-## 1. DOMAIN MODEL OVERVIEW
+## 1. DOMAIN MODEL OVERVIEW & CANONICAL INVENTORY
 
-The AICO V3 Domain Model encapsulates the complete lifecycle of an autonomous AI software company. It models corporate organization, agent identities, collaborative group rooms, multi-tier persistent memory, hierarchical task orchestration, capability discovery, token budget telemetry, cryptographic governance, and immutable audit logging.
+The AICO V3 Domain Model encapsulates the complete lifecycle of an autonomous AI software company (`REQ-V3-006`). It models corporate organization, agent identities, collaborative group rooms, multi-tier persistent memory, hierarchical task orchestration, capability discovery, token budget telemetry, cryptographic governance, and immutable audit logging.
 
-### 1.1 Complete Entity-Relationship Diagram
+### 1.1 Canonical Schema Counts & Inventory
+To ensure exact agreement between documentation, ER diagrams, and target DDL scripts, the canonical schema metrics are established as:
+
+- **Core Domain Entities:** Exactly **24** Entities.
+- **Physical SQLite Base Tables:** Exactly **27** Tables.
+- **Virtual Tables:** Exactly **1** Virtual Table (`memory_fts` via SQLite FTS5).
+- **Database Synchronization Triggers:** Exactly **3** Triggers (`trg_memory_entries_ai`, `trg_memory_entries_ad`, `trg_memory_entries_au`).
+- **Backward-Compatible Legacy Views:** Exactly **4** Views (`v_tasks_legacy`, `v_agents_legacy`, `v_quota_legacy`, `v_approvals_legacy`).
+- **Performance & Integrity Indexes:** Exactly **16** Indexes.
+
+### 1.2 Entity-Relationship Diagram
 
 ```mermaid
 erDiagram
@@ -32,8 +43,12 @@ erDiagram
     AGENT ||--o{ MEMORY_ENTRY : "owns_private"
     AGENT ||--o{ AGENT_SESSION : "runs"
     AGENT ||--o{ TOKEN_USAGE : "consumes"
-    AGENT ||--o{ APPROVAL : "requests_or_reviews"
+    AGENT ||--o{ APPROVAL : "requests"
     AGENT ||--o{ CAPABILITY_MAPPING : "possesses"
+    AGENT ||--o{ NOTIFICATIONS_INBOX : "receives"
+
+    PRINCIPAL ||--o{ APPROVAL : "authorizes_human"
+    PRINCIPAL ||--o| AGENT : "binds_agent"
 
     CHAT_ROOM ||--o{ ROOM_MEMBERSHIP : "contains"
     CHAT_ROOM ||--o{ MESSAGE : "contains"
@@ -59,22 +74,21 @@ erDiagram
     APPROVAL ||--o{ AUDIT_EVENT : "triggers"
     TASK ||--o{ AUDIT_EVENT : "logs"
     MESSAGE ||--o{ AUDIT_EVENT : "logs"
+    TASK ||--o{ EVENT_OUTBOX : "enqueues"
 ```
 
 ---
 
-## 2. DETAILED SPECIFICATION OF THE 23 CORE DOMAIN ENTITIES
+## 2. DETAILED SPECIFICATION OF THE 24 CORE DOMAIN ENTITIES
 
-### 2.1 Entity Catalog & Metadata
-
-The 23 domain entities are grouped into 7 bounded contexts:
+### 2.1 Entity Groupings by Bounded Context
 1. **Organization & Identity Context:** `DEPARTMENT`, `AGENT`, `PRINCIPAL`, `CAPABILITY`, `AGENT_CAPABILITY`
-2. **Project & Collaboration Context:** `PROJECT`, `CHAT_ROOM`, `ROOM_MEMBERSHIP`, `MESSAGE`, `THREAD`
+2. **Project & Collaboration Context:** `PROJECT`, `CHAT_ROOM`, `ROOM_MEMBERSHIP`, `MESSAGE`, `THREAD`, `NOTIFICATIONS_INBOX`
 3. **Task & Workflow Context:** `TASK`, `TASK_DEPENDENCY`, `TASK_EXECUTION`, `TASK_LEASE`
 4. **Context, Memory & Knowledge Context:** `CONTEXT_SNAPSHOT`, `MEMORY_ENTRY`, `KNOWLEDGE_DOCUMENT`, `ARTIFACT`
 5. **Skills & Ecosystem Context:** `SKILL`, `PLUGIN`
 6. **Telemetry & Runtime Context:** `AGENT_SESSION`, `RUNTIME_OBSERVATION`, `TOKEN_USAGE`
-7. **Governance & Audit Context:** `APPROVAL`, `AUDIT_EVENT`
+7. **Governance, Events & Audit Context:** `APPROVAL`, `AUDIT_EVENT`, `EVENT_OUTBOX`
 
 ---
 
@@ -93,30 +107,32 @@ The 23 domain entities are grouped into 7 bounded contexts:
 - **Lifecycle:** Persistent static data configured via `company-manifest.json`.
 
 #### 2. Entity: `AGENT`
-- **Purpose:** Represents an AI agent persona or human operator within AICO.
+- **Purpose:** Represents an artificial intelligence persona within AICO. Strictly AI agents; the Founder is modeled separately as a human security principal (`REQ-V3-029`).
 - **Attributes:**
-  - `agent_id` (TEXT, PK): Canonical slug, e.g., `chatgpt-01`, `flash-01`, `flash-02`, `codex-01`, `argon-01`, `argon-02`, `founder`.
+  - `agent_id` (TEXT, PK): Canonical slug: `chatgpt-01`, `flash-01`, `flash-02`, `codex-01`, `argon-01`, `argon-02`.
   - `display_name` (TEXT, NOT NULL)
   - `role_title` (TEXT, NOT NULL): e.g., "Chief Technology Officer"
   - `department_id` (TEXT, NOT NULL, FK -> `departments.department_id`)
   - `system_prompt_ref` (TEXT, NOT NULL): Path to markdown system prompt.
   - `default_model` (TEXT, NOT NULL): Primary LLM engine.
   - `quota_pool_id` (TEXT, NOT NULL): Quota allocation pool identifier.
-  - `is_autonomous` (INTEGER, NOT NULL, 0 or 1): 0 for Argon (manual only) and Founder; 1 for primary workers.
-  - `requires_approval` (INTEGER, NOT NULL, 0 or 1): 1 for destructive or specialist actions.
+  - `is_autonomous` (INTEGER, NOT NULL, 0 or 1): 0 for Argon (manual only); 1 for primary workers.
+  - `requires_approval` (INTEGER, NOT NULL, 0 or 1): 1 for specialist actions.
   - `status` (TEXT, NOT NULL): `ACTIVE`, `BUSY`, `DRAINING`, `DISABLED`
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `updated_at` (INTEGER, NOT NULL, Unix Epoch ms)
-- **Constraints:** Exactly 6 registered AI agents + 1 human `founder` identity.
+- **Constraints:** Exactly 6 registered AI agents.
 
 #### 3. Entity: `PRINCIPAL` (Security Principal)
-- **Purpose:** Authentication credential and authorization identity binding.
+- **Purpose:** Authentication credential and authorization identity binding. Discriminates between human principals (Founder) and AI agent principals (`REQ-V3-029`).
 - **Attributes:**
   - `principal_id` (TEXT, PK, UUIDv4)
-  - `agent_id` (TEXT, UNIQUE, NOT NULL, FK -> `agents.agent_id`)
-  - `auth_token_hash` (TEXT, NOT NULL): Argon2id or HMAC-SHA256 hash of API bearer token.
+  - `principal_type` (TEXT, NOT NULL CHECK(`principal_type` IN ('HUMAN', 'AGENT')))
+  - `agent_id` (TEXT, UNIQUE, NULL, FK -> `agents.agent_id`): Set for agent principals; NULL for human principals.
+  - `human_identifier` (TEXT, UNIQUE, NULL): e.g. `founder-human`. Set for human principals.
+  - `auth_credential_hash` (TEXT, NOT NULL): HMAC-SHA256, Argon2id, or Ed25519 public key.
   - `role` (TEXT, NOT NULL): `FOUNDER`, `EXECUTIVE`, `LEAD`, `ENGINEER`, `AUDITOR`, `SYSTEM`
-  - `allowed_scopes` (TEXT, NOT NULL): JSON Array of MCP scopes, e.g., `["task:read", "task:write", "room:join"]`
+  - `allowed_scopes` (TEXT, NOT NULL): JSON Array of MCP scopes.
   - `is_revoked` (INTEGER, NOT NULL, DEFAULT 0)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
@@ -143,281 +159,303 @@ The 23 domain entities are grouped into 7 bounded contexts:
   - `description` (TEXT, NOT NULL)
   - `task_type` (TEXT, NOT NULL): `ARCHITECTURE`, `CODE_MODIFICATION`, `TEST_RUN`, `AUDIT`, `MAINTENANCE`
   - `priority` (TEXT, NOT NULL): `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`
-  - `status` (TEXT, NOT NULL): State machine status (30+ states; see BP-V3-07)
+  - `status` (TEXT, NOT NULL): State machine status (23 states; see BP-V3-07)
   - `assigned_agent_id` (TEXT, NULL, FK -> `agents.agent_id`)
   - `creator_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
   - `reviewer_agent_id` (TEXT, NULL, FK -> `agents.agent_id`)
   - `qa_agent_id` (TEXT, NULL, FK -> `agents.agent_id`)
-  - `room_id` (TEXT, NULL, FK -> `chat_rooms.room_id`): Dedicated task room.
-  - `token_budget` (INTEGER, NOT NULL, DEFAULT 0): Max tokens allocated before hard cut-off.
-  - `requires_founder_gate` (INTEGER, NOT NULL, DEFAULT 0): Flag if task touches production or destructive assets.
+  - `room_id` (TEXT, NULL, FK -> `chat_rooms.room_id`)
+  - `token_budget` (INTEGER, NOT NULL, DEFAULT 100000)
+  - `requires_founder_gate` (INTEGER, NOT NULL, DEFAULT 0)
   - `version` (INTEGER, NOT NULL, DEFAULT 1): Optimistic concurrency version lock.
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `updated_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `completed_at` (INTEGER, NULL, Unix Epoch ms)
 
 #### 6. Entity: `TASK_DEPENDENCY`
-- **Purpose:** Models Directed Acyclic Graph (DAG) dependencies between tasks.
+- **Purpose:** Models Directed Acyclic Graph (DAG) dependencies between tasks (`REQ-V3-022`).
 - **Attributes:**
   - `dependency_id` (TEXT, PK, UUIDv4)
-  - `task_id` (TEXT, NOT NULL, FK -> `tasks.task_id`): Dependent task.
-  - `depends_on_task_id` (TEXT, NOT NULL, FK -> `tasks.task_id`): Upstream blocking task.
-  - `dependency_type` (TEXT, NOT NULL): `FINISH_TO_START`, `FINISH_TO_FINISH`
-  - `is_blocking` (INTEGER, NOT NULL, DEFAULT 1)
+  - `task_id` (TEXT, NOT NULL, FK -> `tasks.task_id` ON DELETE CASCADE)
+  - `depends_on_task_id` (TEXT, NOT NULL, FK -> `tasks.task_id` ON DELETE CASCADE)
+  - `dependency_type` (TEXT, NOT NULL DEFAULT 'FINISH_TO_START')
+  - `is_blocking` (INTEGER, NOT NULL DEFAULT 1)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
-- **Constraints:** `UNIQUE(task_id, depends_on_task_id)`, check constraint against self-dependency.
+- **Constraints:** `UNIQUE(task_id, depends_on_task_id)`, `CHECK(task_id != depends_on_task_id)`
 
 #### 7. Entity: `TASK_EXECUTION`
-- **Purpose:** Detailed run history of an agent working on a specific task lease.
+- **Purpose:** Run history of an agent working on a specific task lease.
 - **Attributes:**
   - `execution_id` (TEXT, PK, UUIDv4)
   - `task_id` (TEXT, NOT NULL, FK -> `tasks.task_id`)
   - `agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
   - `session_id` (TEXT, NOT NULL, FK -> `agent_sessions.session_id`)
   - `status` (TEXT, NOT NULL): `RUNNING`, `SUCCEEDED`, `FAILED`, `ABORTED`
-  - `git_base_commit` (TEXT, NULL): Commit SHA before execution.
-  - `git_head_commit` (TEXT, NULL): Commit SHA after execution.
+  - `git_base_commit` (TEXT, NULL)
+  - `git_head_commit` (TEXT, NULL)
   - `exit_code` (INTEGER, NULL)
   - `error_message` (TEXT, NULL)
   - `started_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `ended_at` (INTEGER, NULL, Unix Epoch ms)
 
 #### 8. Entity: `TASK_LEASE`
-- **Purpose:** Distributed mutex preventing duplicate concurrent execution of tasks across workers.
+- **Purpose:** Exclusive distributed mutex preventing duplicate concurrent execution (`REQ-V3-023`).
 - **Attributes:**
   - `lease_id` (TEXT, PK, UUIDv4)
-  - `task_id` (TEXT, UNIQUE, NOT NULL, FK -> `tasks.task_id`)
+  - `task_id` (TEXT, UNIQUE, NOT NULL, FK -> `tasks.task_id` ON DELETE CASCADE)
   - `agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `lease_nonce` (TEXT, NOT NULL): Unique random string regenerated on each renew.
+  - `lease_nonce` (TEXT, NOT NULL)
   - `heartbeat_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `expires_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `acquired_at` (INTEGER, NOT NULL, Unix Epoch ms)
-- **Invariants:** Worker must send heartbeat every 60s; lease expires after 180s without heartbeat.
 
 #### 9. Entity: `CHAT_ROOM`
-- **Purpose:** Persistent collaboration workspace for agent teams and Founder.
+- **Purpose:** Persistent collaboration workspace across 6 canonical room types (`REQ-V3-011`).
 - **Attributes:**
   - `room_id` (TEXT, PK, UUIDv4)
-  - `slug` (TEXT, UNIQUE, NOT NULL): e.g., `boardroom`, `project-v3-core`, `task-uuid-workspace`
+  - `slug` (TEXT, UNIQUE, NOT NULL)
   - `title` (TEXT, NOT NULL)
-  - `room_type` (TEXT, NOT NULL): `EXECUTIVE_BOARDROOM`, `DEPARTMENT_OFFICE`, `PROJECT_ROOM`, `TASK_ROOM`, `DIRECT_MESSAGE`
+  - `room_type` (TEXT, NOT NULL CHECK(`room_type` IN ('EXECUTIVE_BOARDROOM', 'ANNOUNCEMENTS', 'DEPARTMENT_OFFICE', 'PROJECT_ROOM', 'TASK_ROOM', 'DIRECT_MESSAGE')))
   - `project_id` (TEXT, NULL, FK -> `projects.project_id`)
   - `task_id` (TEXT, NULL, FK -> `tasks.task_id`)
-  - `is_archived` (INTEGER, NOT NULL, DEFAULT 0)
+  - `is_archived` (INTEGER, NOT NULL DEFAULT 0)
   - `created_by_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `updated_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
 #### 10. Entity: `ROOM_MEMBERSHIP`
-- **Purpose:** Tracks agent participation, notification preferences, and permissions in chat rooms.
+- **Purpose:** Tracks agent participation and unread cursors in chat rooms.
 - **Attributes:**
   - `membership_id` (TEXT, PK, UUIDv4)
-  - `room_id` (TEXT, NOT NULL, FK -> `chat_rooms.room_id`)
+  - `room_id` (TEXT, NOT NULL, FK -> `chat_rooms.room_id` ON DELETE CASCADE)
   - `agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `member_role` (TEXT, NOT NULL): `LEAD`, `MEMBER`, `OBSERVER`, `MUTED`
-  - `last_read_message_id` (TEXT, NULL, FK -> `messages.message_id`)
+  - `member_role` (TEXT, NOT NULL DEFAULT 'MEMBER')
+  - `last_read_message_id` (TEXT, NULL)
   - `last_read_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `joined_at` (INTEGER, NOT NULL, Unix Epoch ms)
 - **Constraints:** `UNIQUE(room_id, agent_id)`
 
 #### 11. Entity: `MESSAGE`
-- **Purpose:** Individual structured communication artifact within a chat room.
+- **Purpose:** Structured communication artifact within a chat room (`REQ-V3-012`).
 - **Attributes:**
   - `message_id` (TEXT, PK, UUIDv4)
-  - `room_id` (TEXT, NOT NULL, FK -> `chat_rooms.room_id`)
+  - `room_id` (TEXT, NOT NULL, FK -> `chat_rooms.room_id` ON DELETE CASCADE)
   - `thread_id` (TEXT, NULL, FK -> `threads.thread_id`)
   - `sender_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
   - `reply_to_message_id` (TEXT, NULL, FK -> `messages.message_id`)
-  - `message_type` (TEXT, NOT NULL): `TEXT`, `DIRECTIVE`, `PROPOSAL`, `REVIEW_FEEDBACK`, `GATE_STATUS`, `SYSTEM_NOTICE`
-  - `content` (TEXT, NOT NULL): Markdown message payload.
-  - `mentions` (TEXT, NULL): JSON Array of agent_ids mentioned via `@agent-id`.
-  - `metadata` (TEXT, NULL): JSON Object for extensible payload parameters.
-  - `is_edited` (INTEGER, NOT NULL, DEFAULT 0)
+  - `message_type` (TEXT, NOT NULL DEFAULT 'TEXT' CHECK(`message_type` IN ('TEXT', 'DIRECTIVE', 'PROPOSAL', 'REVIEW_FEEDBACK', 'GATE_STATUS', 'SYSTEM_NOTICE')))
+  - `content` (TEXT, NOT NULL)
+  - `mentions` (TEXT, NULL): JSON Array of agent_ids.
+  - `metadata` (TEXT, NULL): JSON Object.
+  - `is_edited` (INTEGER, NOT NULL DEFAULT 0)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `updated_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
 #### 12. Entity: `THREAD`
-- **Purpose:** Focuses discussion around a specific problem, bug, review, or proposal within a room.
+- **Purpose:** Focuses discussion around a specific problem with lifecycle tracking (`REQ-V3-013`).
 - **Attributes:**
   - `thread_id` (TEXT, PK, UUIDv4)
-  - `room_id` (TEXT, NOT NULL, FK -> `chat_rooms.room_id`)
+  - `room_id` (TEXT, NOT NULL, FK -> `chat_rooms.room_id` ON DELETE CASCADE)
   - `root_message_id` (TEXT, UNIQUE, NOT NULL, FK -> `messages.message_id`)
   - `title` (TEXT, NOT NULL)
-  - `status` (TEXT, NOT NULL): `OPEN`, `RESOLVED`, `CLOSED`
+  - `status` (TEXT, NOT NULL DEFAULT 'OPEN' CHECK(`status` IN ('OPEN', 'RESOLVED', 'CLOSED')))
   - `resolved_by_agent_id` (TEXT, NULL, FK -> `agents.agent_id`)
   - `resolved_at` (INTEGER, NULL, Unix Epoch ms)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 13. Entity: `CONTEXT_SNAPSHOT`
-- **Purpose:** Compact, structured point-in-time state of agent working memory for instant rehydration.
+#### 13. Entity: `NOTIFICATIONS_INBOX`
+- **Purpose:** Stores pending agent mentions, task assignments, and review requests (`REQ-V3-014`).
+- **Attributes:**
+  - `notification_id` (TEXT, PK, UUIDv4)
+  - `target_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
+  - `source_type` (TEXT, NOT NULL CHECK(`source_type` IN ('MENTION', 'ASSIGNMENT', 'REVIEW_REQUEST', 'QA_REQUEST', 'APPROVAL_ALERT', 'SYSTEM')))
+  - `source_id` (TEXT, NOT NULL)
+  - `title` (TEXT, NOT NULL)
+  - `content` (TEXT, NOT NULL)
+  - `is_read` (INTEGER, NOT NULL DEFAULT 0)
+  - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
+  - `read_at` (INTEGER, NULL, Unix Epoch ms)
+
+#### 14. Entity: `CONTEXT_SNAPSHOT`
+- **Purpose:** Compact, structured point-in-time state of agent working memory (<1,500 tokens, `REQ-V3-018`).
 - **Attributes:**
   - `snapshot_id` (TEXT, PK, UUIDv4)
-  - `task_id` (TEXT, NOT NULL, FK -> `tasks.task_id`)
+  - `task_id` (TEXT, NOT NULL, FK -> `tasks.task_id` ON DELETE CASCADE)
   - `agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `summary` (TEXT, NOT NULL): High-level plain text executive digest.
-  - `active_hypotheses` (TEXT, NULL): JSON Array of open questions.
-  - `verified_facts` (TEXT, NOT NULL): JSON Array of hard confirmed statements with evidence references.
-  - `pending_steps` (TEXT, NOT NULL): JSON Array of next actions.
+  - `summary` (TEXT, NOT NULL)
+  - `active_hypotheses` (TEXT, NULL): JSON Array.
+  - `verified_facts` (TEXT, NOT NULL): JSON Array.
+  - `pending_steps` (TEXT, NOT NULL): JSON Array.
   - `total_tokens` (INTEGER, NOT NULL)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 14. Entity: `MEMORY_ENTRY`
-- **Purpose:** Long-term episodic and declarative memory entries with multi-tier scoping.
+#### 15. Entity: `MEMORY_ENTRY`
+- **Purpose:** Long-term episodic and declarative memory entries with 5-tier scoping (`REQ-V3-016`).
 - **Attributes:**
   - `memory_id` (TEXT, PK, UUIDv4)
-  - `scope` (TEXT, NOT NULL): `COMPANY`, `PROJECT`, `TASK`, `ROOM`, `AGENT_PRIVATE`
-  - `scope_id` (TEXT, NOT NULL): Canonical ID matching scope type (e.g., project_id or agent_id).
-  - `category` (TEXT, NOT NULL): `ARCHITECTURAL_DECISION`, `INCIDENT_LEARNING`, `PERFORMANCE_PATTERN`, `PREFERENCE`, `FACT`
-  - `key` (TEXT, NOT NULL): Structured index key, e.g., `sqlite.wal.busy_timeout`.
-  - `content` (TEXT, NOT NULL): Verified insight or rule.
+  - `scope` (TEXT, NOT NULL CHECK(`scope` IN ('COMPANY', 'PROJECT', 'TASK', 'ROOM', 'AGENT_PRIVATE')))
+  - `scope_id` (TEXT, NOT NULL)
+  - `category` (TEXT, NOT NULL CHECK(`category` IN ('ARCHITECTURAL_DECISION', 'INCIDENT_LEARNING', 'PERFORMANCE_PATTERN', 'FACT')))
+  - `key` (TEXT, NOT NULL)
+  - `content` (TEXT, NOT NULL)
   - `provenance_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `provenance_ref` (TEXT, NULL): File link, commit SHA, or task ID where learned.
-  - `confidence_score` (REAL, NOT NULL, DEFAULT 1.0): 0.0 to 1.0.
-  - `is_tombstoned` (INTEGER, NOT NULL, DEFAULT 0): Soft deletion flag for superseded knowledge.
+  - `provenance_ref` (TEXT, NULL)
+  - `confidence_score` (REAL, NOT NULL DEFAULT 1.0)
+  - `is_tombstoned` (INTEGER, NOT NULL DEFAULT 0)
   - `tombstone_reason` (TEXT, NULL)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `updated_at` (INTEGER, NOT NULL, Unix Epoch ms)
-- **Constraints:** `UNIQUE(scope, scope_id, key)` where `is_tombstoned = 0`.
 
-#### 15. Entity: `KNOWLEDGE_DOCUMENT`
+#### 16. Entity: `KNOWLEDGE_DOCUMENT`
 - **Purpose:** Curated company documentation, standards, and Architecture Decision Records (ADRs).
 - **Attributes:**
   - `doc_id` (TEXT, PK, UUIDv4)
   - `project_id` (TEXT, NULL, FK -> `projects.project_id`)
-  - `file_path` (TEXT, UNIQUE, NOT NULL): Repo-relative path, e.g., `docs/adr/0001-hexagonal.md`.
+  - `file_path` (TEXT, UNIQUE, NOT NULL)
   - `title` (TEXT, NOT NULL)
-  - `content_sha256` (TEXT, NOT NULL): SHA-256 hash of file content.
-  - `classification` (TEXT, NOT NULL): `CANONICAL_POLICY`, `ARCHITECTURE`, `SPECIFICATION`, `RUNBOOK`
+  - `content_sha256` (TEXT, NOT NULL)
+  - `classification` (TEXT, NOT NULL)
   - `author_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
   - `last_indexed_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 16. Entity: `ARTIFACT`
+#### 17. Entity: `ARTIFACT`
 - **Purpose:** Structured deliverable produced by an agent during task execution.
 - **Attributes:**
   - `artifact_id` (TEXT, PK, UUIDv4)
-  - `task_id` (TEXT, NOT NULL, FK -> `tasks.task_id`)
+  - `task_id` (TEXT, NOT NULL, FK -> `tasks.task_id` ON DELETE CASCADE)
   - `creator_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `name` (TEXT, NOT NULL): e.g., `audit_report.md`, `schema_v3.sql`
-  - `file_path` (TEXT, NOT NULL): Absolute Windows file path.
-  - `file_sha256` (TEXT, NOT NULL): SHA-256 hash.
+  - `name` (TEXT, NOT NULL)
+  - `file_path` (TEXT, NOT NULL)
+  - `file_sha256` (TEXT, NOT NULL)
   - `mime_type` (TEXT, NOT NULL)
   - `size_bytes` (INTEGER, NOT NULL)
-  - `is_verified` (INTEGER, NOT NULL, DEFAULT 0)
+  - `is_verified` (INTEGER, NOT NULL DEFAULT 0)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 17. Entity: `SKILL`
-- **Purpose:** Specialized domain knowledge and executable workflow folder in `.agents/skills/`.
+#### 18. Entity: `SKILL`
+- **Purpose:** Specialized domain knowledge folder in `.agents/skills/` (`REQ-V3-026`).
 - **Attributes:**
-  - `skill_id` (TEXT, PK): Canonical directory name, e.g., `aico-architecture-patterns`.
+  - `skill_id` (TEXT, PK)
   - `name` (TEXT, NOT NULL)
   - `description` (TEXT, NOT NULL)
-  - `skill_path` (TEXT, NOT NULL): Relative path from repo root.
-  - `instructions_md_hash` (TEXT, NOT NULL): SHA-256 of `SKILL.md`.
-  - `is_active` (INTEGER, NOT NULL, DEFAULT 1)
+  - `skill_path` (TEXT, NOT NULL)
+  - `instructions_md_hash` (TEXT, NOT NULL)
+  - `is_active` (INTEGER, NOT NULL DEFAULT 1)
   - `plugin_id` (TEXT, NULL, FK -> `plugins.plugin_id`)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `updated_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 18. Entity: `CAPABILITY` & `AGENT_CAPABILITY`
-- **Purpose:** Normalized capability taxonomy mapped to agents and skills.
+#### 19. Entity: `CAPABILITY` & `AGENT_CAPABILITY`
+- **Purpose:** Capability taxonomy mapped to agents and skills.
 - **Attributes (`capabilities`):**
-  - `capability_id` (TEXT, PK): e.g., `code.typescript.review`, `db.sqlite.migrate`, `security.audit`
-  - `category` (TEXT, NOT NULL): `ENGINEERING`, `ARCHITECTURE`, `QA`, `DEVOPS`, `GOVERNANCE`
+  - `capability_id` (TEXT, PK)
+  - `category` (TEXT, NOT NULL)
   - `description` (TEXT, NOT NULL)
 - **Attributes (`agent_capabilities`):**
   - `agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
   - `capability_id` (TEXT, NOT NULL, FK -> `capabilities.capability_id`)
-  - `proficiency_level` (TEXT, NOT NULL): `AUTHORITATIVE`, `COMPETENT`, `RESTRICTED`
+  - `proficiency_level` (TEXT, NOT NULL DEFAULT 'COMPETENT')
   - `PRIMARY KEY (agent_id, capability_id)`
 
-#### 19. Entity: `PLUGIN`
+#### 20. Entity: `PLUGIN`
 - **Purpose:** Packaged extensions providing tools, skills, and agents.
 - **Attributes:**
-  - `plugin_id` (TEXT, PK): e.g., `aico-core-tools`, `chrome-devtools-plugin`
+  - `plugin_id` (TEXT, PK)
   - `version` (TEXT, NOT NULL)
   - `install_path` (TEXT, NOT NULL)
-  - `status` (TEXT, NOT NULL): `ENABLED`, `DISABLED`, `QUARANTINED`
+  - `status` (TEXT, NOT NULL DEFAULT 'ENABLED')
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 20. Entity: `AGENT_SESSION`
+#### 21. Entity: `AGENT_SESSION`
 - **Purpose:** Continuous operational execution window of an agent connection.
 - **Attributes:**
   - `session_id` (TEXT, PK, UUIDv4)
   - `agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `runtime_adapter` (TEXT, NOT NULL): `ANTIGRAVITY`, `CODEX_CLI`, `LOCAL_CLI`
+  - `runtime_adapter` (TEXT, NOT NULL)
   - `ip_address` (TEXT, NOT NULL)
   - `started_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `ended_at` (INTEGER, NULL, Unix Epoch ms)
-  - `is_active` (INTEGER, NOT NULL, DEFAULT 1)
+  - `is_active` (INTEGER, NOT NULL DEFAULT 1)
 
-#### 21. Entity: `RUNTIME_OBSERVATION`
+#### 22. Entity: `RUNTIME_OBSERVATION`
 - **Purpose:** Diagnostic events, errors, or telemetry emitted during runtime.
 - **Attributes:**
   - `observation_id` (TEXT, PK, UUIDv4)
   - `session_id` (TEXT, NOT NULL, FK -> `agent_sessions.session_id`)
   - `task_id` (TEXT, NULL, FK -> `tasks.task_id`)
-  - `severity` (TEXT, NOT NULL): `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`
-  - `subsystem` (TEXT, NOT NULL): e.g., `MCP_TRANSPORT`, `DATABASE`, `GIT`
+  - `severity` (TEXT, NOT NULL CHECK(`severity` IN ('DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL')))
+  - `subsystem` (TEXT, NOT NULL)
   - `message` (TEXT, NOT NULL)
   - `details_json` (TEXT, NULL)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 22. Entity: `TOKEN_USAGE`
-- **Purpose:** Granular token expenditure tracking per task, session, agent, and model.
+#### 23. Entity: `TOKEN_USAGE`
+- **Purpose:** Granular token expenditure tracking per task, session, agent, and model (`REQ-V3-028`).
 - **Attributes:**
   - `usage_id` (TEXT, PK, UUIDv4)
   - `session_id` (TEXT, NOT NULL, FK -> `agent_sessions.session_id`)
   - `task_id` (TEXT, NULL, FK -> `tasks.task_id`)
   - `agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
   - `quota_pool_id` (TEXT, NOT NULL)
-  - `model_name` (TEXT, NOT NULL): e.g., `gemini-3.8-flash`, `gpt-4o`
+  - `model_name` (TEXT, NOT NULL)
   - `prompt_tokens` (INTEGER, NOT NULL)
   - `completion_tokens` (INTEGER, NOT NULL)
   - `total_tokens` (INTEGER, NOT NULL)
-  - `estimated_cost_usd` (REAL, NOT NULL, DEFAULT 0.0)
+  - `estimated_cost_usd` (REAL, NOT NULL DEFAULT 0.0)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
 
-#### 23. Entity: `APPROVAL`
-- **Purpose:** Cryptographic, immutable authorization token gating restricted actions.
+#### 24. Entity: `APPROVAL` (Verifiable Human Authorization)
+- **Purpose:** Cryptographic, immutable authorization token gating restricted actions (`REQ-V3-030`).
 - **Attributes:**
   - `approval_id` (TEXT, PK, UUIDv4)
-  - `approval_type` (TEXT, NOT NULL): `ARGON_INVOCATION`, `PRODUCTION_DEPLOY`, `SCHEMA_MIGRATION`, `ACL_APPLY`
-  - `target_resource` (TEXT, NOT NULL): Resource identifier (e.g., `agent:argon-01` or `db:production`)
+  - `approval_type` (TEXT, NOT NULL CHECK(`approval_type` IN ('ARGON_INVOCATION', 'PRODUCTION_DEPLOY', 'SCHEMA_MIGRATION', 'ACL_APPLY')))
+  - `target_resource` (TEXT, NOT NULL)
   - `requestor_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `payload_sha256` (TEXT, NOT NULL): SHA-256 hash of the exact parameters being approved.
-  - `status` (TEXT, NOT NULL): `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CONSUMED`
-  - `reviewer_agent_id` (TEXT, NULL): Must be `founder` for Founder gates.
+  - `payload_sha256` (TEXT, NOT NULL)
+  - `status` (TEXT, NOT NULL DEFAULT 'PENDING' CHECK(`status` IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CONSUMED')))
+  - `founder_principal_id` (TEXT, NULL, FK -> `principals.principal_id`)
+  - `human_signature` (TEXT, NULL): Ed25519 signature by Founder over canonical payload.
   - `decision_reason` (TEXT, NULL)
-  - `expires_at` (INTEGER, NOT NULL, Unix Epoch ms): Strict deadline.
-  - `consumed_at` (INTEGER, NULL, Unix Epoch ms): Recorded on single-use consumption.
+  - `expires_at` (INTEGER, NOT NULL, Unix Epoch ms)
+  - `consumed_at` (INTEGER, NULL, Unix Epoch ms)
+  - `consumed_by_agent_id` (TEXT, NULL, FK -> `agents.agent_id`)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
   - `updated_at` (INTEGER, NOT NULL, Unix Epoch ms)
-- **Constraints:**
-  - Self-approval strictly forbidden (`requestor_agent_id != reviewer_agent_id`).
-  - Single-use consumption only.
 
-#### 24. Entity: `AUDIT_EVENT`
-- **Purpose:** Tamper-evident, forward-hash-chained log of every security-sensitive action.
+#### 25. Entity: `AUDIT_EVENT`
+- **Purpose:** Tamper-evident, forward-hash-chained log of every security-sensitive action (`REQ-V3-032`).
 - **Attributes:**
   - `event_id` (TEXT, PK, UUIDv4)
-  - `sequence_number` (INTEGER, UNIQUE, NOT NULL): Strictly monotonic counter.
-  - `actor_agent_id` (TEXT, NOT NULL, FK -> `agents.agent_id`)
-  - `action` (TEXT, NOT NULL): e.g., `task.create`, `approval.grant`, `argon.invoke`
+  - `sequence_number` (INTEGER, UNIQUE, NOT NULL)
+  - `actor_agent_id` (TEXT, NOT NULL)
+  - `action` (TEXT, NOT NULL)
   - `target_type` (TEXT, NOT NULL)
   - `target_id` (TEXT, NOT NULL)
-  - `payload_hash` (TEXT, NOT NULL): SHA-256 of the event details.
-  - `previous_event_hash` (TEXT, NOT NULL): Hash of previous audit row.
-  - `current_event_hash` (TEXT, NOT NULL): SHA-256(`sequence_number` + `actor` + `action` + `payload_hash` + `prev_hash`).
+  - `payload_hash` (TEXT, NOT NULL)
+  - `previous_event_hash` (TEXT, NOT NULL)
+  - `current_event_hash` (TEXT, NOT NULL)
   - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
+
+#### 26. Entity: `EVENT_OUTBOX`
+- **Purpose:** Transactional Outbox pattern for reliable domain event publishing (`REQ-V3-009`).
+- **Attributes:**
+  - `outbox_id` (TEXT, PK, UUIDv4)
+  - `event_id` (TEXT, UNIQUE, NOT NULL)
+  - `event_type` (TEXT, NOT NULL)
+  - `correlation_id` (TEXT, NOT NULL)
+  - `payload_json` (TEXT, NOT NULL)
+  - `status` (TEXT, NOT NULL DEFAULT 'PENDING' CHECK(`status` IN ('PENDING', 'PUBLISHED', 'FAILED')))
+  - `retry_count` (INTEGER, NOT NULL DEFAULT 0)
+  - `error_message` (TEXT, NULL)
+  - `created_at` (INTEGER, NOT NULL, Unix Epoch ms)
+  - `published_at` (INTEGER, NULL, Unix Epoch ms)
 
 ---
 
 ## 3. DATABASE CONFIGURATION & RUNTIME SETTINGS
 
-### 3.1 SQLite PRAGMA Standards
-
-AICO V3 uses embedded SQLite via `better-sqlite3`. To ensure enterprise reliability, high-concurrency read operations, and strict crash consistency, every database connection must apply the following PRAGMAs immediately upon opening:
+### 3.1 SQLite PRAGMA Standards (`REQ-V3-008`)
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -429,15 +467,6 @@ PRAGMA temp_store = MEMORY;
 PRAGMA mmap_size = 268435456; -- 256MB memory-mapped I/O
 ```
 
-### 3.2 Concurrency Architecture
-- **Single-Writer, Multiple-Reader:** SQLite WAL mode permits arbitrary concurrent read queries without blocking writers, while write transactions obtain an exclusive write lock.
-- **Connection Isolation:** Background tasks and MCP request handlers share connection pools managed by `ConnectionManager`.
-- **Busy Timeout:** 5,000 ms busy timeout prevents `SQLITE_BUSY` errors during burst write operations by retrying with exponential backoff.
-- **Automated Checkpointing:** Passive checkpointing runs continuously. An explicit passive checkpoint is executed every 1,000 transactions or 1 hour:
-  ```sql
-  PRAGMA wal_checkpoint(PASSIVE);
-  ```
-
 ---
 
 ## 4. SCHEMA MIGRATION & BACKWARD COMPATIBILITY
@@ -446,25 +475,13 @@ PRAGMA mmap_size = 268435456; -- 256MB memory-mapped I/O
 
 ```mermaid
 flowchart LR
-    V030["Production Baseline\nv0.3.0\nSHA: 17BD93... (Frozen)"]
-    RC2["Staging Schema\nv0.5.0 RC2\n(Validated in v2.2.1)"]
-    V3["AICO V3 Target Schema\nv3.0.0\n(23 Core Tables + 4 Views)"]
+    V030["Production Baseline\nv0.3.0 (FROZEN)\nGate G4 LOCKED"]
+    RC2["Staging Sandbox\nv0.5.0 RC2\n(Validated in v2.2.1)"]
+    V3["V3 Sandbox Target Schema\nv3.0.0\n(27 Tables, 1 FTS5, 3 Triggers, 4 Views)"]
 
-    V030 -->|"Migration 001_v221_schema.sql (Gate G4)"| RC2
-    RC2 -->|"Migration 002_v300_collaboration_and_memory.sql"| V3
+    V030 -. "Independent Human Directive (Gate G4)" .-> RC2
+    RC2 -->|"Sandbox Migration 002_v300_schema.sql"| V3
 ```
-
-### 4.2 Migration Safety Rules
-1. **Zero Data Loss Guarantee:** No existing columns or tables in `data/aico.db` will be dropped. Legacy columns are preserved or mapped to new schemas.
-2. **Pre-Migration Cryptographic Snapshot:** Before running any migration script:
-   - Calculate SHA-256 of `data/aico.db`.
-   - Create timestamped backup `data/backup/aico_pre_v3_<timestamp>.db`.
-   - Verify backup SHA-256 matches production before proceeding.
-3. **Transactional Migration Execution:** All DDL statements must execute inside an explicit `BEGIN IMMEDIATE TRANSACTION; ... COMMIT;` block. If any error occurs, the transaction automatically rolls back.
-4. **Backward-Compatible Views:** To allow legacy MCP tools and external scripts to continue operating seamlessly, V3 establishes compatibility views:
-   - `v_tasks_legacy`: Presents V3 `tasks` table in v0.3.0 column layout.
-   - `v_agents_legacy`: Presents V3 `agents` table in v0.3.0 column layout.
-   - `v_quota_legacy`: Aggregates V3 `token_usage` table into v0.3.0 quota summary format.
 
 ---
 
@@ -472,9 +489,10 @@ flowchart LR
 
 ```sql
 -- ============================================================================
--- AICO V3 TARGET SCHEMA (DRAFT SPECIFICATION)
+-- AICO V3 TARGET SCHEMA (CANONICAL DDL SPECIFICATION)
 -- File: docs/blueprint/v3/03_DOMAIN_AND_DATABASE_DESIGN.md
 -- Target: SQLite 3.40+ (WAL Mode)
+-- Inventory: 27 Base Tables, 1 Virtual Table, 3 Triggers, 4 Views, 16 Indexes
 -- ============================================================================
 
 -- 1. Departments
@@ -488,7 +506,7 @@ CREATE TABLE IF NOT EXISTS departments (
     updated_at INTEGER NOT NULL
 );
 
--- 2. Agents
+-- 2. Agents (Strictly 6 AI Agents)
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
@@ -504,15 +522,21 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at INTEGER NOT NULL
 );
 
--- 3. Security Principals
+-- 3. Security Principals (Discriminator: HUMAN vs AGENT)
 CREATE TABLE IF NOT EXISTS principals (
     principal_id TEXT PRIMARY KEY,
-    agent_id TEXT UNIQUE NOT NULL REFERENCES agents(agent_id),
-    auth_token_hash TEXT NOT NULL,
+    principal_type TEXT NOT NULL CHECK(principal_type IN ('HUMAN', 'AGENT')),
+    agent_id TEXT UNIQUE REFERENCES agents(agent_id),
+    human_identifier TEXT UNIQUE,
+    auth_credential_hash TEXT NOT NULL,
     role TEXT NOT NULL,
     allowed_scopes TEXT NOT NULL,
     is_revoked INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    CHECK(
+        (principal_type = 'AGENT' AND agent_id IS NOT NULL AND human_identifier IS NULL) OR
+        (principal_type = 'HUMAN' AND agent_id IS NULL AND human_identifier IS NOT NULL)
+    )
 );
 
 -- 4. Projects
@@ -589,12 +613,12 @@ CREATE TABLE IF NOT EXISTS task_leases (
     acquired_at INTEGER NOT NULL
 );
 
--- 9. Chat Rooms
+-- 9. Chat Rooms (6 Canonical Types)
 CREATE TABLE IF NOT EXISTS chat_rooms (
     room_id TEXT PRIMARY KEY,
     slug TEXT UNIQUE NOT NULL,
     title TEXT NOT NULL,
-    room_type TEXT NOT NULL,
+    room_type TEXT NOT NULL CHECK(room_type IN ('EXECUTIVE_BOARDROOM', 'ANNOUNCEMENTS', 'DEPARTMENT_OFFICE', 'PROJECT_ROOM', 'TASK_ROOM', 'DIRECT_MESSAGE')),
     project_id TEXT REFERENCES projects(project_id),
     task_id TEXT REFERENCES tasks(task_id),
     is_archived INTEGER NOT NULL DEFAULT 0,
@@ -622,7 +646,7 @@ CREATE TABLE IF NOT EXISTS messages (
     thread_id TEXT,
     sender_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
     reply_to_message_id TEXT REFERENCES messages(message_id),
-    message_type TEXT NOT NULL DEFAULT 'TEXT',
+    message_type TEXT NOT NULL DEFAULT 'TEXT' CHECK(message_type IN ('TEXT', 'DIRECTIVE', 'PROPOSAL', 'REVIEW_FEEDBACK', 'GATE_STATUS', 'SYSTEM_NOTICE')),
     content TEXT NOT NULL,
     mentions TEXT,
     metadata TEXT,
@@ -637,13 +661,26 @@ CREATE TABLE IF NOT EXISTS threads (
     room_id TEXT NOT NULL REFERENCES chat_rooms(room_id) ON DELETE CASCADE,
     root_message_id TEXT UNIQUE NOT NULL REFERENCES messages(message_id),
     title TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'OPEN',
+    status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN', 'RESOLVED', 'CLOSED')),
     resolved_by_agent_id TEXT REFERENCES agents(agent_id),
     resolved_at INTEGER,
     created_at INTEGER NOT NULL
 );
 
--- 13. Context Snapshots
+-- 13. Notifications Inbox
+CREATE TABLE IF NOT EXISTS notifications_inbox (
+    notification_id TEXT PRIMARY KEY,
+    target_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    source_type TEXT NOT NULL CHECK(source_type IN ('MENTION', 'ASSIGNMENT', 'REVIEW_REQUEST', 'QA_REQUEST', 'APPROVAL_ALERT', 'SYSTEM')),
+    source_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    read_at INTEGER
+);
+
+-- 14. Context Snapshots
 CREATE TABLE IF NOT EXISTS context_snapshots (
     snapshot_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -656,12 +693,12 @@ CREATE TABLE IF NOT EXISTS context_snapshots (
     created_at INTEGER NOT NULL
 );
 
--- 14. Memory Entries
+-- 15. Memory Entries (5-Tier Scoping)
 CREATE TABLE IF NOT EXISTS memory_entries (
     memory_id TEXT PRIMARY KEY,
-    scope TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK(scope IN ('COMPANY', 'PROJECT', 'TASK', 'ROOM', 'AGENT_PRIVATE')),
     scope_id TEXT NOT NULL,
-    category TEXT NOT NULL,
+    category TEXT NOT NULL CHECK(category IN ('ARCHITECTURAL_DECISION', 'INCIDENT_LEARNING', 'PERFORMANCE_PATTERN', 'FACT')),
     key TEXT NOT NULL,
     content TEXT NOT NULL,
     provenance_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
@@ -673,7 +710,7 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     updated_at INTEGER NOT NULL
 );
 
--- 15. Knowledge Documents
+-- 16. Knowledge Documents
 CREATE TABLE IF NOT EXISTS knowledge_documents (
     doc_id TEXT PRIMARY KEY,
     project_id TEXT REFERENCES projects(project_id),
@@ -686,7 +723,7 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
     created_at INTEGER NOT NULL
 );
 
--- 16. Artifacts
+-- 17. Artifacts
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -700,7 +737,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     created_at INTEGER NOT NULL
 );
 
--- 17. Skills
+-- 18. Skills
 CREATE TABLE IF NOT EXISTS skills (
     skill_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -713,13 +750,14 @@ CREATE TABLE IF NOT EXISTS skills (
     updated_at INTEGER NOT NULL
 );
 
--- 18. Capabilities Taxonomy
+-- 19. Capabilities Taxonomy
 CREATE TABLE IF NOT EXISTS capabilities (
     capability_id TEXT PRIMARY KEY,
     category TEXT NOT NULL,
     description TEXT NOT NULL
 );
 
+-- 20. Agent Capabilities Mapping
 CREATE TABLE IF NOT EXISTS agent_capabilities (
     agent_id TEXT NOT NULL REFERENCES agents(agent_id),
     capability_id TEXT NOT NULL REFERENCES capabilities(capability_id),
@@ -727,7 +765,7 @@ CREATE TABLE IF NOT EXISTS agent_capabilities (
     PRIMARY KEY(agent_id, capability_id)
 );
 
--- 19. Plugins
+-- 21. Plugins
 CREATE TABLE IF NOT EXISTS plugins (
     plugin_id TEXT PRIMARY KEY,
     version TEXT NOT NULL,
@@ -736,7 +774,7 @@ CREATE TABLE IF NOT EXISTS plugins (
     created_at INTEGER NOT NULL
 );
 
--- 20. Agent Sessions
+-- 22. Agent Sessions
 CREATE TABLE IF NOT EXISTS agent_sessions (
     session_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(agent_id),
@@ -747,19 +785,19 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     is_active INTEGER NOT NULL DEFAULT 1
 );
 
--- 21. Runtime Observations
+-- 23. Runtime Observations
 CREATE TABLE IF NOT EXISTS runtime_observations (
     observation_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES agent_sessions(session_id),
     task_id TEXT REFERENCES tasks(task_id),
-    severity TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK(severity IN ('DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL')),
     subsystem TEXT NOT NULL,
     message TEXT NOT NULL,
     details_json TEXT,
     created_at INTEGER NOT NULL
 );
 
--- 22. Token Usage
+-- 24. Token Usage
 CREATE TABLE IF NOT EXISTS token_usage (
     usage_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES agent_sessions(session_id),
@@ -774,28 +812,29 @@ CREATE TABLE IF NOT EXISTS token_usage (
     created_at INTEGER NOT NULL
 );
 
--- 23. Approvals
+-- 25. Approvals (Human Verifiable Authorization)
 CREATE TABLE IF NOT EXISTS approvals (
     approval_id TEXT PRIMARY KEY,
-    approval_type TEXT NOT NULL,
+    approval_type TEXT NOT NULL CHECK(approval_type IN ('ARGON_INVOCATION', 'PRODUCTION_DEPLOY', 'SCHEMA_MIGRATION', 'ACL_APPLY')),
     target_resource TEXT NOT NULL,
     requestor_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
     payload_sha256 TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'PENDING',
-    reviewer_agent_id TEXT REFERENCES agents(agent_id),
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CONSUMED')),
+    founder_principal_id TEXT REFERENCES principals(principal_id),
+    human_signature TEXT,
     decision_reason TEXT,
     expires_at INTEGER NOT NULL,
     consumed_at INTEGER,
+    consumed_by_agent_id TEXT REFERENCES agents(agent_id),
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    CHECK(requestor_agent_id != reviewer_agent_id)
+    updated_at INTEGER NOT NULL
 );
 
--- 24. Audit Events
+-- 26. Audit Events (Forward Hash Chain)
 CREATE TABLE IF NOT EXISTS audit_events (
     event_id TEXT PRIMARY KEY,
     sequence_number INTEGER UNIQUE NOT NULL,
-    actor_agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+    actor_agent_id TEXT NOT NULL,
     action TEXT NOT NULL,
     target_type TEXT NOT NULL,
     target_id TEXT NOT NULL,
@@ -805,17 +844,124 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at INTEGER NOT NULL
 );
 
+-- 27. Event Outbox (Transactional Event Publishing)
+CREATE TABLE IF NOT EXISTS event_outbox (
+    outbox_id TEXT PRIMARY KEY,
+    event_id TEXT UNIQUE NOT NULL,
+    event_type TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'PUBLISHED', 'FAILED')),
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at INTEGER NOT NULL,
+    published_at INTEGER
+);
+
 -- ============================================================================
--- PERFORMANCE & INTEGRITY INDEXES
+-- VIRTUAL TABLES (FTS5) & TRIGGERS
+-- ============================================================================
+
+-- Virtual Table: Memory Full-Text Search
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    key,
+    content,
+    scope,
+    category,
+    content='memory_entries',
+    content_rowid='rowid'
+);
+
+-- Trigger: FTS5 Insert Sync
+CREATE TRIGGER IF NOT EXISTS trg_memory_entries_ai AFTER INSERT ON memory_entries BEGIN
+    INSERT INTO memory_fts(rowid, key, content, scope, category)
+    VALUES (new.rowid, new.key, new.content, new.scope, new.category);
+END;
+
+-- Trigger: FTS5 Delete Sync
+CREATE TRIGGER IF NOT EXISTS trg_memory_entries_ad AFTER DELETE ON memory_entries BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, key, content, scope, category)
+    VALUES ('delete', old.rowid, old.key, old.content, old.scope, old.category);
+END;
+
+-- Trigger: FTS5 Update Sync
+CREATE TRIGGER IF NOT EXISTS trg_memory_entries_au AFTER UPDATE ON memory_entries BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, key, content, scope, category)
+    VALUES ('delete', old.rowid, old.key, old.content, old.scope, old.category);
+    INSERT INTO memory_fts(rowid, key, content, scope, category)
+    VALUES (new.rowid, new.key, new.content, new.scope, new.category);
+END;
+
+-- ============================================================================
+-- BACKWARD-COMPATIBLE LEGACY VIEWS
+-- ============================================================================
+
+-- View 1: Tasks Legacy Compatibility View
+CREATE VIEW IF NOT EXISTS v_tasks_legacy AS
+SELECT 
+    task_id AS id,
+    title,
+    description,
+    status,
+    priority,
+    assigned_agent_id AS assigned_to,
+    creator_agent_id AS created_by,
+    created_at,
+    updated_at
+FROM tasks;
+
+-- View 2: Agents Legacy Compatibility View
+CREATE VIEW IF NOT EXISTS v_agents_legacy AS
+SELECT 
+    agent_id AS id,
+    display_name AS name,
+    role_title AS role,
+    status,
+    default_model AS model,
+    quota_pool_id AS quota_pool
+FROM agents;
+
+-- View 3: Quota Legacy Compatibility View
+CREATE VIEW IF NOT EXISTS v_quota_legacy AS
+SELECT 
+    quota_pool_id,
+    SUM(prompt_tokens) AS total_prompt_tokens,
+    SUM(completion_tokens) AS total_completion_tokens,
+    SUM(total_tokens) AS total_tokens_consumed,
+    SUM(estimated_cost_usd) AS total_cost_usd
+FROM token_usage
+GROUP BY quota_pool_id;
+
+-- View 4: Approvals Legacy Compatibility View
+CREATE VIEW IF NOT EXISTS v_approvals_legacy AS
+SELECT 
+    approval_id AS id,
+    approval_type AS action_type,
+    target_resource AS resource,
+    requestor_agent_id AS requested_by,
+    status,
+    decision_reason AS reason,
+    expires_at,
+    created_at
+FROM approvals;
+
+-- ============================================================================
+-- PERFORMANCE & INTEGRITY INDEXES (16 INDEXES)
 -- ============================================================================
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned_agent ON tasks(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_inbox_agent ON notifications_inbox(target_agent_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_memory_lookup ON memory_entries(scope, scope_id, key) WHERE is_tombstoned = 0;
 CREATE INDEX IF NOT EXISTS idx_token_usage_task ON token_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent_id);
 CREATE INDEX IF NOT EXISTS idx_audit_sequence ON audit_events(sequence_number);
 CREATE INDEX IF NOT EXISTS idx_approvals_lookup ON approvals(approval_type, target_resource, payload_sha256, status);
 CREATE INDEX IF NOT EXISTS idx_task_leases_expires ON task_leases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_status ON event_outbox(status);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_parent ON task_dependencies(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_child ON task_dependencies(depends_on_task_id);
+CREATE INDEX IF NOT EXISTS idx_room_memberships_lookup ON room_memberships(room_id, agent_id);
+```
