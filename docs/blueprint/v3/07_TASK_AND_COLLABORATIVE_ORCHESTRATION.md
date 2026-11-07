@@ -158,18 +158,30 @@ export async function recoverExpiredLeases(db: Database): Promise<void> {
       })();
       postBoardroomAlert(`CRITICAL: Task ${lease.task_id} assigned to Argon expired. Moved to BLOCKED_MANUAL_INTERVENTION. Zero auto-retry.`);
     } else {
-      // TR-15: Standard worker recovery
+      // TR-15: Standard worker recovery with retry limit check
       db.transaction(() => {
-        db.prepare(`UPDATE tasks SET status = 'READY_FOR_DEV', updated_at = ? WHERE task_id = ?`)
-          .run(now, lease.task_id);
+        if (lease.retry_count >= lease.max_retries) {
+          db.prepare(`UPDATE tasks SET status = 'BLOCKED', updated_at = ? WHERE task_id = ?`)
+            .run(now, lease.task_id);
+          insertAuditEvent(db, {
+            actor: 'orchestrator',
+            action: 'task.max_retries_exceeded',
+            target_type: 'task',
+            target_id: lease.task_id,
+            payload: { retry_count: lease.retry_count, max_retries: lease.max_retries }
+          });
+        } else {
+          db.prepare(`UPDATE tasks SET status = 'READY_FOR_DEV', retry_count = retry_count + 1, updated_at = ? WHERE task_id = ?`)
+            .run(now, lease.task_id);
+          insertAuditEvent(db, {
+            actor: 'orchestrator',
+            action: 'task.lease_recovered',
+            target_type: 'task',
+            target_id: lease.task_id,
+            payload: { previous_agent: lease.agent_id, new_retry_count: lease.retry_count + 1 }
+          });
+        }
         db.prepare(`DELETE FROM task_leases WHERE lease_id = ?`).run(lease.lease_id);
-        insertAuditEvent(db, {
-          actor: 'orchestrator',
-          action: 'task.lease_recovered',
-          target_type: 'task',
-          target_id: lease.task_id,
-          payload: { previous_agent: lease.agent_id }
-        });
       })();
     }
   }

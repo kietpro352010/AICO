@@ -1,3 +1,4 @@
+import { rfc8785Canonicalize } from "../security/rfc8785-canonicalize.js";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -138,25 +139,26 @@ export class ObservabilityQuotaService {
 
       const detailsJson = JSON.stringify(input.sanitizedDetails || {});
 
-      // HMAC-SHA256 calculation covering all security-relevant canonical fields
+      // Canonical payload for unambiguous RFC 8785 HMAC serialization
+      const canonicalPayload = {
+        action_name: actionName,
+        credential_id: credentialId || "",
+        details: input.sanitizedDetails || {},
+        error_code: input.errorCode || "",
+        event_category: eventCategory,
+        event_id: eventId,
+        outcome: input.outcome,
+        prev_event_hash: prevHash,
+        principal_id: principalId,
+        principal_type: principalType,
+        recorded_at: nowIso,
+        request_id: requestId,
+        source_gateway: sourceGateway,
+        target_resource: targetResource
+      };
+      const payloadToSign = rfc8785Canonicalize(canonicalPayload);
       const hmac = crypto.createHmac("sha256", this.hmacKey);
-      const payloadToSign = [
-        prevHash,
-        eventId,
-        requestId,
-        sourceGateway,
-        principalType,
-        principalId,
-        credentialId || "",
-        eventCategory,
-        actionName,
-        targetResource,
-        input.outcome,
-        input.errorCode || "",
-        detailsJson,
-        nowIso
-      ].join(":");
-      hmac.update(payloadToSign);
+      hmac.update(payloadToSign, "utf8");
       const eventHash = hmac.digest("hex");
 
       const res = db.prepare(`
@@ -186,9 +188,8 @@ export class ObservabilityQuotaService {
 
       const auditId = Number(res.lastInsertRowid);
 
-      if (auditId % 50 === 0 || auditId === 1) {
-        anchorToRecord = { auditId, eventHash, nowIso };
-      }
+      // Record every event in anchor log to support precise tail truncation detection
+      anchorToRecord = { auditId, eventHash, nowIso };
 
       return {
         audit_id: auditId,
@@ -254,24 +255,32 @@ export class ObservabilityQuotaService {
           return { valid: false, totalEvents: rows.length, brokenAtEventId: row.event_id || row.audit_id };
         }
 
+        let detailsParsed: any = {};
+        try {
+          detailsParsed = JSON.parse(row.sanitized_details_json || "{}");
+        } catch {
+          detailsParsed = {};
+        }
+
+        const canonicalPayload = {
+          action_name: row.action_name,
+          credential_id: row.credential_id || "",
+          details: detailsParsed,
+          error_code: row.error_code || "",
+          event_category: row.event_category,
+          event_id: row.event_id || "",
+          outcome: row.outcome,
+          prev_event_hash: expectedPrevHash,
+          principal_id: row.principal_id,
+          principal_type: row.principal_type,
+          recorded_at: row.recorded_at,
+          request_id: row.request_id,
+          source_gateway: row.source_gateway,
+          target_resource: row.target_resource
+        };
+        const payloadToSign = rfc8785Canonicalize(canonicalPayload);
         const hmac = crypto.createHmac("sha256", this.hmacKey);
-        const payloadToSign = [
-          expectedPrevHash,
-          row.event_id || "",
-          row.request_id,
-          row.source_gateway,
-          row.principal_type,
-          row.principal_id,
-          row.credential_id || "",
-          row.event_category,
-          row.action_name,
-          row.target_resource,
-          row.outcome,
-          row.error_code || "",
-          row.sanitized_details_json,
-          row.recorded_at
-        ].join(":");
-        hmac.update(payloadToSign);
+        hmac.update(payloadToSign, "utf8");
         const computedHash = hmac.digest("hex");
 
         if (computedHash !== row.event_hash_hmac_sha256) {
@@ -302,8 +311,10 @@ export class ObservabilityQuotaService {
             };
           }
 
+          let latestAnchor: any = null;
           for (const line of lines) {
             const anchor = JSON.parse(line);
+            latestAnchor = anchor;
             const matchingRow = rowByAuditId.get(anchor.last_audit_id);
             if (!matchingRow) {
               // Database rollback or truncation detected
@@ -323,6 +334,31 @@ export class ObservabilityQuotaService {
                 brokenAtEventId: `anchor_hash_mismatch_audit_id_${anchor.last_audit_id}`
               };
             }
+          }
+
+          const lastRow = rows[rows.length - 1];
+
+          // Reconcile latest anchor with latest DB state
+          if (latestAnchor && lastRow.audit_id < latestAnchor.last_audit_id) {
+            return {
+              valid: false,
+              totalEvents: rows.length,
+              brokenAtEventId: `TAIL_TRUNCATION_DETECTED: Last DB audit_id (${lastRow.audit_id}) is earlier than latest anchor (${latestAnchor.last_audit_id})`
+            };
+          }
+
+          // Tail truncation check via sqlite_sequence
+          try {
+            const seqRow = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'audit_events'").get() as any;
+            if (seqRow && Number(seqRow.seq) > lastRow.audit_id) {
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `TAIL_TRUNCATION_DETECTED: sqlite_sequence indicates tail deletion (seq=${seqRow.seq}, max_id=${lastRow.audit_id})`
+              };
+            }
+          } catch {
+            // sqlite_sequence may not exist in mock environments
           }
         } catch (err: any) {
           return {

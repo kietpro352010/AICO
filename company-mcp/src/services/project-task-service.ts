@@ -130,18 +130,7 @@ export class ProjectTaskService {
       requestId: `req_${isArgon ? "argon" : "crit"}_${task.task_id}`
     }, db);
 
-    if (!res.valid && !isArgon) {
-      // Fallback payload with only taskId if approval was created with simplified payload
-      const fallbackRes = this.approvalService.consumeApproval({
-        approvalId,
-        expectedActionType: actionType,
-        canonicalPayload: { taskId: task.task_id },
-        requestId: `req_crit_${task.task_id}`
-      }, db);
-      if (fallbackRes.valid) {
-        res = fallbackRes;
-      }
-    }
+    
 
     if (!res.valid) {
       if (isArgon) {

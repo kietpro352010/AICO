@@ -34,8 +34,11 @@ export class ApprovalService {
   }
 
   public computeCanonicalPayloadHash(payload: unknown): { canonicalJson: string; sha256: string } {
-    const canonicalJson = rfc8785Canonicalize(payload ?? {});
-    const sha256 = crypto.createHash("sha256").update(canonicalJson).digest("hex");
+    if (payload === undefined || payload === null) {
+      throw new TypeError("RFC 8785: Payload cannot be undefined or null for canonical hashing");
+    }
+    const canonicalJson = rfc8785Canonicalize(payload);
+    const sha256 = crypto.createHash("sha256").update(canonicalJson, "utf8").digest("hex");
     return { canonicalJson, sha256 };
   }
 
@@ -79,8 +82,14 @@ export class ApprovalService {
     const riskLevel = params.riskLevel || params.risk_level || "medium";
     const rawPayload = params.canonicalPayload !== undefined
       ? params.canonicalPayload
-      : (params.canonical_payload !== undefined ? params.canonical_payload : {});
-    const expiresInHours = params.expiresInHours || params.expires_in_hours || 24;
+      : (params.canonical_payload !== undefined ? params.canonical_payload : null);
+    if (rawPayload === null || rawPayload === undefined) {
+      throw new Error("CANONICAL_PAYLOAD_MANDATORY: canonicalPayload is required to create an approval request");
+    }
+    const expiresInHours = params.expiresInHours ?? params.expires_in_hours ?? 24;
+    if (typeof expiresInHours !== "number" || !Number.isFinite(expiresInHours) || expiresInHours <= 0) {
+      throw new Error("INVALID_EXPIRATION: expiresInHours must be a positive finite number");
+    }
 
     // Determine tier
     const isArgon = targetAgentId === "argon-01" || targetAgentId === "argon-02" || actionType === "argon_invocation";
@@ -229,8 +238,11 @@ export class ApprovalService {
     const approvalId = params.approvalId || params.approval_id;
     if (!approvalId) throw new Error("Approval ID required");
 
-    const deciderId = params.ctx?.principalId || params.decidedBy || params.decided_by || "founder-01";
-    const deciderType = params.ctx?.principalType || (deciderId === "founder-01" ? "human" : "agent");
+    if (!params.ctx || !params.ctx.principalId) {
+      throw new Error("AUTHENTICATION_REQUIRED: Authenticated PrincipalContext is mandatory to decide approval");
+    }
+    const deciderId = params.ctx.principalId;
+    const deciderType = params.ctx.principalType || "agent";
     const note = params.decision_note || params.reason || `Decision: ${params.decision}`;
     const now = new Date();
     const nowIso = now.toISOString();
@@ -245,8 +257,15 @@ export class ApprovalService {
         throw new Error(`APPROVAL_ALREADY_DECIDED: Request is already ${row.status}`);
       }
 
-      // Mandatory Expiration Check
-      if (row.expires_at && new Date(row.expires_at).getTime() <= now.getTime()) {
+      // Mandatory Expiration Check (Fail-closed if missing, null, or invalid)
+      if (!row.expires_at) {
+        throw new Error(`APPROVAL_INVALID_EXPIRATION: Approval request ${approvalId} lacks mandatory expires_at timestamp`);
+      }
+      const expiresAtMs = new Date(row.expires_at).getTime();
+      if (Number.isNaN(expiresAtMs)) {
+        throw new Error(`APPROVAL_INVALID_EXPIRATION: Approval request ${approvalId} has invalid expires_at timestamp`);
+      }
+      if (expiresAtMs <= now.getTime()) {
         db.prepare("UPDATE approval_requests SET status = 'expired' WHERE approval_id = ?").run(approvalId);
         throw new Error(`APPROVAL_EXPIRED: Cannot decide expired approval request ${approvalId}`);
       }
@@ -328,8 +347,15 @@ export class ApprovalService {
 
       const now = new Date();
 
-      // 4. Expiration Check
-      if (row.expires_at && new Date(row.expires_at).getTime() <= now.getTime()) {
+      // 4. Expiration Check (Fail-closed if missing, null, or invalid)
+      if (!row.expires_at) {
+        return { valid: false, error: "APPROVAL_INVALID_EXPIRATION: Approval request lacks mandatory expires_at" };
+      }
+      const expiresAtMs = new Date(row.expires_at).getTime();
+      if (Number.isNaN(expiresAtMs)) {
+        return { valid: false, error: "APPROVAL_INVALID_EXPIRATION: Approval request has invalid expires_at" };
+      }
+      if (expiresAtMs <= now.getTime()) {
         db.prepare("UPDATE approval_requests SET status = 'expired' WHERE approval_id = ?").run(params.approvalId);
         return { valid: false, error: "APPROVAL_EXPIRED: Cannot consume an expired approval request" };
       }

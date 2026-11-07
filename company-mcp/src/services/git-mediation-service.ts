@@ -28,101 +28,159 @@ export class GitMediationService {
     return pattern.test(branchName);
   }
 
-  public scanCommitFiles(
+    public scanCommitFiles(
     clonePath: string,
     commitSha: string,
     options?: { baseRef?: string }
   ): { valid: boolean; forbiddenFiles: string[]; secretPattern?: string } {
+    const forbiddenPatterns = [
+      /\.db$/,
+      /\.db-wal$/,
+      /\.db-shm$/,
+      /\.env$/,
+      /\.dpapi$/,
+      /\.key$/,
+      /\.pem$/,
+      /^\.git\/hooks/
+    ];
+
+    // 1. Working Tree & Untracked Files Scan (Check staged, unstaged, and untracked files)
+    let statusOutput = "";
     try {
-      const forbiddenPatterns = [
-        /\.db$/,
-        /\.db-wal$/,
-        /\.db-shm$/,
-        /\.env$/,
-        /\.dpapi$/,
-        /\.key$/,
-        /\.pem$/,
-        /^\.git\/hooks/
-      ];
-
-      // 1. Working Tree & Untracked Files Scan (Check staged, unstaged, and untracked files)
-      try {
-        const statusOutput = execFileSync("git", ["status", "--porcelain", "-uall"], {
-          cwd: clonePath,
-          encoding: "utf8",
-          timeout: 10000
-        });
-        const statusLines = statusOutput.split(/\r?\n/).filter(Boolean);
-        const untrackedForbidden: string[] = [];
-        for (const line of statusLines) {
-          const filePath = line.slice(3).trim();
-          if (forbiddenPatterns.some((p) => p.test(filePath))) {
-            untrackedForbidden.push(filePath);
-          }
-        }
-        if (untrackedForbidden.length > 0) {
-          return { valid: false, forbiddenFiles: untrackedForbidden };
-        }
-      } catch {
-        // Continue if git status is unavailable (e.g. bare repo)
-      }
-
-      // 2. Full Tree Scan: Inspect ALL files present in the branch tree at commitSha
-      const treeOutput = execFileSync("git", ["ls-tree", "-r", "--name-only", commitSha], {
+      statusOutput = execFileSync("git", ["status", "--porcelain", "-uall"], {
         cwd: clonePath,
         encoding: "utf8",
         timeout: 15000
       });
-
-      const files = treeOutput.split(/\r?\n/).filter(Boolean);
-      const foundForbidden: string[] = [];
-
-      for (const f of files) {
-        if (forbiddenPatterns.some((p) => p.test(f))) {
-          foundForbidden.push(f);
-        }
-      }
-
-      if (foundForbidden.length > 0) {
-        return { valid: false, forbiddenFiles: foundForbidden };
-      }
-
-      // 3. Full Branch Divergence Scan (Replace -n 50 cap with merge-base full history diff)
-      try {
-        let rangeArg = commitSha;
-        const targetBase = options?.baseRef || "master";
-        try {
-          const mergeBase = execFileSync("git", ["merge-base", targetBase, commitSha], {
-            cwd: clonePath,
-            encoding: "utf8",
-            timeout: 10000
-          }).trim();
-          if (mergeBase && mergeBase !== commitSha) {
-            rangeArg = `${mergeBase}..${commitSha}`;
-          }
-        } catch {
-          // If merge-base resolution fails, scan full history reachable from commitSha
-          rangeArg = commitSha;
-        }
-
-        const patchOutput = execFileSync("git", ["log", "-p", "-m", "--full-history", rangeArg], {
-          cwd: clonePath,
-          encoding: "utf8",
-          timeout: 30000
-        });
-        const scan = SecretScanner.scan(patchOutput);
-        if (scan.hasSecret) {
-          return { valid: false, forbiddenFiles: [], secretPattern: scan.patternMatched };
-        }
-      } catch (err: any) {
-        throw new Error(`GIT_PATCH_SCAN_FAILED: Failed to scan commit history patches: ${err.message}`);
-      }
-
-      return { valid: true, forbiddenFiles: [] };
     } catch (err: any) {
-      if (err.message?.startsWith("GIT_PATCH_SCAN_FAILED")) throw err;
-      throw new Error(`GIT_TREE_SCAN_FAILED: Failed to inspect branch tree: ${err.message}`);
+      throw new Error(`GIT_STATUS_FAILED: Failed to check working tree status: ${err.message}`);
     }
+
+    const statusLines = statusOutput.split(/\r?\n/).filter(Boolean);
+    const untrackedForbidden: string[] = [];
+
+    for (const line of statusLines) {
+      let rawFilePath = line.slice(3).trim();
+      if (rawFilePath.startsWith('"') && rawFilePath.endsWith('"')) {
+        rawFilePath = rawFilePath.slice(1, -1);
+      }
+
+      // Check forbidden filename pattern
+      if (forbiddenPatterns.some((p) => p.test(rawFilePath))) {
+        untrackedForbidden.push(rawFilePath);
+      }
+
+      // Content scan of working tree files (staged, unstaged, untracked, regardless of extension)
+      const fullPath = path.resolve(clonePath, rawFilePath);
+      try {
+        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+          const fileContent = fs.readFileSync(fullPath, "utf8");
+          const contentScan = SecretScanner.scan(fileContent);
+          if (contentScan.hasSecret) {
+            return {
+              valid: false,
+              forbiddenFiles: [rawFilePath],
+              secretPattern: contentScan.patternMatched
+            };
+          }
+        }
+      } catch (readErr: any) {
+        throw new Error(`GIT_WORKING_TREE_SCAN_FAILED: Failed to scan content of '${rawFilePath}': ${readErr.message}`);
+      }
+    }
+
+    if (untrackedForbidden.length > 0) {
+      return { valid: false, forbiddenFiles: untrackedForbidden };
+    }
+
+    // 2. Scan staged diff
+    try {
+      const stagedDiff = execFileSync("git", ["diff", "--cached"], {
+        cwd: clonePath,
+        encoding: "utf8",
+        timeout: 15000
+      });
+      const stagedScan = SecretScanner.scan(stagedDiff);
+      if (stagedScan.hasSecret) {
+        return { valid: false, forbiddenFiles: [], secretPattern: stagedScan.patternMatched };
+      }
+    } catch (err: any) {
+      throw new Error(`GIT_STAGED_DIFF_SCAN_FAILED: Failed to scan staged diff: ${err.message}`);
+    }
+
+    // 3. Scan unstaged diff
+    try {
+      const unstagedDiff = execFileSync("git", ["diff"], {
+        cwd: clonePath,
+        encoding: "utf8",
+        timeout: 15000
+      });
+      const unstagedScan = SecretScanner.scan(unstagedDiff);
+      if (unstagedScan.hasSecret) {
+        return { valid: false, forbiddenFiles: [], secretPattern: unstagedScan.patternMatched };
+      }
+    } catch (err: any) {
+      throw new Error(`GIT_UNSTAGED_DIFF_SCAN_FAILED: Failed to scan unstaged diff: ${err.message}`);
+    }
+
+    // 4. Full Tree Scan: Inspect ALL files present in the branch tree at commitSha
+    let treeOutput = "";
+    try {
+      treeOutput = execFileSync("git", ["ls-tree", "-r", "--name-only", commitSha], {
+        cwd: clonePath,
+        encoding: "utf8",
+        timeout: 15000
+      });
+    } catch (err: any) {
+      throw new Error(`GIT_TREE_SCAN_FAILED: Failed to inspect branch tree at ${commitSha}: ${err.message}`);
+    }
+
+    const files = treeOutput.split(/\r?\n/).filter(Boolean);
+    const foundForbidden: string[] = [];
+
+    for (const f of files) {
+      if (forbiddenPatterns.some((p) => p.test(f))) {
+        foundForbidden.push(f);
+      }
+    }
+
+    if (foundForbidden.length > 0) {
+      return { valid: false, forbiddenFiles: foundForbidden };
+    }
+
+    // 5. Full Branch Divergence Scan (merge-base full history diff)
+    let rangeArg = commitSha;
+    const targetBase = options?.baseRef || "master";
+    try {
+      const mergeBase = execFileSync("git", ["merge-base", targetBase, commitSha], {
+        cwd: clonePath,
+        encoding: "utf8",
+        timeout: 10000
+      }).trim();
+      if (mergeBase && mergeBase !== commitSha) {
+        rangeArg = `${mergeBase}..${commitSha}`;
+      }
+    } catch {
+      rangeArg = commitSha;
+    }
+
+    let patchOutput = "";
+    try {
+      patchOutput = execFileSync("git", ["log", "-p", "-m", "--full-history", rangeArg], {
+        cwd: clonePath,
+        encoding: "utf8",
+        timeout: 30000
+      });
+    } catch (err: any) {
+      throw new Error(`GIT_PATCH_SCAN_FAILED: Failed to scan commit history patches: ${err.message}`);
+    }
+
+    const scan = SecretScanner.scan(patchOutput);
+    if (scan.hasSecret) {
+      return { valid: false, forbiddenFiles: [], secretPattern: scan.patternMatched };
+    }
+
+    return { valid: true, forbiddenFiles: [] };
   }
 
   public syncAgentBranch(params: {

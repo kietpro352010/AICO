@@ -10,6 +10,12 @@
 
 ---
 
+> [!IMPORTANT]
+> **ARCHITECTURAL BOUNDARY: V2.2.1 RUNTIME VS V3 TARGET SPECIFICATION**
+> - **Current V2.2.1 Runtime:** The physical runtime database (`data/aico.db`) operates on the **V2.2.1 Baseline Schema (v0.3.0/v0.4.0)** and is **STRICTLY FROZEN** (SHA-256: `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`).
+> - **Target V3 Architecture:** The 24 conceptual domain entities, 29 physical base tables, explicit foreign keys, referential action rules, and 23-state task CHECK constraints detailed in this document are the **TARGET ARCHITECTURE SPECIFICATION FOR V3**.
+> - **Execution Boundary:** These target constraints and tables are **NOT** present in the active V2.2.1 runtime environment. They are specification artifacts designed for Phase 1 / Migration v0.5.0, which will be executed only after explicit human Founder approval and the formal opening of Production Gate G4.
+
 ## 1. DOMAIN MODEL OVERVIEW & CANONICAL INVENTORY
 
 The AICO V3 Domain Model encapsulates the complete lifecycle of an autonomous AI software company (`REQ-V3-006`). It models corporate organization, agent identities, collaborative group rooms, multi-tier persistent memory, hierarchical task orchestration, capability discovery, token budget telemetry, cryptographic governance, and immutable audit logging.

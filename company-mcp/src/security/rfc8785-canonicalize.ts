@@ -1,11 +1,17 @@
+import * as crypto from "node:crypto";
+
 /**
  * RFC 8785 JSON Canonicalization Scheme (JCS) Implementation.
  * Provides deterministic canonical serialization across arbitrary nesting depths.
- * Compliant with RFC 8785:
+ * Compliant with RFC 8785 / RFC 8259 JSON Data Model:
+ * - Rejects data outside the JSON data model (Functions, Symbols, BigInts, Dates, RegExp, Maps, Sets, etc.)
+ * - Rejects non-finite numbers (NaN, Infinity, -Infinity)
+ * - Normalizes -0 to 0
+ * - Formats numbers strictly per ECMAScript ToString(Number) (RFC 8785 Section 3.2.2.3)
  * - Deterministic UTF-16 code unit key sorting at all object depths
  * - Strict whitespace stripping
- * - Preserved array element order
- * - IEEE 754 number formatting, -0 normalized to 0, non-finite numbers rejected
+ * - Preserves array element order
+ * - Sparse arrays handled per RFC 8785 / ECMAScript: missing elements/holes serialize as null
  * - Circular structure detection
  */
 
@@ -23,7 +29,7 @@ export function rfc8785Canonicalize(data: unknown, seen = new Set<unknown>()): s
   if (type === "number") {
     const num = data as number;
     if (!Number.isFinite(num)) {
-      throw new TypeError("RFC 8785: Non-finite numbers (NaN, Infinity) are not permitted in canonical JSON");
+      throw new TypeError("RFC 8785: Non-finite numbers (NaN, Infinity) are not permitted in JSON data model");
     }
     if (Object.is(num, -0)) {
       return "0";
@@ -43,16 +49,31 @@ export function rfc8785Canonicalize(data: unknown, seen = new Set<unknown>()): s
 
     try {
       if (Array.isArray(data)) {
-        const items = data.map((item) => {
-          if (item === undefined || typeof item === "function" || typeof item === "symbol") {
-            return "null";
+        const items: string[] = [];
+        for (let i = 0; i < data.length; i++) {
+          // Sparse array handling: holes (!(i in data)) or undefined slots serialize as null
+          if (!(i in data) || data[i] === undefined || data[i] === null) {
+            items.push("null");
+          } else {
+            const item = data[i];
+            const itemType = typeof item;
+            if (itemType === "function" || itemType === "symbol" || itemType === "bigint") {
+              throw new TypeError(`RFC 8785: Element at index ${i} has unsupported type '${itemType}' outside JSON data model`);
+            }
+            items.push(rfc8785Canonicalize(item, seen));
           }
-          return rfc8785Canonicalize(item, seen);
-        });
+        }
         return "[" + items.join(",") + "]";
       }
 
-      // Plain Object: sort keys in ascending order by UTF-16 code units
+      // Check for non-plain objects outside the JSON data model (Date, RegExp, Map, Set, Error, Buffer, etc.)
+      const proto = Object.getPrototypeOf(data);
+      if (proto !== null && proto !== Object.prototype) {
+        const ctorName = (data as any)?.constructor?.name || typeof data;
+        throw new TypeError(`RFC 8785: Object of type '${ctorName}' is outside JSON data model`);
+      }
+
+      // Plain Object: sort keys in ascending order by UTF-16 code units (lexicographical)
       const keys = Object.keys(data as Record<string, unknown>).sort((a, b) => {
         return a < b ? -1 : a > b ? 1 : 0;
       });
@@ -60,9 +81,16 @@ export function rfc8785Canonicalize(data: unknown, seen = new Set<unknown>()): s
       const entries: string[] = [];
       for (const key of keys) {
         const val = (data as Record<string, unknown>)[key];
-        if (val === undefined || typeof val === "function" || typeof val === "symbol") {
-          continue; // JSON.stringify omits undefined/function/symbol properties in objects
+        const valType = typeof val;
+
+        // Reject properties outside JSON data model
+        if (val === undefined) {
+          throw new TypeError(`RFC 8785: Property '${key}' is undefined, which is outside JSON data model`);
         }
+        if (valType === "function" || valType === "symbol" || valType === "bigint") {
+          throw new TypeError(`RFC 8785: Property '${key}' has unsupported type '${valType}' outside JSON data model`);
+        }
+
         entries.push(JSON.stringify(key) + ":" + rfc8785Canonicalize(val, seen));
       }
       return "{" + entries.join(",") + "}";
@@ -71,5 +99,10 @@ export function rfc8785Canonicalize(data: unknown, seen = new Set<unknown>()): s
     }
   }
 
-  throw new TypeError(`RFC 8785: Unsupported data type '${type}' for canonicalization`);
+  throw new TypeError(`RFC 8785: Unsupported data type '${type}' outside JSON data model`);
+}
+
+export function computeCanonicalPayloadSha256(payload: unknown): string {
+  const canonical = rfc8785Canonicalize(payload);
+  return crypto.createHash("sha256").update(canonical, "utf8").digest("hex");
 }

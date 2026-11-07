@@ -52,9 +52,10 @@ test("T02: Core Services — Identity, Approvals and Workspace Artifact Guard", 
     assert.ok(approvalId.startsWith("appr_"));
 
     // Approve by founder
+    const founderCtx = idService.getPrincipalById("founder-01")!;
     const decResult = appService.decideApproval({
+      ctx: founderCtx,
       approvalId,
-      decidedBy: "founder-01",
       decision: "approved"
     });
     assert.equal(decResult.success, true);
