@@ -377,9 +377,24 @@ export class ApprovalService {
         }
       }
 
-      // 6. Target Agent binding (if specified in request or row)
-      if (params.expectedTargetAgentId && row.target_agent_id && row.target_agent_id !== params.expectedTargetAgentId) {
-        return { valid: false, error: `Target agent mismatch: expected ${params.expectedTargetAgentId}, found ${row.target_agent_id}` };
+      // 6. Target Agent binding: exact matching, no null target bypass
+      if (params.expectedTargetAgentId !== undefined && params.expectedTargetAgentId !== null) {
+        if (!row.target_agent_id || row.target_agent_id !== params.expectedTargetAgentId) {
+          return {
+            valid: false,
+            error: `TARGET_AGENT_MISMATCH: expected target agent '${params.expectedTargetAgentId}', but approval record has '${row.target_agent_id || "null"}'`
+          };
+        }
+      }
+
+      // 6.1. Target Resource binding: exact matching, no null target bypass
+      if (params.expectedTargetResource !== undefined && params.expectedTargetResource !== null) {
+        if (!row.target_resource || row.target_resource !== params.expectedTargetResource) {
+          return {
+            valid: false,
+            error: `TARGET_RESOURCE_MISMATCH: expected target resource '${params.expectedTargetResource}', but approval record has '${row.target_resource || "null"}'`
+          };
+        }
       }
 
       // 7. Mandatory payload hash validation: recompute RFC 8785 canonical hash

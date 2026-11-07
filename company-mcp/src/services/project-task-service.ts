@@ -553,14 +553,18 @@ export class ProjectTaskService {
     reason?: string;
     reviewerId?: string;
   }): TaskRecord {
-    const reviewerId = params.ctx?.principalId || params.reviewerId || "flash-01";
+    const reviewerId = params.ctx?.principalId || params.reviewerId;
+    if (!reviewerId || (params.ctx && !params.ctx.authenticated)) {
+      throw new Error("AUTHENTICATION_REQUIRED: reviewTask requires an authenticated PrincipalContext");
+    }
     const toStatus: TaskExecutionStatus = params.decision === "completed" ? "completed" : "rework";
     const effectiveCtx = params.ctx || ({
       authenticated: true,
       principalId: reviewerId,
       principalType: reviewerId === "founder-01" ? "human" : "agent",
       displayName: reviewerId,
-      agentId: reviewerId === "founder-01" ? null : reviewerId
+      agentId: reviewerId === "founder-01" ? null : reviewerId,
+      scopes: new Set(["tasks:review", "tasks:transition"])
     } as any);
 
     return this.transitionTask({
@@ -574,10 +578,13 @@ export class ProjectTaskService {
   }
 
   public transitionTask(input: TransitionInput): TaskRecord {
+    if (!input.ctx || !input.ctx.authenticated || !input.ctx.principalId) {
+      throw new Error("AUTHENTICATION_REQUIRED: transitionTask requires an authenticated PrincipalContext");
+    }
     const now = new Date();
     const nowIso = now.toISOString();
-    const actorId = input.ctx?.principalId || "founder-01";
-    const actorType = input.ctx?.principalType || (actorId === "founder-01" ? "human" : "agent");
+    const actorId = input.ctx.principalId;
+    const actorType = input.ctx.principalType;
 
     return this.connManager.withWriteTransaction((db) => {
       const task = db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(input.taskId) as any;
@@ -815,11 +822,15 @@ export class ProjectTaskService {
         if (task.assigned_agent_id && (task.assigned_agent_id === actorId || task.assigned_agent_id === callerAgentId) && actorId !== "founder-01") {
           throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Agent cannot review own task for rework");
         }
+        const isExecutive = actorId === "founder-01" || actorId === "flash-01" || actorId === "flash-02" || actorId === "chatgpt-01";
         if (task.reviewer_agent_id) {
           const isDesignatedReviewer = callerAgentId === task.reviewer_agent_id || actorId === task.reviewer_agent_id;
-          const isExecutive = actorId === "founder-01" || actorId === "flash-01";
           if (!isDesignatedReviewer && !isExecutive) {
             throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only designated reviewer '${task.reviewer_agent_id}' or executive leadership can request rework`);
+          }
+        } else {
+          if (!isExecutive) {
+            throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Tasks without designated reviewer can only be reviewed for rework by executive leadership");
           }
         }
       } else if (fromStatus === "rework" && toStatus === "in_progress") {
@@ -839,11 +850,15 @@ export class ProjectTaskService {
         if (task.assigned_agent_id && (task.assigned_agent_id === actorId || task.assigned_agent_id === callerAgentId) && actorId !== "founder-01") {
           throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Agent cannot approve own task as completed (Separation of Duties)");
         }
+        const isExecutive = actorId === "founder-01" || actorId === "flash-01" || actorId === "flash-02" || actorId === "chatgpt-01";
         if (task.reviewer_agent_id) {
           const isDesignatedReviewer = callerAgentId === task.reviewer_agent_id || actorId === task.reviewer_agent_id;
-          const isExecutive = actorId === "founder-01" || actorId === "flash-01";
           if (!isDesignatedReviewer && !isExecutive) {
             throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only designated reviewer '${task.reviewer_agent_id}' or executive leadership can approve task completion`);
+          }
+        } else {
+          if (!isExecutive) {
+            throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Tasks without designated reviewer can only be approved by executive leadership");
           }
         }
         newCompletedAt = nowIso;

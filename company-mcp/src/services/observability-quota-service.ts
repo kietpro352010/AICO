@@ -215,7 +215,11 @@ export class ObservabilityQuotaService {
     // Write anchor after transaction commits
     const anchor = anchorToRecord as { auditId: number; eventHash: string; nowIso: string } | null;
     if (anchor) {
-      this.writeAnchorRecord(anchor.auditId, anchor.eventHash, anchor.nowIso);
+      try {
+        this.writeAnchorRecord(anchor.auditId, anchor.eventHash, anchor.nowIso);
+      } catch (err: any) {
+        throw new Error(`AUDIT_ANCHOR_WRITE_FAILURE: Event ${anchor.auditId} committed to DB, but failed writing anchor: ${err.message}`);
+      }
     }
 
     return result;
@@ -339,12 +343,31 @@ export class ObservabilityQuotaService {
           const lastRow = rows[rows.length - 1];
 
           // Reconcile latest anchor with latest DB state
-          if (latestAnchor && lastRow.audit_id < latestAnchor.last_audit_id) {
-            return {
-              valid: false,
-              totalEvents: rows.length,
-              brokenAtEventId: `TAIL_TRUNCATION_DETECTED: Last DB audit_id (${lastRow.audit_id}) is earlier than latest anchor (${latestAnchor.last_audit_id})`
-            };
+          if (latestAnchor) {
+            if (lastRow.audit_id < latestAnchor.last_audit_id) {
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `TAIL_TRUNCATION_DETECTED: Last DB audit_id (${lastRow.audit_id}) is earlier than latest anchor (${latestAnchor.last_audit_id})`
+              };
+            }
+            if (lastRow.audit_id > latestAnchor.last_audit_id) {
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `UNANCHORED_DB_EVENTS_DETECTED: Database has ${lastRow.audit_id - latestAnchor.last_audit_id} unanchored event(s) (db_max=${lastRow.audit_id}, latest_anchor=${latestAnchor.last_audit_id})`
+              };
+            }
+            if (
+              lastRow.event_hash_hmac_sha256 !== latestAnchor.event_hash_sha256 &&
+              lastRow.event_hash_sha256 !== latestAnchor.event_hash_sha256
+            ) {
+              return {
+                valid: false,
+                totalEvents: rows.length,
+                brokenAtEventId: `ANCHOR_HASH_MISMATCH: DB tail hash does not match latest anchor hash (audit_id=${lastRow.audit_id})`
+              };
+            }
           }
 
           // Tail truncation check via sqlite_sequence
@@ -370,6 +393,44 @@ export class ObservabilityQuotaService {
       }
 
       return { valid: true, totalEvents: rows.length };
+    });
+  }
+
+  public reconcileUnanchoredEvents(): { reconciledCount: number; latestAnchorAuditId: number } {
+    return this.connManager.withReadTransaction((db) => {
+      let latestAnchorAuditId = 0;
+      if (fs.existsSync(this.anchorFilePath)) {
+        const content = fs.readFileSync(this.anchorFilePath, "utf8");
+        const lines = content.split("\n").filter((l) => l.trim().length > 0);
+        for (const line of lines) {
+          try {
+            const anchor = JSON.parse(line);
+            if (anchor.last_audit_id > latestAnchorAuditId) {
+              latestAnchorAuditId = anchor.last_audit_id;
+            }
+          } catch {
+            // ignore corrupt line
+          }
+        }
+      }
+
+      const unanchoredRows = db.prepare(
+        "SELECT * FROM audit_events WHERE audit_id > ? ORDER BY audit_id ASC"
+      ).all(latestAnchorAuditId) as any[];
+
+      if (unanchoredRows.length === 0) {
+        return { reconciledCount: 0, latestAnchorAuditId };
+      }
+
+      let reconciledCount = 0;
+      for (const row of unanchoredRows) {
+        const hash = row.event_hash_hmac_sha256 || row.event_hash_sha256;
+        this.writeAnchorRecord(row.audit_id, hash, row.recorded_at);
+        reconciledCount++;
+        latestAnchorAuditId = row.audit_id;
+      }
+
+      return { reconciledCount, latestAnchorAuditId };
     });
   }
 

@@ -153,6 +153,50 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       assert.throws(() => rfc8785Canonicalize([10n]), /outside JSON data model/);
     });
 
+    await t.test("1.5 P2 Lone surrogate rejection in strings and object keys", () => {
+      // Lone high surrogate in string
+      assert.throws(
+        () => rfc8785Canonicalize("lone_high_\uD800_end"),
+        /Lone surrogate code point detected in string/
+      );
+
+      // Lone low surrogate in string
+      assert.throws(
+        () => rfc8785Canonicalize("lone_low_\uDFFF_end"),
+        /Lone surrogate code point detected in string/
+      );
+
+      // Lone surrogate in object key
+      assert.throws(
+        () => rfc8785Canonicalize({ ["invalid_\uD800_key"]: "value" }),
+        /Lone surrogate code point detected in object key/
+      );
+
+      // Valid surrogate pair succeeds
+      const validSurrogatePair = "\uD83D\uDE00"; // 😀
+      assert.doesNotThrow(() => rfc8785Canonicalize(validSurrogatePair));
+      assert.equal(rfc8785Canonicalize({ emoji: validSurrogatePair }), '{"emoji":"😀"}');
+    });
+
+    await t.test("1.6 P2 Unified undefined in array policy: holes serialize as null, explicit undefined rejected", () => {
+      // 1. Sparse array with holes: holes (!(i in data)) serialize to null
+      const sparseArr = [10, , 30];
+      assert.equal(rfc8785Canonicalize(sparseArr), "[10,null,30]");
+
+      // 2. Explicit undefined in array: rejected outside JSON data model
+      assert.throws(
+        () => rfc8785Canonicalize([10, undefined, 30]),
+        /Element at index 1 is undefined, which is outside JSON data model/
+      );
+      assert.throws(
+        () => rfc8785Canonicalize([undefined]),
+        /Element at index 0 is undefined, which is outside JSON data model/
+      );
+
+      // 3. Explicit null in array: valid JSON data model
+      assert.equal(rfc8785Canonicalize([10, null, 30]), "[10,null,30]");
+    });
+
     // ------------------------------------------------------------------------
     // Part 2: Approval Security — Authentication, Expiration & Loose Fallback
     // ------------------------------------------------------------------------
@@ -317,6 +361,71 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       );
     });
 
+    await t.test("2.4 P1-02 Approval target binding — expectedTargetAgentId & expectedTargetResource negative tests", () => {
+      // Create approval specifically bound to target_agent_id = 'argon-01' and target_resource = 'task:target_01'
+      const apprTargeted = appService.createApprovalRequest({
+        ctx: flash1Ctx,
+        action_type: "argon_invocation",
+        target_agent_id: "argon-01",
+        target_resource: "task:target_01",
+        canonical_payload: { taskId: "task_target_01", target: "argon-01" },
+        approval_tier: "founder"
+      });
+      appService.decideApproval({ ctx: founderCtx, approval_id: apprTargeted.approval_id, decision: "approved" });
+
+      // 1. Target Agent Mismatch: consumer expects argon-02
+      const resMismatchAgent = appService.consumeApproval({
+        approvalId: apprTargeted.approval_id,
+        expectedActionType: "argon_invocation",
+        expectedTargetAgentId: "argon-02",
+        canonicalPayload: { taskId: "task_target_01", target: "argon-01" }
+      });
+      assert.equal(resMismatchAgent.valid, false);
+      assert.match(resMismatchAgent.error!, /TARGET_AGENT_MISMATCH/);
+
+      // 2. Null Target Bypass Prevention: Create approval with target_agent_id = null
+      const apprNullTarget = appService.createApprovalRequest({
+        ctx: flash1Ctx,
+        action_type: "argon_invocation",
+        target_agent_id: null as any,
+        target_resource: "task:target_01",
+        canonical_payload: { taskId: "task_target_01", bypass: true },
+        approval_tier: "founder"
+      });
+      appService.decideApproval({ ctx: founderCtx, approval_id: apprNullTarget.approval_id, decision: "approved" });
+
+      // Consumer specifies expectedTargetAgentId: 'argon-01', but approval record has target_agent_id: null
+      const resNullTargetBypass = appService.consumeApproval({
+        approvalId: apprNullTarget.approval_id,
+        expectedActionType: "argon_invocation",
+        expectedTargetAgentId: "argon-01",
+        canonicalPayload: { taskId: "task_target_01", bypass: true }
+      });
+      assert.equal(resNullTargetBypass.valid, false, "Null target in approval record MUST NOT bypass expectedTargetAgentId");
+      assert.match(resNullTargetBypass.error!, /TARGET_AGENT_MISMATCH/);
+
+      // 3. Target Resource Mismatch: consumer expects task:target_different
+      const resMismatchResource = appService.consumeApproval({
+        approvalId: apprTargeted.approval_id,
+        expectedActionType: "argon_invocation",
+        expectedTargetAgentId: "argon-01",
+        expectedTargetResource: "task:target_different",
+        canonicalPayload: { taskId: "task_target_01", target: "argon-01" }
+      });
+      assert.equal(resMismatchResource.valid, false);
+      assert.match(resMismatchResource.error!, /TARGET_RESOURCE_MISMATCH/);
+
+      // 4. Exact target agent and resource match succeeds
+      const resExactMatch = appService.consumeApproval({
+        approvalId: apprTargeted.approval_id,
+        expectedActionType: "argon_invocation",
+        expectedTargetAgentId: "argon-01",
+        expectedTargetResource: "task:target_01",
+        canonicalPayload: { taskId: "task_target_01", target: "argon-01" }
+      });
+      assert.equal(resExactMatch.valid, true);
+    });
+
     // ------------------------------------------------------------------------
     // Part 3: Task Authorization & Rejection of Fallback Payload
     // ------------------------------------------------------------------------
@@ -435,6 +544,98 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       // 3. Designated reviewer flash-02 succeeds
       const completed = taskService.transitionTask({ ctx: flash2Ctx, taskId: task.task_id, expectedVersion: 6, toStatus: "completed" });
       assert.equal(completed.execution_status, "completed");
+    });
+
+    await t.test("3.3 P1-03 Task authentication: direct service call without authenticated context rejected", () => {
+      const tAuth = taskService.createTask({
+        ctx: flash1Ctx,
+        title: "Auth Test Task",
+        assignedAgentId: "codex-01"
+      });
+
+      // 1. Missing ctx throws AUTHENTICATION_REQUIRED (no fallback to founder-01!)
+      assert.throws(
+        () => (taskService as any).transitionTask({ taskId: tAuth.task_id, expectedVersion: 1, toStatus: "queued" }),
+        /AUTHENTICATION_REQUIRED: transitionTask requires an authenticated PrincipalContext/
+      );
+
+      // 2. Unauthenticated ctx throws AUTHENTICATION_REQUIRED
+      assert.throws(
+        () => taskService.transitionTask({
+          ctx: { authenticated: false, principalId: "unknown", principalType: "agent" } as any,
+          taskId: tAuth.task_id,
+          expectedVersion: 1,
+          toStatus: "queued"
+        }),
+        /AUTHENTICATION_REQUIRED: transitionTask requires an authenticated PrincipalContext/
+      );
+
+      // 3. Empty principalId throws AUTHENTICATION_REQUIRED
+      assert.throws(
+        () => taskService.transitionTask({
+          ctx: { authenticated: true, principalId: "", principalType: "agent" } as any,
+          taskId: tAuth.task_id,
+          expectedVersion: 1,
+          toStatus: "queued"
+        }),
+        /AUTHENTICATION_REQUIRED: transitionTask requires an authenticated PrincipalContext/
+      );
+
+      // 4. Direct call to reviewTask without ctx throws AUTHENTICATION_REQUIRED
+      assert.throws(
+        () => (taskService as any).reviewTask({ taskId: tAuth.task_id, decision: "completed" }),
+        /AUTHENTICATION_REQUIRED: reviewTask requires an authenticated PrincipalContext/
+      );
+    });
+
+    await t.test("3.4 P1-04 Reviewer authorization: null reviewer_agent_id requires executive leadership", () => {
+      // Create task with NO designated reviewer (reviewer_agent_id = null)
+      const tNoReviewer = taskService.createTask({
+        ctx: flash1Ctx,
+        title: "Unassigned Reviewer Task",
+        assignedAgentId: "codex-01"
+        // reviewerAgentId is omitted -> NULL
+      });
+
+      // Advance task: draft -> queued -> assigned -> claimed -> in_progress -> review_required
+      taskService.transitionTask({ ctx: flash1Ctx, taskId: tNoReviewer.task_id, expectedVersion: 1, toStatus: "queued" });
+      taskService.transitionTask({ ctx: flash1Ctx, taskId: tNoReviewer.task_id, expectedVersion: 2, toStatus: "assigned" });
+      taskService.transitionTask({ ctx: codexCtx, taskId: tNoReviewer.task_id, expectedVersion: 3, toStatus: "claimed" });
+      taskService.transitionTask({ ctx: codexCtx, taskId: tNoReviewer.task_id, expectedVersion: 4, toStatus: "in_progress" });
+      taskService.transitionTask({ ctx: codexCtx, taskId: tNoReviewer.task_id, expectedVersion: 5, toStatus: "review_required" });
+
+      // 1. Anti-self-approval: Assigned agent codex-01 cannot approve
+      assert.throws(
+        () => taskService.transitionTask({ ctx: codexCtx, taskId: tNoReviewer.task_id, expectedVersion: 6, toStatus: "completed" }),
+        /Agent cannot approve own task as completed/
+      );
+
+      // 2. Non-executive agent (other-engineer-01) cannot approve task with null reviewer
+      const otherEngineerCtx = {
+        authenticated: true,
+        principalType: "agent",
+        principalId: "other-engineer-01",
+        displayName: "Other Engineer",
+        agentId: "other-engineer-01",
+        credentialId: "cred_other",
+        role: "engineer",
+        department: "engineering",
+        scopes: new Set(["tasks:review", "tasks:transition"]),
+        accessProfile: "local_agent_physical",
+        workspaceId: null,
+        allowPublicGateway: false,
+        sourceGateway: "local",
+        requestId: "req_test",
+        authenticatedAt: new Date().toISOString()
+      } as any;
+      assert.throws(
+        () => taskService.transitionTask({ ctx: otherEngineerCtx, taskId: tNoReviewer.task_id, expectedVersion: 6, toStatus: "completed" }),
+        /Tasks without designated reviewer can only be approved by executive leadership/
+      );
+
+      // 3. Executive leadership (flash-01 or founder-01) CAN approve task with null reviewer
+      const compByExec = taskService.transitionTask({ ctx: flash1Ctx, taskId: tNoReviewer.task_id, expectedVersion: 6, toStatus: "completed" });
+      assert.equal(compByExec.execution_status, "completed");
     });
 
     // ------------------------------------------------------------------------
@@ -610,6 +811,90 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       const verifyTotalTruncation = obsService.verifyAuditChainIntegrity();
       assert.equal(verifyTotalTruncation.valid, false);
       assert.equal(verifyTotalTruncation.brokenAtEventId, "AUDIT_LOG_MISSING_OR_TRUNCATED");
+    });
+
+    await t.test("5.2 P1-01 Audit Anchor: DB tail matching, unanchored event detection, failure injection & reconciliation", () => {
+      // Create fresh anchor path for this test
+      const freshAnchorPath = path.join(os.tmpdir(), `aico-anchor-drill-${Date.now()}.jsonl`);
+      const drillObs = new ObservabilityQuotaService(conn, "test_hmac_secret_key_v221_32bytes_long", freshAnchorPath);
+
+      // Drop DB triggers to simulate failure/tampering injection
+      conn.withWriteTransaction((db) => {
+        db.exec("DROP TRIGGER IF EXISTS trg_audit_events_no_update; DROP TRIGGER IF EXISTS trg_audit_events_no_delete;");
+        db.exec("DELETE FROM audit_events;");
+      });
+
+      // 1. Append 3 legitimate audit events
+      const ev1 = drillObs.appendAuditEvent({
+        ctx: flash1Ctx,
+        sourceGateway: "local",
+        principalType: "agent",
+        principalId: "flash-01",
+        credentialId: "cred_01",
+        eventCategory: "task",
+        actionName: "drill_event_1",
+        targetResource: "res:1",
+        outcome: "succeeded",
+        errorCode: null,
+        sanitizedDetails: { n: 1 }
+      });
+      const ev2 = drillObs.appendAuditEvent({
+        ctx: flash1Ctx,
+        sourceGateway: "local",
+        principalType: "agent",
+        principalId: "flash-01",
+        credentialId: "cred_01",
+        eventCategory: "task",
+        actionName: "drill_event_2",
+        targetResource: "res:2",
+        outcome: "succeeded",
+        errorCode: null,
+        sanitizedDetails: { n: 2 }
+      });
+      const ev3 = drillObs.appendAuditEvent({
+        ctx: flash1Ctx,
+        sourceGateway: "local",
+        principalType: "agent",
+        principalId: "flash-01",
+        credentialId: "cred_01",
+        eventCategory: "task",
+        actionName: "drill_event_3",
+        targetResource: "res:3",
+        outcome: "succeeded",
+        errorCode: null,
+        sanitizedDetails: { n: 3 }
+      });
+
+      // Integrity check passes initially
+      const initCheck = drillObs.verifyAuditChainIntegrity();
+      assert.equal(initCheck.valid, true);
+
+      // 2. FAILURE INJECTION: Simulate failure between DB commit and anchor write
+      // Remove the last anchor record (event 3) from anchor file, leaving event 3 in DB unanchored
+      const anchorContent = fs.readFileSync(freshAnchorPath, "utf8");
+      const lines = anchorContent.split("\n").filter((l) => l.trim().length > 0);
+      assert.equal(lines.length, 3);
+      // Keep only first 2 anchor lines
+      fs.writeFileSync(freshAnchorPath, lines.slice(0, 2).join("\n") + "\n", "utf8");
+
+      // 3. Verification MUST detect unanchored event at DB tail!
+      const unanchoredCheck = drillObs.verifyAuditChainIntegrity();
+      assert.equal(unanchoredCheck.valid, false, "Must detect that DB tail is ahead of latest anchor");
+      assert.match(String(unanchoredCheck.brokenAtEventId), /UNANCHORED_DB_EVENTS_DETECTED/);
+
+      // 4. RECONCILIATION: Reconcile unanchored events to catch up anchor log
+      const reconcileRes = drillObs.reconcileUnanchoredEvents();
+      assert.equal(reconcileRes.reconciledCount, 1);
+      assert.equal(reconcileRes.latestAnchorAuditId, ev3.audit_id);
+
+      // 5. Verification passes after reconciliation
+      const reconciledCheck = drillObs.verifyAuditChainIntegrity();
+      assert.equal(reconciledCheck.valid, true);
+
+      // Clean up temp anchor file
+      if (fs.existsSync(freshAnchorPath)) {
+        fs.unlinkSync(freshAnchorPath);
+      }
     });
 
     // ------------------------------------------------------------------------
