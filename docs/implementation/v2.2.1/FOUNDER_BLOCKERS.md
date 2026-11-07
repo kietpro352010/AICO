@@ -1,26 +1,18 @@
-# AICO v2.2.1 — FOUNDER BLOCKERS & DECISION TRACKER
+# AICO_FOUNDER_DECISION_REQUESTS_V2.2.1.md
 
-**Date:** 2026-11-06  
-**Status:** Tracking Active Gates
-
----
-
-## 1. Active Founder Gates
-
-| Gate | Scope | Required Action | Status | Impact if Gated |
-| :---: | :--- | :--- | :---: | :--- |
-| **G1** | Manifest v1.1 Approval | Review `company-manifest.json` schema v1.1 policy additions (`session_mode`, `dispatch_mode`, etc.). | PENDING | Phase 1 implementation completes preview script only; does not force live DB changes. |
-| **G1.5** | Sandbox Client Auth PoC | Authorize testing of token authentication on disposable sandbox DB. | PENDING | Sandbox PoC can be developed in isolation without touching live system. |
-| **G2** | Local Auth & ACL Package | Review generated DACL / DPAPI scripts and service account plans. | PENDING | No NTFS ACLs modified on Windows host. |
-| **G4** | Production DB Migration | Authorize running MigrationRunner against `D:\AI-COMPANY\data\aico.db`. | **BLOCKED** | Live production database remains 100% frozen. All tests run on sandbox copies. |
-| **G7** | Public Gateway & Ngrok Release | Authorize opening external tunnel and activating port 3335. | **BLOCKED** | Port 3335 remains disabled; ngrok remains stopped. |
+**Version:** 2.2.1  
+**Status:** **APPROVED BY FOUNDER** on 2026-11-07 according to Argon 4 recommendations.  
+**Rule:** Proceed with authorized implementation adhering strictly to Argon 4's safety and architecture recommendations.
 
 ---
 
-## 2. Independent Work In Progress (Non-Gated)
+## Decision Log
 
-The following activities do NOT require bypassing Founder gates and are proceeding:
-1. Manifest validator and runtime configuration abstraction (`Phase 1`).
-2. Test harness and sandbox fixture factory (`Phase 3`).
-3. Core domain services (`S01`–`S04`), SQLite migration scripts `v040`–`v050` tested against disposable temporary databases (`Phase 4A`).
-4. MCP tool schema and DTO contract implementations.
+| ID | Decision Item | Founder Decision | Argon 4 Recommendation Applied | Scope & Conditions |
+|---|---|:---:|---|---|
+| **FDR-01** | Manifest policy fields | **APPROVED** | Phê duyệt tách 4 trường policy (`session_mode`, `dispatch_mode`, `invocation_approval_policy`, `action_approval_policy`). Argon agents luôn `manual`, `always_require_founder`. Deprecate `auto_invoke`. | Áp dụng vào Manifest v1.1 và schema migration. |
+| **FDR-02** | Independent Git clones & Mediation | **APPROVED** | Thay linked worktree bằng Independent Clones + `GitMediationService` (`S05`). Namespace `agent/<agent_id>/*`, cấm push thẳng `master`. | Triển khai `GitMediationService`. |
+| **FDR-03** | Auth/DPAPI/ACL rollout | **APPROVED** | Phê duyệt PoC trước tại G1.5 trên sandbox; không truyền secret qua CLI; chuẩn bị script ACL có kiểm chứng rollback. | Cầu nối `client-bridge.ts` và kiểm thử sandbox. |
+| **FDR-04** | Windows SID model | **OPTION A (APPROVED)** | Khuyến nghị của Argon: **Option A — OS-level isolation**. Founder giữ `kietp`; tạo tài khoản chuẩn `aico_flash1`, `aico_flash2`, `aico_codex`, dịch vụ `aico_svc`. | Chuẩn bị script và phân quyền DACL theo SID. |
+| **FDR-05** | Production migration & RPO/RTO | **APPROVED G4 PLAN** | Chỉ migrate `D:\AI-COMPANY\data\aico.db` sau khi sandbox migration pass, backup checksum verified và restore drill thành công. RPO 24h, RTO 30m là target. | Kiểm thử dry-run sandbox hoàn chỉnh trước khi chạm DB thật. |
+| **FDR-06** | Public Gateway & Ngrok | **APPROVED DISABLED** | Hoàn thiện code và tests bảo mật nhưng giữ Public Gateway `:3335` và ngrok **VÔ HIỆU HÓA (DISABLED)** mặc định. | Cổng 3335 và ngrok duy trì tắt. |
