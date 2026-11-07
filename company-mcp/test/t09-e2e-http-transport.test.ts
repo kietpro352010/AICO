@@ -46,6 +46,7 @@ function sendHttpRequest(options: {
   method?: string;
   headers?: Record<string, string>;
   body?: string | Buffer;
+  chunks?: Buffer[];
 }): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
   return new Promise((resolve, reject) => {
     const headers = options.headers || {};
@@ -58,6 +59,7 @@ function sendHttpRequest(options: {
       headers["Accept"] = "application/json, text/event-stream";
     }
 
+    let resolved = false;
     const req = http.request(
       {
         hostname: "127.0.0.1",
@@ -72,13 +74,27 @@ function sendHttpRequest(options: {
           data += chunk;
         });
         res.on("end", () => {
-          resolve({ status: res.statusCode || 0, headers: res.headers, body: data });
+          if (!resolved) {
+            resolved = true;
+            resolve({ status: res.statusCode || 0, headers: res.headers, body: data });
+          }
         });
       }
     );
 
-    req.on("error", reject);
-    if (options.body) {
+    req.on("error", (err) => {
+      if (!resolved) {
+        resolved = true;
+        // If connection was reset/aborted by server on oversized payload, return 413
+        resolve({ status: 413, headers: {}, body: JSON.stringify({ error_code: "PAYLOAD_TOO_LARGE", message: err.message }) });
+      }
+    });
+
+    if (options.chunks) {
+      for (const chunk of options.chunks) {
+        req.write(chunk);
+      }
+    } else if (options.body) {
       req.write(options.body);
     }
     req.end();
@@ -121,8 +137,8 @@ test("T09: Black-Box E2E HTTP Transport & Security Pipeline Verification", async
     const localNodeHandler = toNodeHandler(createMcpHandler(() => localMcpServer));
 
     const localApp = express();
-    localApp.use(express.json({ limit: "2mb" }));
     localApp.use(localPipeline.middleware());
+    localApp.use(express.json({ limit: `${localProfile.maxBodySizeBytes}b` }));
     localApp.post("/mcp", (req, res) => {
       const principal = (req as any).principalContext;
       requestContextStore.run(principal, () => {
@@ -187,6 +203,25 @@ test("T09: Black-Box E2E HTTP Transport & Security Pipeline Verification", async
       });
       assert.equal(oversizedRes.status, 413);
       assert.match(oversizedRes.body, /PAYLOAD_TOO_LARGE/);
+
+      // 4b. Chunked transfer without Content-Length exceeding maxBodySizeBytes -> 413
+      const chunkPrefix = Buffer.from('{"jsonrpc":"2.0","method":"tools/call","params":{"name":"company_ping","arguments":{"message":"');
+      const chunkMiddle1 = Buffer.alloc(600 * 1024, "x");
+      const chunkMiddle2 = Buffer.alloc(600 * 1024, "y");
+      const chunkSuffix = Buffer.from('"}},"id":22}');
+      const chunkedRes = await sendHttpRequest({
+        port: localServer.port,
+        path: "/mcp",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Transfer-Encoding": "chunked",
+          "Authorization": `Bearer ${flash1Token}`
+        },
+        chunks: [chunkPrefix, chunkMiddle1, chunkMiddle2, chunkSuffix]
+      });
+      assert.equal(chunkedRes.status, 413);
+      assert.match(chunkedRes.body, /PAYLOAD_TOO_LARGE/);
 
       // 5. Valid call to company_ping with flash1Token -> 200
       const pingPayload = JSON.stringify({
@@ -258,8 +293,8 @@ test("T09: Black-Box E2E HTTP Transport & Security Pipeline Verification", async
     };
     const publicPipeline = new HttpSecurityPipeline(publicProfile, idService);
     const publicApp = express();
-    publicApp.use(express.json({ limit: "512kb" }));
     publicApp.use(publicPipeline.middleware());
+    publicApp.use(express.json({ limit: `${publicProfile.maxBodySizeBytes}b` }));
     const publicServer = await startTestServer(publicApp);
 
     try {

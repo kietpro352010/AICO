@@ -107,6 +107,7 @@ export class HttpSecurityPipeline {
             request_id: authReq.requestId
           });
         }
+        req.destroy(new Error("GATEWAY_TIMEOUT"));
       }, this.profile.requestTimeoutMs);
 
       res.on("finish", () => clearTimeout(timeoutHandle));

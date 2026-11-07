@@ -1,4 +1,5 @@
 import { ConnectionManager } from "../db/connection-manager.js";
+import { type PrincipalContext } from "./identity-access-service.js";
 
 export type ExternalMilestone =
   | "operator_delivered"
@@ -27,7 +28,7 @@ export class OrchestrationService {
     this.connManager = connManager;
   }
 
-  public recordExternalDispatchMilestone(params: RecordExternalDispatchParams): ExternalDispatchResult {
+  public recordExternalDispatchMilestone(params: RecordExternalDispatchParams, callerCtx?: PrincipalContext): ExternalDispatchResult {
     const validMilestones: ExternalMilestone[] = [
       "operator_delivered",
       "external_invocation_confirmed",
@@ -57,6 +58,20 @@ export class OrchestrationService {
       const task = db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(params.taskId) as any;
       if (!task) {
         throw new Error(`RESOURCE_NOT_FOUND: Task ${params.taskId} not found`);
+      }
+
+      // ABAC Authorization: Founder, CEO, CTO, or task's assigned agent
+      const callerId = callerCtx?.principalId || params.actorPrincipalId;
+      const callerAgentId = callerCtx?.agentId || params.actorPrincipalId;
+      const isAuthorized =
+        callerId === "founder-01" ||
+        callerId === "chatgpt-01" ||
+        callerId === "flash-01" ||
+        task.assigned_agent_id === callerAgentId ||
+        callerCtx?.scopes.has("*");
+
+      if (!isAuthorized) {
+        throw new Error(`PERMISSION_DENIED: Caller '${callerId}' is not authorized to update dispatch status for task ${params.taskId}`);
       }
 
       db.prepare(`

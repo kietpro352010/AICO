@@ -23,7 +23,12 @@ function createServer() {
 }
 
 const handler = createMcpHandler(createServer);
-const app = createMcpExpressApp();
+const app = createMcpExpressApp({
+  host: HOST,
+  allowedHosts: LOCAL_GATEWAY_PROFILE.allowedHosts,
+  allowedOrigins: LOCAL_GATEWAY_PROFILE.allowedOrigins,
+  jsonLimit: `${LOCAL_GATEWAY_PROFILE.maxBodySizeBytes}b`
+});
 const nodeHandler = toNodeHandler(handler);
 
 // Attach 10-step security pipeline

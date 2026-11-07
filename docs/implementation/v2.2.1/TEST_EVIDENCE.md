@@ -108,7 +108,49 @@
   ℹ todo 0
   ℹ duration_ms 2856.2593
   ```
+
+---
+
+### Test Run TR-005 (Independent Re-Audit Remediations & Final Release Verification)
+- **Timestamp:** 2026-11-07 12:59:19 +07:00
+- **Command:** `Push-Location D:\AI-COMPANY\company-mcp; npm.cmd run typecheck; npm.cmd test`
+- **Exit Code:** `0` (Success)
+- **Typecheck Result:** `tsc --noEmit` exited with code 0 (zero errors).
+- **Raw Summary:**
+  ```text
+  ▶ AICO Quality Baseline Test Suite
+    ✔ 1. Canonical Manifest Integrity (1.18ms)
+    ✔ 2. AgentIdentityService Token Lifecycle & Timing-Safe Auth (54.814ms)
+    ✔ 3. WorkspaceManager Path Traversal Defense (61.0456ms)
+    ✔ 4. Registry Core Tools Verification (2.3293ms)
+    ✔ 5. Migration v0.4.1 Manifest Sync Blueprint (8.6293ms)
+  ✔ AICO Quality Baseline Test Suite (340.5399ms)
+  ✔ T01: MigrationRunner and Schema Migrations on Sandbox DB (122.9671ms)
+  ✔ T02: Core Services — Identity, Approvals and Workspace Artifact Guard (315.4863ms)
+  ✔ T03: MCP Tool Contracts and Public DTO Leakage Prevention (6.3012ms)
+  ✔ T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machine & HMAC Audit Chain (433.947ms)
+  ✔ T05: Complete 38 MCP Tools & Gateway Allowlist Verification (7.8663ms)
+  ✔ T06: Backup and Safe Restore Drills on Sandbox Database (59.6326ms)
+  ✔ T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Test Suite (2015.907ms)
+  ✔ T08: Comprehensive 26-State Transition Matrix (TR-01 to TR-26) & Argon Gate Verification (2354.0312ms)
+  ✔ T09: Black-Box E2E HTTP Transport & Security Pipeline Verification (386.4211ms)
+  ✔ T10: Windows DPAPI Protection, STDIO Frame Limits & Live Token Revocation (2268.3572ms)
+  ℹ tests 15
+  ℹ suites 1
+  ℹ pass 15
+  ℹ fail 0
+  ℹ cancelled 0
+  ℹ skipped 0
+  ℹ todo 0
+  ℹ duration_ms 2834.6269
+  ```
+- **Verification Evidence:**
+  - `T05`: Programmatic 1-to-1 assert of 38 registered MCP tools matching exported canonical `TOOL_REQUIRED_SCOPES` fail-closed policy (zero missing or extraneous keys).
+  - `T07`: Fail-closed ABAC and negative security verification for external dispatch milestones (M34), approval list/get cross-agent isolation (M14/M15), `tasks:read:assigned` isolation (M27/M28), and task submission ownership (M32).
+  - `T08`: Full coverage of all 26 canonical state transitions (`TR-01` to `TR-26`), including explicit `TR-03` (`draft -> waiting_approval`) and `TR-15` (Argon lease expiry `claimed -> blocked`). Rejection of Argon approval reuse across mismatched action types (`critical_task_approval`) or mismatched target agent payload hashes.
+  - `T09`: Real chunked HTTP transfer rejection exceeding 1 MiB boundary (`413 PAYLOAD_TOO_LARGE`).
+  - `T10`: True Windows DPAPI binary ciphertext verification on disk (asserting absence of plaintext `aico_live_` token) and live stream framing guard (`installStdinFrameGuard`) rejecting lines exceeding 2 MiB.
 - **Integrity Verification:**
   - Production DB `D:\AI-COMPANY\data\aico.db` SHA-256 before & after:
     `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416` (100% Unchanged).
-  - Backup Anchor Directory Cleanliness: `D:\AI-COMPANY\backup\audit_anchors.jsonl` does NOT exist (all tests strictly write to temporary sandbox paths).
+  - Backup Anchor Directory Cleanliness: `D:\AI-COMPANY\backup\audit_anchors.jsonl` does NOT exist (`Test-Path` returned `False`).

@@ -58,10 +58,10 @@ export class ObservabilityQuotaService {
     this.connManager = connManager;
     const resolvedKey = process.env.AICO_AUDIT_HMAC_KEY || hmacKey;
     if (!resolvedKey) {
-      if (process.env.NODE_ENV === "production") {
-        throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY environment variable is mandatory in production");
+      if (process.env.NODE_ENV !== "test" && process.env.AICO_ALLOW_TEST_HMAC !== "1") {
+        throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY environment variable is mandatory outside NODE_ENV=test");
       }
-      this.hmacKey = "aico_audit_hmac_dev_secret_key_v221_min32bytes!";
+      this.hmacKey = "aico_audit_hmac_test_key_v221_min32bytes!";
     } else {
       if (resolvedKey.length < 16) {
         throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY must be at least 16 characters");
@@ -99,19 +99,19 @@ export class ObservabilityQuotaService {
   }
 
   private writeAnchorRecord(auditId: number, eventHash: string, recordedAt: string): void {
+    const anchorDir = path.dirname(this.anchorFilePath);
+    if (!fs.existsSync(anchorDir)) {
+      fs.mkdirSync(anchorDir, { recursive: true });
+    }
+    const record = JSON.stringify({
+      last_audit_id: auditId,
+      event_hash_sha256: eventHash,
+      timestamp: recordedAt
+    }) + "\n";
     try {
-      const anchorDir = path.dirname(this.anchorFilePath);
-      if (!fs.existsSync(anchorDir)) {
-        fs.mkdirSync(anchorDir, { recursive: true });
-      }
-      const record = JSON.stringify({
-        last_audit_id: auditId,
-        event_hash_sha256: eventHash,
-        timestamp: recordedAt
-      }) + "\n";
       fs.appendFileSync(this.anchorFilePath, record, "utf8");
     } catch (err: any) {
-      console.error(`AUDIT_ANCHOR_WRITE_FAILURE: Could not write anchor record: ${err.message}`);
+      throw new Error(`AUDIT_ANCHOR_WRITE_FAILURE: Could not write anchor record to '${this.anchorFilePath}': ${err.message}`);
     }
   }
 
@@ -227,11 +227,27 @@ export class ObservabilityQuotaService {
         expectedPrevHash = row.event_hash_hmac_sha256;
       }
 
-      // Cross-media verification against anchor file if it exists
-      if (fs.existsSync(this.anchorFilePath)) {
+      // Cross-media verification against anchor file: mandatory if audit events exist
+      if (rows.length >= 1) {
+        if (!fs.existsSync(this.anchorFilePath)) {
+          return {
+            valid: false,
+            totalEvents: rows.length,
+            brokenAtEventId: "MISSING_AUDIT_ANCHOR_FILE"
+          };
+        }
+
         try {
           const content = fs.readFileSync(this.anchorFilePath, "utf8");
           const lines = content.split("\n").filter((l) => l.trim().length > 0);
+          if (lines.length === 0) {
+            return {
+              valid: false,
+              totalEvents: rows.length,
+              brokenAtEventId: "EMPTY_AUDIT_ANCHOR_FILE"
+            };
+          }
+
           for (const line of lines) {
             const anchor = JSON.parse(line);
             const matchingRow = rowByAuditId.get(anchor.last_audit_id);
@@ -255,7 +271,11 @@ export class ObservabilityQuotaService {
             }
           }
         } catch (err: any) {
-          console.error(`AUDIT_ANCHOR_VERIFY_WARNING: ${err.message}`);
+          return {
+            valid: false,
+            totalEvents: rows.length,
+            brokenAtEventId: `CORRUPT_AUDIT_ANCHOR_FILE: ${err.message}`
+          };
         }
       }
 

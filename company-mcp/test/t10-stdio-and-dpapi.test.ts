@@ -36,25 +36,53 @@ test("T10: Windows DPAPI Protection, STDIO Frame Limits & Live Token Revocation"
     const decryptedToken = DpapiManager.unprotect(dpapiFilePath);
     assert.equal(decryptedToken, testSecretToken, "DPAPI unprotect must recover exact original plaintext token");
 
+    // On Windows, verify file content is real DPAPI binary ciphertext, NEVER plaintext UTF-8
+    if (process.platform === "win32") {
+      const rawBytes = fs.readFileSync(dpapiFilePath);
+      const rawStr = rawBytes.toString("utf8");
+      assert.strictEqual(
+        rawStr.includes("aico_live_"),
+        false,
+        "DPAPI protected file on Windows must contain binary ciphertext, never plaintext token"
+      );
+      assert.ok(rawBytes.length > testSecretToken.length, "Encrypted DPAPI blob must include cryptographic headers");
+    }
+
     // Verify client-bridge resolveToken with DPAPI file
     const resolvedViaBridge = resolveToken("flash-01", dpapiFilePath);
     assert.equal(resolvedViaBridge, testSecretToken, "client-bridge resolveToken must decrypt .dpapi files");
 
     // ------------------------------------------------------------------------
-    // Part 2: STDIO Frame Size Enforcement
+    // Part 2: STDIO Frame Size Enforcement (Helper and Stream Guard)
     // ------------------------------------------------------------------------
     const stdioPipeline = new StdioSecurityPipeline(idService, {
       maxFrameSizeBytes: 2 * 1024 * 1024 // 2 MiB
     });
 
-    // Frame within limit (1 MiB) -> passes
+    // 1. Frame within limit (1 MiB) -> passes
     assert.doesNotThrow(() => stdioPipeline.validateMessageFrame(1024 * 1024));
 
-    // Frame exceeding limit (3 MiB) -> throws PAYLOAD_TOO_LARGE
+    // 2. Frame exceeding limit (3 MiB) -> throws PAYLOAD_TOO_LARGE
     assert.throws(
       () => stdioPipeline.validateMessageFrame(3 * 1024 * 1024),
       /PAYLOAD_TOO_LARGE/
     );
+
+    // 3. Raw stream frame guard inspection
+    const { PassThrough } = await import("node:stream");
+    const testStream = new PassThrough();
+    stdioPipeline.installStdinFrameGuard(testStream);
+
+    let streamError: any = null;
+    testStream.on("error", (err) => {
+      streamError = err;
+    });
+
+    // Write oversized data (> 2 MiB)
+    testStream.write(Buffer.alloc(2 * 1024 * 1024 + 500, 65));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(streamError, "installStdinFrameGuard must emit error when raw frame exceeds 2 MiB");
+    assert.match(streamError.message, /PAYLOAD_TOO_LARGE/);
 
     // ------------------------------------------------------------------------
     // Part 3: STDIO Bootstrap & Live Credential Revocation (P1-02)

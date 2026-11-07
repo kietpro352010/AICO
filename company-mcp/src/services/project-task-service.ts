@@ -388,19 +388,35 @@ export class ProjectTaskService {
     });
   }
 
-  public listTasks(filter?: {
-    assignedAgentId?: string;
-    executionStatus?: string;
-    projectId?: string;
-    priority?: string;
-  }): TaskRecord[] {
+  public listTasks(
+    filter?: {
+      assignedAgentId?: string;
+      executionStatus?: string;
+      projectId?: string;
+      priority?: string;
+    },
+    callerCtx?: PrincipalContext
+  ): TaskRecord[] {
     return this.connManager.withReadTransaction((db) => {
       let query = "SELECT * FROM tasks WHERE 1=1";
       const params: any[] = [];
 
-      if (filter?.assignedAgentId) {
+      // Task Isolation: If caller only has tasks:read:assigned (not tasks:read, tasks:manage, *, or Founder/CTO)
+      const hasBroadRead = !callerCtx ||
+        callerCtx.principalId === "founder-01" ||
+        callerCtx.principalId === "flash-01" ||
+        callerCtx.scopes.has("*") ||
+        callerCtx.scopes.has("tasks:read") ||
+        callerCtx.scopes.has("tasks:manage");
+
+      let effectiveAssignedAgentId = filter?.assignedAgentId;
+      if (!hasBroadRead && callerCtx?.agentId) {
+        effectiveAssignedAgentId = callerCtx.agentId;
+      }
+
+      if (effectiveAssignedAgentId) {
         query += " AND assigned_agent_id = ?";
-        params.push(filter.assignedAgentId);
+        params.push(effectiveAssignedAgentId);
       }
       if (filter?.executionStatus) {
         query += " AND execution_status = ?";
@@ -420,9 +436,25 @@ export class ProjectTaskService {
     });
   }
 
-  public getTask(taskId: string): TaskRecord | null {
+  public getTask(taskId: string, callerCtx?: PrincipalContext): TaskRecord | null {
     return this.connManager.withReadTransaction((db) => {
-      const row = db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(taskId);
+      const row = db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(taskId) as any;
+      if (!row) return null;
+
+      // Task Isolation: If caller only has tasks:read:assigned, verify assignment or creation ownership
+      const hasBroadRead = !callerCtx ||
+        callerCtx.principalId === "founder-01" ||
+        callerCtx.principalId === "flash-01" ||
+        callerCtx.scopes.has("*") ||
+        callerCtx.scopes.has("tasks:read") ||
+        callerCtx.scopes.has("tasks:manage");
+
+      if (!hasBroadRead && callerCtx?.agentId) {
+        if (row.assigned_agent_id !== callerCtx.agentId && row.created_by_principal_id !== callerCtx.principalId) {
+          throw new Error(`PERMISSION_DENIED: Access to task '${taskId}' denied (not assigned to caller)`);
+        }
+      }
+
       return (row as unknown as TaskRecord) || null;
     });
   }
@@ -549,6 +581,20 @@ export class ProjectTaskService {
 
       if (fromStatus === toStatus) {
         return task as TaskRecord;
+      }
+
+      // Authorization guard for task cancellation across all cancel transitions
+      if (toStatus === "cancelled") {
+        const isAuthorizedToCancel =
+          actorId === "founder-01" ||
+          actorId === "flash-01" ||
+          actorId === "chatgpt-01" ||
+          task.created_by_principal_id === actorId ||
+          input.ctx?.scopes.has("tasks:manage") ||
+          input.ctx?.scopes.has("*");
+        if (!isAuthorizedToCancel) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' is not authorized to cancel this task`);
+        }
       }
 
       let newDispatchStatus: TaskDispatchStatus = task.dispatch_status;
@@ -693,6 +739,10 @@ export class ProjectTaskService {
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
       } else if (fromStatus === "in_progress" && toStatus === "failed") {
         // TR-19
+        const callerAgentId = input.ctx?.agentId || actorId;
+        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01" && actorId !== "flash-01") {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' or leadership can mark task as failed`);
+        }
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
       } else if (fromStatus === "failed" && toStatus === "queued") {
@@ -709,6 +759,13 @@ export class ProjectTaskService {
         // TR-21
       } else if (fromStatus === "in_progress" && toStatus === "review_required") {
         // TR-22
+        const callerAgentId = input.ctx?.agentId || actorId;
+        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01") {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can submit task result for review`);
+        }
+        if (task.lease_owner_agent_id && task.lease_owner_agent_id !== callerAgentId && actorId !== "founder-01") {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId}'`);
+        }
         newDispatchStatus = "result_received";
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
@@ -721,6 +778,10 @@ export class ProjectTaskService {
         // TR-24
         if (isArgon) {
           throw new Error("TASK_INVALID_STATE_TRANSITION: Argon tasks cannot be re-invoked for rework in same task");
+        }
+        const callerAgentId = input.ctx?.agentId || actorId;
+        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01") {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can resume rework in_progress`);
         }
         newLeaseOwner = task.assigned_agent_id;
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();

@@ -96,7 +96,7 @@ if (Test-Path $dataDir) {
   } else {
     Write-Warning "User 'aico_svc' not found on system. Service account grant skipped until account creation."
   }
-  $dataArgs = @("/inheritance:r", "/grant:r") + $grants + @("/c", "/q")
+  $dataArgs = @("/inheritance:r", "/grant:r") + $grants + @("/t", "/c", "/q")
   Invoke-IcaclsCommand "$dataDir" $dataArgs
 }
 
@@ -105,7 +105,7 @@ if (Test-Path $logsDir) {
   Write-Host "   - Configuring $logsDir"
   $grants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
   if ($hasServiceAccount) { $grants += "aico_svc:(OI)(CI)M" }
-  $logsArgs = @("/grant:r") + $grants + @("/c", "/q")
+  $logsArgs = @("/grant:r") + $grants + @("/t", "/c", "/q")
   Invoke-IcaclsCommand "$logsDir" $logsArgs
 }
 
@@ -114,7 +114,7 @@ if (Test-Path $BackupDir) {
   Write-Host "   - Configuring $BackupDir"
   $grants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
   if ($hasServiceAccount) { $grants += "aico_svc:(OI)(CI)M" }
-  $backupArgs = @("/inheritance:r", "/grant:r") + $grants + @("/c", "/q")
+  $backupArgs = @("/inheritance:r", "/grant:r") + $grants + @("/t", "/c", "/q")
   Invoke-IcaclsCommand "$BackupDir" $backupArgs
 }
 
@@ -139,12 +139,24 @@ if ($OptionA) {
     } catch { $userExists = $false }
 
     $wsGrants = @("SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F", "kietp:(OI)(CI)F")
+    if ($hasServiceAccount) {
+      $wsGrants += "aico_svc:(OI)(CI)M"
+    }
     if ($userExists) {
       $wsGrants += "$agentUser`:(OI)(CI)M"
     } else {
       Write-Host "     [Audit] Workspace user '$agentUser' not yet provisioned; will be granted upon creation."
     }
-    $wsArgs = @("/inheritance:r", "/grant:r") + $wsGrants + @("/c", "/q")
+
+    # Explicitly remove unauthorized agent accounts to strip pre-existing explicit ACEs
+    $removeArgs = @()
+    foreach ($otherUser in $agentWorkspaces.Values) {
+      if ($otherUser -ne $agentUser) {
+        $removeArgs += @("/remove:g", $otherUser)
+      }
+    }
+
+    $wsArgs = @("/inheritance:r", "/grant:r") + $wsGrants + $removeArgs + @("/t", "/c", "/q")
     Invoke-IcaclsCommand "$wsPath" $wsArgs
   }
 }

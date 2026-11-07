@@ -256,6 +256,7 @@ export class WorkspaceArtifactService {
     agentId: string;
     relativeDir?: string;
     recursive?: boolean;
+    includeHidden?: boolean;
     ctx?: PrincipalContext;
   }): {
     files: Array<{
@@ -290,9 +291,28 @@ export class WorkspaceArtifactService {
     const traverse = (dir: string) => {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
+        // Filter out dotfiles / hidden files unless explicitly requested
+        if (!params.includeHidden && entry.name.startsWith(".")) {
+          continue;
+        }
+
         const fullItemPath = path.join(dir, entry.name);
-        const relToAgent = path.relative(agentRootPath, fullItemPath).replace(/\\/g, "/");
         try {
+          const lstat = fs.lstatSync(fullItemPath);
+          if (lstat.isSymbolicLink()) {
+            try {
+              const realTarget = fs.realpathSync(fullItemPath);
+              if (!realTarget.startsWith(agentRootPath + path.sep) && realTarget !== agentRootPath) {
+                // Symlink target points outside workspace boundary: skip
+                continue;
+              }
+            } catch {
+              // Broken or unresolvable symlink: skip
+              continue;
+            }
+          }
+
+          const relToAgent = path.relative(agentRootPath, fullItemPath).replace(/\\/g, "/");
           const stat = fs.statSync(fullItemPath);
           const isDir = entry.isDirectory();
           if (!isDir) totalBytes += stat.size;

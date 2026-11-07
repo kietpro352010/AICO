@@ -154,6 +154,59 @@ All findings identified in the Independent Re-Test Audit (`AICO_v2.2.1_Retest_Au
 14. **P1-14 (Test Fixture Path Derivation & Checksum Verification):**
     - Derived test fixture relative to repository root and verified SHA-256 against `2F73A9602DBBC50DA68B323FA00D2D7808855DF7A21FAA3DBEE64EC3EFD1477A`, failing explicitly if baseline fixture is missing or corrupted.
 
+### Phase 4.3 — Independent Re-Audit Remediations (Commit Review Findings)
+
+Following the independent technical re-audit of commit `c71358f`, all identified P0/P1 gaps and hardening points were systematically remediated:
+
+1. **Central MCP Scope Map Parity & Fail-Closed Enforcement (P0):**
+   - Synchronized all 38 registered tool names in `registry-core.ts` with `TOOL_REQUIRED_SCOPES`. Eliminated all misnamed and stale keys (`company_list_approval_requests`, `company_get_approval_request`, `company_share_workspace_artifact`, `company_git_sync_branch`, `company_submit_task_result`, `company_record_external_dispatch`, `company_list_inbox`).
+   - Enforced fail-closed behavior in `maybeRegister()`: throws `SECURITY_CONFIGURATION_ERROR` if any registered tool lacks an explicit policy definition (no empty array fallback).
+   - Programmatically asserted 1-to-1 parity in `t05-gateways-and-tools.test.ts`.
+
+2. **Service & Operation Level ABAC / Isolation (P0):**
+   - **M34 (`company_record_external_dispatch`):** Restricted milestone recording to Founder, CEO, CTO, or the task's assigned agent. Unauthorized principals receive `PERMISSION_DENIED`.
+   - **M14 & M15 (`company_list_approval_requests` / `company_get_approval_request`):** Pass authenticated caller context; ordinary callers only see approvals they requested or where they are the target agent.
+   - **M27 & M28 (`company_list_tasks` / `company_get_task`):** Pass authenticated caller context; principals with only `tasks:read:assigned` are strictly restricted to tasks assigned to them.
+   - **M31 / TR-22 / TR-19 / TR-24:** Enforced task ownership across task state transitions. Only the assigned agent or leadership can submit task results (TR-22). Cancellations restricted to Founder, CTO, CEO, creator, or callers with `tasks:manage`.
+
+3. **Strict Argon Approval Binding & Exact Payload Hash (P0):**
+   - In `approval-service.ts`, strictly enforced `action_type === 'argon_invocation'` for Argon tasks. Rejected generic `task_transition` or `critical_task_approval`.
+   - Made `payload_hash_sha256` mandatory (fails closed if missing). Required exact canonical payload hash equality (`computedHash === row.payload_hash_sha256`), eliminating the `target_resource` bypass loophole.
+
+4. **Fail-Closed Windows DPAPI & Binary Ciphertext Verification (P1):**
+   - In `dpapi-manager.ts`, rejected all plaintext fallback on Windows (`win32`); throws `DPAPI_DECRYPT_FAILED` on decryption failure. On non-Windows platforms, throws `PLATFORM_NOT_SUPPORTED`. Exported `TestPlaintextSecretProvider` for mock environments.
+   - In `t10-stdio-and-dpapi.test.ts`, verified on disk that the DPAPI output is genuine binary ciphertext containing no plaintext `aico_live_` token.
+
+5. **STDIO Raw Reader Stream Framing Guard (P1):**
+   - Added `installStdinFrameGuard(stdin)` to `stdio-security-pipeline.ts` and installed it at bootstrap in `src/index.ts`. Emits synchronous error and tears down the stream on line frames exceeding 2 MiB.
+   - Verified live in `t10` using streaming `PassThrough`.
+
+6. **Audit HMAC Key & Anchor Fail-Closed Verification (P1):**
+   - Required configured `AICO_AUDIT_HMAC_KEY >= 16 chars` outside explicit `NODE_ENV === "test"` (no implicit development fallback).
+   - In `verifyAuditChainIntegrity()`, verified external anchor file existence, non-emptiness, and valid JSON structure; fails closed on missing, empty, or corrupt anchor files.
+   - `writeAnchorRecord()` throws on write failure rather than silently swallowing.
+
+7. **Git Tree & History Diff Scanning (P1):**
+   - In `git-mediation-service.ts`, updated `scanCommitFiles()` to scan the entire branch tree (`git ls-tree -r --name-only commitSha`) for forbidden files (`.db`, `.env`, `.dpapi`, etc.) and scan all branch commits (`git log -p -n 50 commitSha`) through `SecretScanner`. Fails closed if scanning errors occur.
+
+8. **26/26 Task State Transition Completeness (P1):**
+   - In `t08-task-state-machine-26.test.ts`, added explicit executions and assertions for `TR-03` (`draft -> waiting_approval`) and `TR-15` (`claimed -> blocked` for Argon lease expiry).
+   - Added programmatic coverage assertion verifying that all 26 transition codes (`TR-01` to `TR-26`) are exercised in the suite.
+   - Tested rejection of Argon invocation when approval action type or payload hash mismatches.
+
+9. **HTTP Stream & Chunked Transfer Guard (P1):**
+   - Configured `createMcpExpressApp` with `jsonLimit: 1mb`. In `http-security-pipeline.ts`, added stream monitor for chunked transfers and added `req.destroy()` on 504 timeout.
+   - Added black-box test in `t09` for chunked transfer without `Content-Length` exceeding 1 MiB (`413 PAYLOAD_TOO_LARGE`).
+
+10. **Windows NTFS ACL Script Hardening (P1):**
+    - Updated `apply-windows-acl.ps1` to include `/t` (recursive) on all workspace grants.
+    - Granted `aico_svc:(OI)(CI)M` on agent workspaces so the central service can deliver artifacts into recipient `inbox/` folders.
+    - Added explicit removal (`/remove:g`) of unauthorized agent accounts to eliminate pre-existing explicit ACEs.
+
+11. **M18 Workspace File Listing Hidden-File & Symlink Defense (P1):**
+    - In `workspace-artifact-service.ts`, added `includeHidden` filter (default `false`) skipping dotfiles.
+    - Added symlink inspection using `fs.lstatSync()` and `fs.realpathSync()`, skipping any symlink whose target escapes the agent's workspace boundary.
+
 ---
 
 ## 4. VERIFICATION EVIDENCE SUMMARY

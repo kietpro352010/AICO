@@ -143,23 +143,42 @@ export class ApprovalService {
     };
   }
 
-  public getApprovalRequest(approvalId: string): ApprovalRequestRecord | null {
+  public getApprovalRequest(approvalId: string, callerCtx?: PrincipalContext): ApprovalRequestRecord | null {
     return this.connManager.withReadTransaction((db) => {
       const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(approvalId) as any;
       if (!row) return null;
+
+      // ABAC filtering: ordinary callers can only view requests they created or where they are the target agent
+      if (callerCtx && callerCtx.principalId !== "founder-01" && callerCtx.principalId !== "flash-01" && !callerCtx.scopes.has("*") && !callerCtx.scopes.has("approvals:read:any")) {
+        const isRequester = row.requested_by_principal_id === callerCtx.principalId;
+        const isTarget = callerCtx.agentId && row.target_agent_id === callerCtx.agentId;
+        if (!isRequester && !isTarget) {
+          throw new Error(`PERMISSION_DENIED: Access to approval request '${approvalId}' denied (not requester or target agent)`);
+        }
+      }
+
       return row as ApprovalRequestRecord;
     });
   }
 
-  public listApprovalRequests(filter?: {
-    status?: string;
-    tier?: string;
-    action_type?: string;
-    limit?: number;
-  }): ApprovalRequestRecord[] {
+  public listApprovalRequests(
+    filter?: {
+      status?: string;
+      tier?: string;
+      action_type?: string;
+      limit?: number;
+    },
+    callerCtx?: PrincipalContext
+  ): ApprovalRequestRecord[] {
     return this.connManager.withReadTransaction((db) => {
       let query = "SELECT * FROM approval_requests WHERE 1=1";
       const params: any[] = [];
+
+      // ABAC filtering: ordinary callers can only list requests they created or where they are the target agent
+      if (callerCtx && callerCtx.principalId !== "founder-01" && callerCtx.principalId !== "flash-01" && !callerCtx.scopes.has("*") && !callerCtx.scopes.has("approvals:read:any")) {
+        query += " AND (requested_by_principal_id = ? OR target_agent_id = ?)";
+        params.push(callerCtx.principalId, callerCtx.agentId || "");
+      }
 
       if (filter?.status) {
         query += " AND status = ?";
@@ -280,29 +299,29 @@ export class ApprovalService {
         return { valid: false, error: `Request not in approved state (status: ${row.status})` };
       }
 
-      if (
-        row.action_type !== params.expectedActionType &&
-        row.action_type !== "task_transition" &&
-        row.action_type !== "execute_argon_task" &&
-        row.action_type !== "argon_invocation"
-      ) {
-        return { valid: false, error: `Action type mismatch: expected ${params.expectedActionType}, found ${row.action_type}` };
-      }
-
-      if (params.expectedActionType === "argon_invocation" || row.action_type === "argon_invocation" || params.expectedActionType === "execute_argon_task") {
+      // Strict action type binding
+      if (params.expectedActionType === "argon_invocation") {
+        if (row.action_type !== "argon_invocation") {
+          return { valid: false, error: `Action type mismatch: expected argon_invocation, found ${row.action_type}` };
+        }
         if (row.approval_tier !== "founder" || row.decided_by_human_id !== "founder-01") {
           return { valid: false, error: "Argon task approvals must be approved by founder-01 (founder tier)" };
         }
+      } else {
+        if (row.action_type !== params.expectedActionType) {
+          return { valid: false, error: `Action type mismatch: expected ${params.expectedActionType}, found ${row.action_type}` };
+        }
+      }
+
+      // Mandatory payload hash validation: reject unhashed or altered approval requests
+      if (!row.payload_hash_sha256) {
+        return { valid: false, error: "Approval request lacks required payload hash" };
       }
 
       if (params.canonicalPayload) {
         const { sha256: computedHash } = this.computeCanonicalPayloadHash(params.canonicalPayload);
-        if (row.payload_hash_sha256 && computedHash !== row.payload_hash_sha256) {
-          const taskId = params.canonicalPayload.taskId;
-          const matchesTarget = taskId && (row.target_resource === taskId || row.target_resource === `task:${taskId}`);
-          if (!matchesTarget) {
-            return { valid: false, error: "Payload hash mismatch: payload differs from approved content" };
-          }
+        if (computedHash !== row.payload_hash_sha256) {
+          return { valid: false, error: "Payload hash mismatch: payload differs from approved content" };
         }
       }
 

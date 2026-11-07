@@ -13,6 +13,11 @@ const stdioPipeline = new StdioSecurityPipeline(identityService);
 // Authenticate session principal during STDIO bootstrap
 let sessionPrincipal;
 try {
+  process.stdin.on("error", (err: any) => {
+    console.error("STDIO stream error:", err.message);
+    process.exit(1);
+  });
+  stdioPipeline.installStdinFrameGuard();
   sessionPrincipal = stdioPipeline.bootstrap();
   requestContextStore.enterWith(sessionPrincipal);
 } catch (err: any) {

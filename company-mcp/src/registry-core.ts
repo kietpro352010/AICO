@@ -256,6 +256,86 @@ export function registerCompanyTools(server: McpServer): void {
   );
 }
 
+// Central Tool Scope Requirements Policy (P0-01) - Canonical 38 MCP tools
+export const TOOL_REQUIRED_SCOPES: Record<string, (string | string[])[]> = {
+  // M01
+  company_ping: [],
+  // M02
+  company_get_info: ["company:read"],
+  // M03
+  company_list_agents: ["company:read"],
+  // M04
+  company_get_agent: ["company:read"],
+  // M05
+  company_list_quota_pools: ["company:read"],
+  // M06
+  company_get_manifest: ["company:read"],
+  // M07
+  company_get_my_identity: [],
+  // M08
+  company_check_permission: ["company:read"],
+  // M09
+  company_list_credentials: ["credentials:manage"],
+  // M10
+  company_issue_credential: ["credentials:manage"],
+  // M11
+  company_rotate_credential: ["credentials:manage"],
+  // M12
+  company_revoke_credential: ["credentials:manage"],
+  // M13
+  company_request_approval: [["approvals:request", "tasks:manage", "company:write"]],
+  // M14
+  company_list_approval_requests: [["approvals:read", "tasks:manage", "company:read"]],
+  // M15
+  company_get_approval_request: [["approvals:read", "tasks:manage", "company:read"]],
+  // M16
+  company_decide_approval: ["approvals:decide"],
+  // M17
+  company_get_workspace: ["workspace:read:self"],
+  // M18
+  company_list_workspace_files: ["workspace:read:self"],
+  // M19
+  company_read_workspace_file: ["workspace:read:self"],
+  // M20
+  company_write_workspace_file: ["workspace:write:self"],
+  // M21
+  company_share_workspace_artifact: [["workspace:write:self", "workspace:share"]],
+  // M22
+  company_get_workspace_activity: [["workspace:audit:read", "workspace:audit", "workspace:read:any"]],
+  // M23
+  company_git_sync_branch: ["git:mediate"],
+  // M24
+  company_create_project: ["tasks:manage"],
+  // M25
+  company_list_projects: ["company:read"],
+  // M26
+  company_create_task: ["tasks:manage"],
+  // M27
+  company_list_tasks: [["tasks:read", "tasks:read:assigned", "tasks:manage"]],
+  // M28
+  company_get_task: [["tasks:read", "tasks:read:assigned", "tasks:manage"]],
+  // M29
+  company_claim_task: [["tasks:claim", "tasks:manage", "tasks:update:assigned"]],
+  // M30
+  company_heartbeat_task: [["tasks:heartbeat", "tasks:update:assigned", "tasks:manage"]],
+  // M31
+  company_transition_task: [["tasks:transition", "tasks:manage", "tasks:update:assigned"]],
+  // M32
+  company_submit_task_result: [["tasks:update:assigned", "tasks:submit", "tasks:manage"]],
+  // M33
+  company_review_task: [["tasks:review", "tasks:manage"]],
+  // M34
+  company_record_external_dispatch: [["tasks:manage", "orchestration:manage"]],
+  // M35
+  company_send_message: ["messages:send"],
+  // M36
+  company_list_inbox: ["messages:read"],
+  // M37
+  company_ack_message: ["messages:read"],
+  // M38
+  company_knowledge_memory_ops: [["company:read", "knowledge:read", "observability:read", "memory:read", "memory:write"]]
+};
+
 // Complete 38-tool implementation for v2.2.1
 export function registerAllV221Tools(
   server: McpServer,
@@ -301,50 +381,13 @@ export function registerAllV221Tools(
     return storeCtx;
   }
 
-  // Central Tool Scope Requirements Policy (P0-01)
-  const TOOL_REQUIRED_SCOPES: Record<string, (string | string[])[]> = {
-    company_ping: [],
-    company_get_info: ["company:read"],
-    company_list_agents: ["company:read"],
-    company_get_agent: ["company:read"],
-    company_list_quota_pools: ["company:read"],
-    company_get_manifest: ["company:read"],
-    company_get_my_identity: [],
-    company_check_permission: ["company:read"],
-    company_list_credentials: ["credentials:manage"],
-    company_issue_credential: ["credentials:manage"],
-    company_rotate_credential: ["credentials:manage"],
-    company_revoke_credential: ["credentials:manage"],
-    company_request_approval: ["approvals:request"],
-    company_list_approvals: ["approvals:read"],
-    company_get_approval: ["approvals:read"],
-    company_decide_approval: ["approvals:decide"],
-    company_get_workspace: ["workspace:read:self"],
-    company_list_workspace_files: ["workspace:read:self"],
-    company_read_workspace_file: ["workspace:read:self"],
-    company_write_workspace_file: ["workspace:write:self"],
-    company_share_artifact: [["workspace:write:self", "workspace:share"]],
-    company_get_workspace_activity: [["workspace:audit:read", "workspace:audit", "workspace:read:any"]],
-    company_mediate_git_branch: ["git:mediate"],
-    company_create_project: ["tasks:manage"],
-    company_list_projects: ["company:read"],
-    company_get_project: ["company:read"],
-    company_list_tasks: [["tasks:read", "tasks:read:assigned", "tasks:manage"]],
-    company_get_task: [["tasks:read", "tasks:read:assigned", "tasks:manage"]],
-    company_create_task: ["tasks:manage"],
-    company_claim_task: [["tasks:claim", "tasks:manage", "tasks:update:assigned"]],
-    company_heartbeat_task: [["tasks:heartbeat", "tasks:update:assigned", "tasks:manage"]],
-    company_transition_task: [["tasks:transition", "tasks:manage", "tasks:update:assigned"]],
-    company_review_task: [["tasks:review", "tasks:manage"]],
-    company_recover_leases: ["tasks:manage"],
-    company_send_message: ["messages:send"],
-    company_list_messages: ["messages:read"],
-    company_read_message: ["messages:read"],
-    company_ack_message: ["messages:read"],
-    company_knowledge_memory_ops: [["company:read", "knowledge:read", "observability:read"]]
-  };
-
   const maybeRegister = (toolId: string, name: string, config: any, handler: any) => {
+    // Fail-Closed verification: ensure all registered tools have an explicit policy entry
+    const requiredScopes = TOOL_REQUIRED_SCOPES[name];
+    if (requiredScopes === undefined) {
+      throw new Error(`SECURITY_CONFIGURATION_ERROR: Unmapped tool '${name}' (${toolId}) in TOOL_REQUIRED_SCOPES policy`);
+    }
+
     if (isPublic && !PUBLIC_TOOL_ALLOWLIST.has(name)) {
       return;
     }
@@ -352,7 +395,6 @@ export function registerAllV221Tools(
       const startTime = Date.now();
       try {
         const principal = resolvePrincipal(extra);
-        const requiredScopes = TOOL_REQUIRED_SCOPES[name] || [];
         identityService.assertAuthorized(principal, requiredScopes);
         const result = await handler(args, extra);
         obsService.recordMcpActivity({
@@ -714,8 +756,9 @@ export function registerAllV221Tools(
       description: "List approval requests.",
       inputSchema: z.object({ status: z.string().optional(), action_type: z.string().optional(), tier: z.string().optional() })
     },
-    async (args: any) => {
-      const list = approvalService.listApprovalRequests(args);
+    async (args: any, extra: any) => {
+      const ctx = resolvePrincipal(extra);
+      const list = approvalService.listApprovalRequests(args, ctx);
       return {
         content: [{ type: "text", text: JSON.stringify({ success: true, count: list.length, approvals: list }, null, 2) }]
       };
@@ -731,8 +774,9 @@ export function registerAllV221Tools(
       description: "Retrieve an approval request.",
       inputSchema: z.object({ approval_id: z.string().min(1) })
     },
-    async ({ approval_id }: { approval_id: string }) => {
-      const item = approvalService.getApprovalRequest(approval_id);
+    async ({ approval_id }: { approval_id: string }, extra: any) => {
+      const ctx = resolvePrincipal(extra);
+      const item = approvalService.getApprovalRequest(approval_id, ctx);
       if (!item) {
         return { isError: true, content: [{ type: "text", text: `Approval not found: ${approval_id}` }] };
       }
@@ -800,14 +844,34 @@ export function registerAllV221Tools(
     {
       title: "List Workspace Files",
       description: "List real files within authorized workspace subfolder.",
-      inputSchema: z.object({ subpath: z.string().optional().default(""), target_agent_id: z.string().optional() })
+      inputSchema: z.object({
+        subpath: z.string().optional().default(""),
+        target_agent_id: z.string().optional(),
+        recursive: z.boolean().optional().default(true),
+        include_hidden: z.boolean().optional().default(false)
+      })
     },
-    async ({ subpath, target_agent_id }: { subpath: string; target_agent_id?: string }, extra: any) => {
+    async (
+      {
+        subpath,
+        target_agent_id,
+        recursive = true,
+        include_hidden = false
+      }: {
+        subpath?: string;
+        target_agent_id?: string;
+        recursive?: boolean;
+        include_hidden?: boolean;
+      },
+      extra: any
+    ) => {
       const ctx = resolvePrincipal(extra);
       const agentId = target_agent_id || ctx.agentId || "flash-01";
       const listed = workspaceService.listFiles({
         agentId,
-        relativeDir: subpath,
+        relativeDir: subpath || "",
+        recursive,
+        includeHidden: include_hidden,
         ctx
       });
 
@@ -817,7 +881,7 @@ export function registerAllV221Tools(
           text: JSON.stringify({
             success: true,
             agent_id: agentId,
-            relative_dir: subpath,
+            relative_dir: subpath || "",
             total_files: listed.total_files,
             total_bytes: listed.total_bytes,
             files: listed.files
@@ -1051,12 +1115,13 @@ export function registerAllV221Tools(
         execution_status: z.string().optional()
       })
     },
-    async (args: any) => {
+    async (args: any, extra: any) => {
+      const ctx = resolvePrincipal(extra);
       const tasks = taskService.listTasks({
         projectId: args.project_id,
         assignedAgentId: args.assigned_agent_id,
         executionStatus: args.execution_status
-      });
+      }, ctx);
       return {
         content: [{ type: "text", text: JSON.stringify({ success: true, count: tasks.length, tasks }, null, 2) }]
       };
@@ -1072,8 +1137,9 @@ export function registerAllV221Tools(
       description: "Retrieve a task by ID.",
       inputSchema: z.object({ task_id: z.string().min(1) })
     },
-    async ({ task_id }: { task_id: string }) => {
-      const task = taskService.getTask(task_id);
+    async ({ task_id }: { task_id: string }, extra: any) => {
+      const ctx = resolvePrincipal(extra);
+      const task = taskService.getTask(task_id, ctx);
       if (!task) {
         return { isError: true, content: [{ type: "text", text: `Task not found: ${task_id}` }] };
       }
@@ -1280,7 +1346,16 @@ export function registerAllV221Tools(
         milestone: args.milestone,
         actorPrincipalId: ctx.principalId,
         notes: args.notes
+      }, ctx);
+
+      obsService.appendAuditEvent({
+        ctx,
+        eventCategory: "task",
+        actionName: `dispatch_milestone_${args.milestone}`,
+        targetResource: `task:${args.task_id}`,
+        outcome: "succeeded"
       });
+
       return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
     }
   );

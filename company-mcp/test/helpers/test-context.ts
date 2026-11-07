@@ -17,6 +17,8 @@ export interface TestContext {
 }
 
 export function createSandboxTestContext(prefix = "aico-test-"): TestContext {
+  process.env.NODE_ENV = "test";
+  process.env.AICO_AUDIT_HMAC_KEY = process.env.AICO_AUDIT_HMAC_KEY || "test_hmac_secret_key_v221_32bytes_long";
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const dbPath = path.join(tempDir, "sandbox.db");
   const anchorPath = path.join(tempDir, "audit_anchors.jsonl");

@@ -58,7 +58,7 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
 
     const flash2TokenData = idService.issueCredential({
       principal_id: "flash-02",
-      scopes: ["company:read", "workspace:read:self", "workspace:write:self", "tasks:claim", "tasks:heartbeat", "tasks:transition", "tasks:review"]
+      scopes: ["company:read", "workspace:read:self", "workspace:write:self", "tasks:claim", "tasks:heartbeat", "tasks:transition", "tasks:submit", "tasks:review"]
     });
     const flash2Ctx = idService.authenticateToken(flash2TokenData.token, "local", "req_flash2_test");
     assert.equal(flash2Ctx.authenticated, true);
@@ -342,6 +342,109 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
     });
     assert.equal(obsFounder.isError, undefined);
     assert.match(obsFounder.content[0].text, /"success":\s*true/);
+
+    // ------------------------------------------------------------------------
+    // 7c. Re-Audit Remediations: ABAC on Dispatches, Approvals, and Task Scopes
+    // ------------------------------------------------------------------------
+    const dispatchTool = registeredTools["company_record_external_dispatch"];
+    const listApprovalsTool = registeredTools["company_list_approval_requests"];
+    const getApprovalTool = registeredTools["company_get_approval_request"];
+    const listTasksTool = registeredTools["company_list_tasks"];
+    const getTaskTool = registeredTools["company_get_task"];
+
+    // Issue a restricted credential for codex-01 with only tasks:read:assigned and tasks:submit
+    const codexAssignedTokenData = idService.issueCredential({
+      principal_id: "codex-01",
+      scopes: ["tasks:read:assigned", "tasks:submit", "tasks:transition"]
+    });
+    const codexCtx = idService.authenticateToken(codexAssignedTokenData.token, "local", "req_codex_test");
+
+    // 1) M34: codex-01 without tasks:manage cannot call tool -> rejected at scope level
+    const scopeDeniedDispatch = await requestContextStore.run(codexCtx, async () => {
+      return await dispatchTool.handler({
+        task_id: "task_dev_100",
+        milestone: "execution_started"
+      }, {});
+    });
+    assert.equal(scopeDeniedDispatch.isError, true);
+    assert.match(scopeDeniedDispatch.content[0].text, /PERMISSION_DENIED.*Missing one of required scopes/);
+
+    // codex-01 with tasks:manage attempting to record milestone on task_dev_100 (assigned to flash-02) -> rejected by ABAC
+    const codexManageTokenData = idService.issueCredential({
+      principal_id: "codex-01",
+      scopes: ["tasks:manage"]
+    });
+    const codexManageCtx = idService.authenticateToken(codexManageTokenData.token, "local", "req_codex_manage");
+    const unauthorizedDispatch = await requestContextStore.run(codexManageCtx, async () => {
+      return await dispatchTool.handler({
+        task_id: "task_dev_100",
+        milestone: "operator_delivered"
+      }, {});
+    });
+    assert.equal(unauthorizedDispatch.isError, true);
+    assert.match(unauthorizedDispatch.content[0].text, /PERMISSION_DENIED.*not authorized to update dispatch status/);
+
+    // 2) M14 & M15: Approval isolation
+    // flash-02 lists approvals: must NOT see flash-01's approval (apprRes.approval_id)
+    const flash2ListAppr = await requestContextStore.run(flash2Ctx, async () => {
+      return await listApprovalsTool.handler({}, {});
+    });
+    assert.equal(flash2ListAppr.isError, undefined);
+    const flash2Apprs = JSON.parse(flash2ListAppr.content[0].text);
+    const foundOtherAppr = flash2Apprs.approvals.some((a: any) => a.approval_id === apprRes.approval_id);
+    assert.equal(foundOtherAppr, false, "flash-02 must NOT see approvals requested by flash-01");
+
+    // flash-02 attempts to get flash-01's approval by ID -> PERMISSION_DENIED
+    const flash2GetAppr = await requestContextStore.run(flash2Ctx, async () => {
+      return await getApprovalTool.handler({ approval_id: apprRes.approval_id }, {});
+    });
+    assert.equal(flash2GetAppr.isError, true);
+    assert.match(flash2GetAppr.content[0].text, /PERMISSION_DENIED.*approval/);
+
+    // 3) M27 & M28: tasks:read:assigned isolation
+    // codex-01 lists tasks: must only receive 0 tasks because none are assigned to codex-01
+    const codexListTasks = await requestContextStore.run(codexCtx, async () => {
+      return await listTasksTool.handler({}, {});
+    });
+    assert.equal(codexListTasks.isError, undefined);
+    const codexTasks = JSON.parse(codexListTasks.content[0].text);
+    assert.equal(codexTasks.tasks.length, 0, "codex-01 with tasks:read:assigned must only see own tasks");
+
+    // codex-01 attempts to get task_dev_100 (assigned to flash-02) -> PERMISSION_DENIED
+    const codexGetOtherTask = await requestContextStore.run(codexCtx, async () => {
+      return await getTaskTool.handler({ task_id: "task_dev_100" }, {});
+    });
+    assert.equal(codexGetOtherTask.isError, true);
+    assert.match(codexGetOtherTask.content[0].text, /PERMISSION_DENIED/);
+
+    // 4) M32: codex-01 attempts to submit result for flash-02's task -> PERMISSION_DENIED
+    // Create task_dev_200 assigned to flash-02 and advance to in_progress
+    await requestContextStore.run(flash1Ctx, async () => {
+      await createTaskTool.handler({
+        task_id: "task_dev_200",
+        project_id: "proj_aico_v221",
+        title: "Flash-02 Task",
+        assigned_agent_id: "flash-02",
+        risk_class: "low"
+      }, {});
+      await transitionTaskTool.handler({ task_id: "task_dev_200", to_status: "queued", expected_version: 1 }, {});
+      await transitionTaskTool.handler({ task_id: "task_dev_200", to_status: "assigned", expected_version: 2 }, {});
+    });
+    await requestContextStore.run(flash2Ctx, async () => {
+      await claimTaskTool.handler({ task_id: "task_dev_200", expected_version: 3 }, {});
+      await transitionTaskTool.handler({ task_id: "task_dev_200", to_status: "in_progress", expected_version: 4 }, {});
+    });
+
+    const codexSubmitOther = await requestContextStore.run(codexCtx, async () => {
+      return await submitResultTool.handler({
+        task_id: "task_dev_200",
+        expected_version: 5,
+        verification_evidence: "fake test evidence",
+        output_artifact_ids: ["art_hack"]
+      }, {});
+    });
+    assert.equal(codexSubmitOther.isError, true);
+    assert.match(codexSubmitOther.content[0].text, /ABAC_OWNERSHIP_OR_SOD_VIOLATION.*assigned/);
 
     // ------------------------------------------------------------------------
     // 8. HMAC Audit Chain Integrity Verification

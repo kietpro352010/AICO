@@ -44,6 +44,31 @@ export class StdioSecurityPipeline {
     return principal;
   }
 
+  public getMaxFrameSizeBytes(): number {
+    return this.maxFrameSizeBytes;
+  }
+
+  public installStdinFrameGuard(stdin: NodeJS.ReadableStream = process.stdin): void {
+    let currentLineBytes = 0;
+    stdin.on("data", (chunk: Buffer) => {
+      for (let i = 0; i < chunk.length; i++) {
+        if (chunk[i] === 0x0a) {
+          currentLineBytes = 0;
+        } else {
+          currentLineBytes++;
+          if (currentLineBytes > this.maxFrameSizeBytes) {
+            const err = new Error(`PAYLOAD_TOO_LARGE: Inbound STDIO line frame exceeds limit of ${this.maxFrameSizeBytes} bytes`);
+            stdin.emit("error", err);
+            if (typeof (stdin as any).destroy === "function") {
+              (stdin as any).destroy(err);
+            }
+            return;
+          }
+        }
+      }
+    });
+  }
+
   public validateMessageFrame(payloadSize: number): void {
     if (payloadSize > this.maxFrameSizeBytes) {
       throw new Error(`PAYLOAD_TOO_LARGE: Frame size ${payloadSize} exceeds limit ${this.maxFrameSizeBytes}`);

@@ -30,12 +30,13 @@ export class GitMediationService {
 
   public scanCommitFiles(clonePath: string, commitSha: string): { valid: boolean; forbiddenFiles: string[]; secretPattern?: string } {
     try {
-      const output = execFileSync("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", commitSha], {
+      // 1. Full Tree Scan: Inspect ALL files present in the branch tree at commitSha
+      const treeOutput = execFileSync("git", ["ls-tree", "-r", "--name-only", commitSha], {
         cwd: clonePath,
         encoding: "utf8"
       });
 
-      const files = output.split(/\r?\n/).filter(Boolean);
+      const files = treeOutput.split(/\r?\n/).filter(Boolean);
       const forbiddenPatterns = [
         /\.db$/,
         /\.db-wal$/,
@@ -54,23 +55,28 @@ export class GitMediationService {
         }
       }
 
-      // Content inspection: scan commit diff for secret patterns
+      if (foundForbidden.length > 0) {
+        return { valid: false, forbiddenFiles: foundForbidden };
+      }
+
+      // 2. Full History Diff Scan: Inspect patch history for secret patterns across branch commits
       try {
-        const patch = execFileSync("git", ["diff-tree", "-p", commitSha], {
+        const patchOutput = execFileSync("git", ["log", "-p", "-n", "50", commitSha], {
           cwd: clonePath,
           encoding: "utf8"
         });
-        const scan = SecretScanner.scan(patch);
+        const scan = SecretScanner.scan(patchOutput);
         if (scan.hasSecret) {
-          return { valid: false, forbiddenFiles: foundForbidden, secretPattern: scan.patternMatched };
+          return { valid: false, forbiddenFiles: [], secretPattern: scan.patternMatched };
         }
-      } catch {
-        // If diff-tree -p fails on root commit, proceed with file check
+      } catch (err: any) {
+        throw new Error(`GIT_PATCH_SCAN_FAILED: Failed to scan commit history patches: ${err.message}`);
       }
 
-      return { valid: foundForbidden.length === 0, forbiddenFiles: foundForbidden };
+      return { valid: true, forbiddenFiles: [] };
     } catch (err: any) {
-      throw new Error(`GIT_DIFF_TREE_FAILED: Failed to inspect commit tree: ${err.message}`);
+      if (err.message?.startsWith("GIT_PATCH_SCAN_FAILED")) throw err;
+      throw new Error(`GIT_TREE_SCAN_FAILED: Failed to inspect branch tree: ${err.message}`);
     }
   }
 

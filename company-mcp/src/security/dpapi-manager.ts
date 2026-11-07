@@ -23,17 +23,14 @@ export class DpapiManager {
         );
         const trimmed = result.trim();
         if (trimmed) return trimmed;
+        throw new Error("DPAPI decrypted output was empty");
       } catch (err: any) {
-        // Fallback: if file was saved as UTF-8 plaintext (e.g. non-Windows or test mock)
-        const text = fs.readFileSync(filePath, "utf8").trim();
-        if (text.startsWith("aico_live_")) {
-          return text;
-        }
+        // Fail-Closed: Strict Windows DPAPI enforcement with zero plaintext fallback
         throw new Error(`DPAPI_DECRYPT_FAILED: Failed to unprotect DPAPI data: ${err.message}`);
       }
     }
 
-    return fs.readFileSync(filePath, "utf8").trim();
+    throw new Error("PLATFORM_NOT_SUPPORTED: Windows DPAPI CryptUnprotectData is only supported on win32 platforms");
   }
 
   public static protect(rawToken: string, outputPath: string): void {
@@ -58,6 +55,19 @@ export class DpapiManager {
       return;
     }
 
-    fs.writeFileSync(outputPath, rawToken, "utf8");
+    throw new Error("PLATFORM_NOT_SUPPORTED: Windows DPAPI CryptProtectData is only supported on win32 platforms");
+  }
+}
+
+/** Explicitly named mock secret provider strictly for non-Windows unit test environments */
+export class TestPlaintextSecretProvider {
+  public static write(token: string, filePath: string): void {
+    const parent = path.dirname(filePath);
+    if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
+    fs.writeFileSync(filePath, token, "utf8");
+  }
+
+  public static read(filePath: string): string {
+    return fs.readFileSync(filePath, "utf8").trim();
   }
 }
