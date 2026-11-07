@@ -71,8 +71,8 @@ stateDiagram-v2
     DONE --> REOPENED: company_reopen_task() on regression [T28]
     REOPENED --> READY_FOR_DEV: Assigned for regression fix [T29]
 
-    IN_PROGRESS --> ABORTED: Cancelled by Founder/CEO [T30]
-    READY_FOR_DEV --> ABORTED: Cancelled before execution [T30]
+    IN_PROGRESS --> ABORTED: Cancelled by Founder/CEO [T30A]
+    READY_FOR_DEV --> ABORTED: Cancelled before execution [T30B]
     DONE --> [*]
     ABORTED --> [*]
     REJECTED --> [*]
@@ -81,7 +81,7 @@ stateDiagram-v2
 
 ---
 
-## 3. STATE TRANSITION AUTHORIZATION & VALIDATION MATRIX (28 CANONICAL TRANSITIONS)
+## 3. STATE TRANSITION AUTHORIZATION & VALIDATION MATRIX (34 CANONICAL TRANSITIONS)
 
 Every transition row maps 1-to-1 to the state diagram and specifies its exact actor, RBAC scope, ABAC rule, preconditions, atomic side effects, and audit event (`REQ-V3-021`). There are zero phantom tools.
 
@@ -119,7 +119,8 @@ Every transition row maps 1-to-1 to the state diagram and specifies its exact ac
 | **TR-27B**| `ACCEPTANCE_PENDING` | `REWORK_REQUIRED` | `company_complete_task` (Reject)| `chatgpt-01` (CEO), `founder-01` | `task:complete` | Executive Role | Final acceptance rejected | Routes to rework | `task.acceptance_rejected` |
 | **TR-28** | `DONE` | `REOPENED` | `company_reopen_task` | `flash-02` (QA Lead), `founder-01` | `task:manage` | QA Lead / Founder | Regression report provided | Clears completed_at | `task.reopened` |
 | **TR-29** | `REOPENED` | `READY_FOR_DEV` | Orchestrator (Internal Event) | Orchestrator | `system` | None | Re-queued for fix | Ready for re-claim | `task.reopened_queued` |
-| **TR-30** | Any non-terminal | `ABORTED` | `company_abort_task` | `chatgpt-01` (CEO), `founder-01` | `task:manage` | Executive Role | Cancellation reason provided | Deletes active lease | `task.aborted` |
+| **TR-30A**| `IN_PROGRESS` | `ABORTED` | `company_abort_task` | `chatgpt-01` (CEO), `founder-01` | `task:manage` | Executive Role | Cancellation reason provided | Releases active lease, aborts execution | `task.aborted` |
+| **TR-30B**| `READY_FOR_DEV` | `ABORTED` | `company_abort_task` | `chatgpt-01` (CEO), `founder-01` | `task:manage` | Executive Role | Cancellation reason provided | Removes from queue before lease grant | `task.aborted` |
 
 ---
 

@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
 import type { PrincipalContext } from "../security/context-store.js";
+import { rfc8785Canonicalize } from "../security/rfc8785-canonicalize.js";
 
 export interface ApprovalRequestRecord {
   approval_id: string;
@@ -33,7 +34,7 @@ export class ApprovalService {
   }
 
   public computeCanonicalPayloadHash(payload: unknown): { canonicalJson: string; sha256: string } {
-    const canonicalJson = JSON.stringify(payload ?? {}, Object.keys(payload ?? {}).sort());
+    const canonicalJson = rfc8785Canonicalize(payload ?? {});
     const sha256 = crypto.createHash("sha256").update(canonicalJson).digest("hex");
     return { canonicalJson, sha256 };
   }
@@ -76,7 +77,9 @@ export class ApprovalService {
     const targetResource = params.targetResource || params.target_resource || "default_resource";
     const reason = params.reason || "Operational approval request";
     const riskLevel = params.riskLevel || params.risk_level || "medium";
-    const rawPayload = params.canonicalPayload || params.canonical_payload || {};
+    const rawPayload = params.canonicalPayload !== undefined
+      ? params.canonicalPayload
+      : (params.canonical_payload !== undefined ? params.canonical_payload : {});
     const expiresInHours = params.expiresInHours || params.expires_in_hours || 24;
 
     // Determine tier
@@ -213,6 +216,9 @@ export class ApprovalService {
     decided_by?: string;
     reason?: string;
     decision_note?: string;
+    signature?: string;
+    credentialId?: string;
+    keyId?: string;
   }): {
     success: boolean;
     approval_id: string;
@@ -226,7 +232,8 @@ export class ApprovalService {
     const deciderId = params.ctx?.principalId || params.decidedBy || params.decided_by || "founder-01";
     const deciderType = params.ctx?.principalType || (deciderId === "founder-01" ? "human" : "agent");
     const note = params.decision_note || params.reason || `Decision: ${params.decision}`;
-    const now = new Date().toISOString();
+    const now = new Date();
+    const nowIso = now.toISOString();
 
     return this.connManager.withWriteTransaction((db) => {
       const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(approvalId) as any;
@@ -238,13 +245,19 @@ export class ApprovalService {
         throw new Error(`APPROVAL_ALREADY_DECIDED: Request is already ${row.status}`);
       }
 
-      // Check tier authorization
+      // Mandatory Expiration Check
+      if (row.expires_at && new Date(row.expires_at).getTime() <= now.getTime()) {
+        db.prepare("UPDATE approval_requests SET status = 'expired' WHERE approval_id = ?").run(approvalId);
+        throw new Error(`APPROVAL_EXPIRED: Cannot decide expired approval request ${approvalId}`);
+      }
+
+      // Check tier authorization & Principal verification
       let decidedByHumanId: string | null = null;
       let decidedByAgentId: string | null = null;
 
       if (row.approval_tier === "founder") {
         if (deciderId !== "founder-01" || deciderType !== "human") {
-          throw new Error("PERMISSION_DENIED: Founder tier approvals can ONLY be decided by founder-01");
+          throw new Error("PERMISSION_DENIED: Founder tier approvals can ONLY be decided by human founder-01");
         }
         decidedByHumanId = "founder-01";
       } else {
@@ -263,19 +276,24 @@ export class ApprovalService {
         throw new Error("SOD_VIOLATION: Approver cannot be the same entity that requested approval");
       }
 
-      db.prepare(`
+      // Compare-and-Swap (CAS) update on status = 'pending'
+      const updateResult = db.prepare(`
         UPDATE approval_requests
         SET status = ?, decided_by_human_id = ?, decided_by_agent_id = ?,
             decided_at = ?, decision_note = ?
-        WHERE approval_id = ?
-      `).run(params.decision, decidedByHumanId, decidedByAgentId, now, note, approvalId);
+        WHERE approval_id = ? AND status = 'pending'
+      `).run(params.decision, decidedByHumanId, decidedByAgentId, nowIso, note, approvalId);
+
+      if (updateResult.changes === 0) {
+        throw new Error("APPROVAL_CONCURRENT_MODIFICATION: Approval request status was modified concurrently");
+      }
 
       return {
         success: true,
         approval_id: approvalId,
         status: params.decision,
         decided_by: deciderId,
-        decided_at: now
+        decided_at: nowIso
       };
     });
   }
@@ -286,20 +304,37 @@ export class ApprovalService {
       expectedActionType: string;
       canonicalPayload: any;
       requestId?: string;
+      expectedTargetAgentId?: string;
+      expectedTargetResource?: string;
     },
     existingDb?: any
   ): { valid: boolean; error?: string } {
     const runInDb = (db: any) => {
+      // 1. Mandatory Canonical Payload Check (Fail-closed)
+      if (params.canonicalPayload === undefined || params.canonicalPayload === null) {
+        return { valid: false, error: "CANONICAL_PAYLOAD_MANDATORY: Canonical payload is mandatory for approval consumption" };
+      }
+
+      // 2. Load Approval Record
       const row = db.prepare("SELECT * FROM approval_requests WHERE approval_id = ?").get(params.approvalId) as any;
       if (!row) {
         return { valid: false, error: "Approval request not found" };
       }
 
+      // 3. Status must be exactly 'approved'
       if (row.status !== "approved") {
         return { valid: false, error: `Request not in approved state (status: ${row.status})` };
       }
 
-      // Strict action type binding
+      const now = new Date();
+
+      // 4. Expiration Check
+      if (row.expires_at && new Date(row.expires_at).getTime() <= now.getTime()) {
+        db.prepare("UPDATE approval_requests SET status = 'expired' WHERE approval_id = ?").run(params.approvalId);
+        return { valid: false, error: "APPROVAL_EXPIRED: Cannot consume an expired approval request" };
+      }
+
+      // 5. Strict action type binding
       if (params.expectedActionType === "argon_invocation") {
         if (row.action_type !== "argon_invocation") {
           return { valid: false, error: `Action type mismatch: expected argon_invocation, found ${row.action_type}` };
@@ -311,26 +346,37 @@ export class ApprovalService {
         if (row.action_type !== params.expectedActionType) {
           return { valid: false, error: `Action type mismatch: expected ${params.expectedActionType}, found ${row.action_type}` };
         }
+        if (row.approval_tier === "founder" && row.decided_by_human_id !== "founder-01") {
+          return { valid: false, error: "Founder tier approvals must be approved by human founder-01" };
+        }
       }
 
-      // Mandatory payload hash validation: reject unhashed or altered approval requests
+      // 6. Target Agent binding (if specified in request or row)
+      if (params.expectedTargetAgentId && row.target_agent_id && row.target_agent_id !== params.expectedTargetAgentId) {
+        return { valid: false, error: `Target agent mismatch: expected ${params.expectedTargetAgentId}, found ${row.target_agent_id}` };
+      }
+
+      // 7. Mandatory payload hash validation: recompute RFC 8785 canonical hash
       if (!row.payload_hash_sha256) {
         return { valid: false, error: "Approval request lacks required payload hash" };
       }
 
-      if (params.canonicalPayload) {
-        const { sha256: computedHash } = this.computeCanonicalPayloadHash(params.canonicalPayload);
-        if (computedHash !== row.payload_hash_sha256) {
-          return { valid: false, error: "Payload hash mismatch: payload differs from approved content" };
-        }
+      const { sha256: computedHash } = this.computeCanonicalPayloadHash(params.canonicalPayload);
+      if (computedHash !== row.payload_hash_sha256) {
+        return { valid: false, error: "Payload hash mismatch: payload differs from approved content" };
       }
 
-      const now = new Date().toISOString();
-      db.prepare(`
+      // 8. Atomic compare-and-swap consumption (Single-use enforcement)
+      const nowIso = now.toISOString();
+      const updateRes = db.prepare(`
         UPDATE approval_requests
         SET status = 'consumed', consumed_at = ?, consumed_by_request_id = ?
-        WHERE approval_id = ?
-      `).run(now, params.requestId || "req_consume", params.approvalId);
+        WHERE approval_id = ? AND status = 'approved'
+      `).run(nowIso, params.requestId || "req_consume", params.approvalId);
+
+      if (updateRes.changes === 0) {
+        return { valid: false, error: "CONCURRENT_CONSUME_CONFLICT: Approval already consumed or modified" };
+      }
 
       return { valid: true };
     };

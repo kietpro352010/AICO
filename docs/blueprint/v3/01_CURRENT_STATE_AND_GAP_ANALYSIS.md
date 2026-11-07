@@ -49,93 +49,75 @@ Furthermore, this reconciliation directly addresses the architectural boundary: 
 
 ## 3. V2.2.1 BASELINE CARRY-OVER RISK REGISTER & TRACEABILITY
 
-The following risks are confirmed **OPEN** in the v2.2.1 codebase as of commit `6f33ba5ea5515187db0445dad443f3d06d4aa3a4`. These findings **must be remediated in Phase 0 of the V3 development cycle** and are mapped directly to canonical requirements:
+The following risks were originally confirmed in the v2.2.1 baseline (`6f33ba5ea5515187db0445dad443f3d06d4aa3a4`). **All six risks have now been remediated and verified in the source code on branch `fix/v221-v3-readiness`**, with automated regression test coverage in `company-mcp/test/t16-security-stabilization.test.ts`.
 
 ### P0 — Task Authorization & Approval Gaps
 
 #### `RISK-V221-001` (Severity: Critical / P0) → `REQ-V3-030`
-- **Status:** **OPEN** in current source code.
+- **Status:** **REMEDIATED / VERIFIED IN SOURCE** (Worktree `fix/v221-v3-readiness`).
 - **Title:** Critical Task Approval Verification Gap on Non-Argon Tasks (TR-04 & TR-18).
-- **Component:** `company-mcp/src/services/project-task-service.ts` (lines 623–635, 735–745).
-- **Observed Behavior:** When a non-Argon task is created with `risk_class = 'critical'`, it correctly starts in `waiting_approval`. However, in TR-04 (`waiting_approval -> queued`) and TR-18 (`waiting_approval -> in_progress`), the check `if (isArgon)` only verifies Founder approvals for Argon tasks. A non-Argon critical task can be transitioned to `queued` or `in_progress` by any principal with `tasks:manage` or `tasks:transition` without providing an `approvalId` or verifying Founder sign-off.
-- **Existing Tests:** `t08` verifies that Argon tasks require Founder approval, but does not test transition of non-Argon critical tasks.
-- **Missing Tests:** Negative test asserting that transitioning any `critical` task from `waiting_approval` without a valid Founder approval is rejected.
-- **Impact:** Privilege escalation: high-risk/critical tasks assigned to regular engineering agents (`flash-02`, `codex-01`) can execute without human Founder authorization.
-- **V3 Canonical Remediation:** As specified in `REQ-V3-030` and `07_TASK_AND_COLLABORATIVE_ORCHESTRATION.md`, transition T17/T18 mandates verifiable human Founder approval with Ed25519 signature for ANY task with `requires_founder_gate = 1` or `priority = 'CRITICAL'`.
-- **Acceptance Criteria:** Any task with `requires_founder_gate = 1` must fail transition to execution without a verified, unconsumed human Founder approval.
+- **Component:** `company-mcp/src/services/project-task-service.ts` (`verifyAndConsumeTaskApproval`, TR-04, TR-11, TR-16, TR-18).
+- **Remediation Details:** Removed Argon-only gating; unified under `verifyAndConsumeTaskApproval()` which asserts that ANY task with `risk_class === "critical"` or `priority === "P0"` requires a valid, unconsumed human Founder approval (`founder-01`). If `approvalService` is missing, unapproved, or belongs to non-Founder, the transition fails closed.
+- **Verification Evidence:** `company-mcp/test/t16-security-stabilization.test.ts` (Test 5: asserts transition without approval throws `CRITICAL_TASK_APPROVAL_REQUIRED`, and transition with valid approval succeeds).
 
 #### `RISK-V221-002` (Severity: High / P0) → `REQ-V3-025`
-- **Status:** **OPEN** in current source code.
+- **Status:** **REMEDIATED / VERIFIED IN SOURCE** (Worktree `fix/v221-v3-readiness`).
 - **Title:** Designated Reviewer Verification Gap in TR-25 (`review_required -> completed`).
-- **Component:** `company-mcp/src/services/project-task-service.ts` (lines 788–795).
-- **Observed Behavior:** In TR-25, the state machine verifies Separation of Duties by ensuring `task.assigned_agent_id !== actorId` (an agent cannot approve their own task). However, it does not check whether `actorId` matches the designated `task.reviewer_agent_id` or belongs to the authorized executive tier (`founder-01`, `chatgpt-01`, `flash-01`). An arbitrary third agent with `tasks:review` could approve the task.
-- **Existing Tests:** `t07` tests that `flash-02` cannot approve their own work, and that `flash-01` can approve it.
-- **Missing Tests:** Negative test where an unauthorized agent (e.g., `codex-01`) attempts to review and complete a task designated to `flash-01` or `flash-02`.
-- **Impact:** QA bypass: tasks could be signed off by non-QA/non-lead agents, violating engineering governance.
-- **V3 Canonical Remediation:** In `REQ-V3-025`, `company_approve_review` verifies both anti-self-approval (`actor != task.created_by && actor != task_execution.agent_id`) AND designated role (`actor === task.reviewer_agent_id || actor === 'founder-01' || actor === 'flash-01'`).
-- **Acceptance Criteria:** TR-25 rejects any caller who is neither the designated reviewer nor executive leadership.
+- **Component:** `company-mcp/src/services/project-task-service.ts` (TR-25, TR-23).
+- **Remediation Details:** In addition to anti-self-approval (`task.assigned_agent_id !== actorId`), TR-25 and TR-23 now strictly enforce designated reviewer authorization: `actorId` must equal `task.reviewer_agent_id` or belong to executive leadership (`founder-01`, `chatgpt-01`, `flash-01`). Unauthorized agents receive `REVIEWER_NOT_AUTHORIZED`.
+- **Verification Evidence:** `company-mcp/test/t16-security-stabilization.test.ts` (Test 6: asserts that an arbitrary third agent with review role but not assigned as reviewer cannot approve review).
 
 ---
 
 ### P1 — Approval Lifecycle & Expiration
 
 #### `RISK-V221-003` (Severity: High / P1) → `REQ-V3-030`
-- **Status:** **OPEN** in current source code.
+- **Status:** **REMEDIATED / VERIFIED IN SOURCE** (Worktree `fix/v221-v3-readiness`).
 - **Title:** Missing Expiration (`expires_at`) Validation in `decideApproval` and `consumeApproval`.
-- **Component:** `company-mcp/src/services/approval-service.ts` (lines 140–210, 275–330).
-- **Observed Behavior:** The `approval_requests` table contains an `expires_at` column. However, neither `decideApproval()` nor `consumeApproval()` checks whether `new Date(row.expires_at) < new Date()`. An approval request created weeks ago could still be approved or consumed if still in `pending` or `approved` state.
-- **Existing Tests:** Tests create and consume approvals immediately; none simulate time passing past expiration.
-- **Missing Tests:** Tests creating an approval with `expires_at` in the past, asserting that decision and consumption fail with `APPROVAL_EXPIRED`.
-- **Impact:** Replay and stale authorization: stale approvals could be exploited to bypass current security posture.
-- **V3 Canonical Remediation:** As mandated in `REQ-V3-030`, both decision and consumption check `expires_at > unixepoch('now') * 1000`. Expired approvals fail with `E_APPROVAL_EXPIRED`.
-- **Acceptance Criteria:** Any attempt to decide or consume an approval past its `expires_at` timestamp throws `E_APPROVAL_EXPIRED`.
+- **Component:** `company-mcp/src/services/approval-service.ts` (`decideApproval`, `consumeApproval`).
+- **Remediation Details:** Both `decideApproval()` and `consumeApproval()` now evaluate `expires_at` against current time (`Date.now()`). Any request past its expiration timestamp is rejected with `APPROVAL_EXPIRED` (HTTP 410). Also implemented RFC 8785 JSON Canonicalization Scheme (`src/security/rfc8785-canonicalize.ts`) and mandatory canonical payload verification to prevent replay/tampering.
+- **Verification Evidence:** `company-mcp/test/t16-security-stabilization.test.ts` (Tests 1, 2, 3: covers RFC 8785 canonicalization test vectors, mandatory payload assertion, and expiration rejection for decide and consume).
 
 ---
 
 ### P1 — State Machine & Partitioned Lease Recovery
 
 #### `RISK-V221-004` (Severity: Medium / P1) → `REQ-V3-023`, `REQ-V3-024`, `REQ-V3-031`
-- **Status:** **OPEN** in current source code.
+- **Status:** **REMEDIATED / VERIFIED IN SOURCE** (Worktree `fix/v221-v3-readiness`).
 - **Title:** Lease Expiry Recovery Not Verified with Controlled Wall-Clock Time & Blanket Recovery Threat.
-- **Component:** `company-mcp/src/services/project-task-service.ts` (lines 698–720) and `test/t08-task-state-machine-26.test.ts`.
-- **Observed Behavior:** Blanket lease recovery updates all expired tasks back to `READY_FOR_DEV`. If an Argon specialist lease expires, blanket recovery would automatically return it to the queue, permitting automatic retry or re-invocation, violating the Argon policy.
-- **Existing Tests:** `t08` executes lease recovery without verifying wall-clock timestamp comparison or testing Argon isolation.
-- **Missing Tests:** Negative test ensuring expired Argon leases transition to `BLOCKED_MANUAL_INTERVENTION` and are NEVER returned to `READY_FOR_DEV`.
-- **Impact:** Accidental auto-retry of expensive/sensitive Argon tasks without Founder approval.
-- **V3 Canonical Remediation:** In `REQ-V3-024` and `REQ-V3-031`, the lease monitor partitions recovery:
-  - Non-Argon tasks return to `READY_FOR_DEV` if `retry_count < max`.
-  - Argon tasks transition to `BLOCKED_MANUAL_INTERVENTION`, requiring manual human Founder intervention.
-- **Acceptance Criteria:** Automatic lease recovery transitions expired Argon tasks to `BLOCKED_MANUAL_INTERVENTION` and emits an alert.
+- **Component:** `company-mcp/src/services/project-task-service.ts` (`recoverStaleLeases`).
+- **Remediation Details:** Redesigned lease sweeper with partitioned recovery and CAS concurrency control:
+  1. Compares `lease_expires_at` against explicit wall-clock timestamp parameter `nowMs`.
+  2. For Argon tasks (`isArgonTask(task)`), unconditionally isolates the task to `blocked` status with error code `BLOCKED_MANUAL_INTERVENTION`, requiring manual Founder action (zero auto-retry, zero auto-dispatch).
+  3. For non-Argon tasks, validates `retry_count < max_retries`. If exhausted, transitions to `blocked` (`MAX_RETRIES_EXCEEDED`); otherwise increments `retry_count` and resets to `ready_for_dev`.
+  4. All updates require matching `lock_version`, `status`, and `lease_owner_agent_id`.
+- **Verification Evidence:** `company-mcp/test/t16-security-stabilization.test.ts` (Test 7: verifies partitioned recovery, Argon isolation to `BLOCKED_MANUAL_INTERVENTION`, and non-Argon retry increment).
 
 ---
 
 ### P1 — Audit Integrity & Anchor Truncation Defense
 
 #### `RISK-V221-005` (Severity: High / P1) → `REQ-V3-032`
-- **Status:** **OPEN** in current source code.
+- **Status:** **REMEDIATED / VERIFIED IN SOURCE** (Worktree `fix/v221-v3-readiness`).
 - **Title:** Audit Chain Validation Vulnerability if Table Truncated While External Anchors Exist.
-- **Component:** `company-mcp/src/services/observability-quota-service.ts` (lines 225–270).
-- **Observed Behavior:** In `verifyAuditChainIntegrity()`, if `rows.length === 0`, the function immediately returns `{ valid: true, totalEvents: 0 }`. If an attacker or operational error truncates the `audit_events` table in SQLite, but the external JSONL anchor file still exists on disk containing 100 historical anchor records, the verification reports `valid: true`.
-- **Existing Tests:** Tests populate audit events before verifying; none test an empty table with an existing anchor file.
-- **Missing Tests:** Negative test asserting that an empty database table in the presence of an existing anchor file fails closed with `AUDIT_LOG_MISSING_OR_TRUNCATED`.
-- **Impact:** Tamper hiding: complete deletion of the audit log in SQLite would pass verification.
-- **V3 Canonical Remediation:** In `REQ-V3-032`, if the external anchor file exists, `rows.length` must be >= last anchored sequence number, else fail closed.
-- **Acceptance Criteria:** Verification fails closed if anchor records exist but the SQLite table is empty or missing anchored event IDs.
+- **Component:** `company-mcp/src/services/observability-quota-service.ts` (`verifyAuditChainIntegrity`, `signAuditEvent`).
+- **Remediation Details:**
+  1. In `verifyAuditChainIntegrity()`, if `rows.length === 0` while the external JSONL anchor file exists on disk and contains anchor records, verification fails closed with `valid: false` and error `AUDIT_LOG_MISSING_OR_TRUNCATED`.
+  2. Expanded HMAC signature calculation to cover all 13 canonical audit event fields (`prevHash`, `eventId`, `requestId`, `sourceGateway`, `principalType`, `principalId`, `credentialId`, `eventCategory`, `actionName`, `targetResource`, `outcome`, `errorCode`, `detailsJson`, `nowIso`), preventing metadata tampering.
+- **Verification Evidence:** `company-mcp/test/t16-security-stabilization.test.ts` (Tests 8 and 9: verifies all-fields HMAC signing coverage and anchor truncation fail-closed defense).
 
 ---
 
 ### P1 — Git Mediation Full History Scanning
 
 #### `RISK-V221-006` (Severity: Medium / P1) → `REQ-V3-001`
-- **Status:** **OPEN** in current source code.
+- **Status:** **REMEDIATED / VERIFIED IN SOURCE** (Worktree `fix/v221-v3-readiness`).
 - **Title:** Git History Scanning Bounded to Recent 50 Commits (`git log -p -n 50`).
-- **Component:** `company-mcp/src/services/git-mediation-service.ts` (lines 53–75).
-- **Observed Behavior:** `scanCommitFiles()` runs `git log -p -n 50 commitSha` to scan diff patches. If an agent submits a branch containing 60 commits where a secret was committed and subsequently deleted in commit 5, the diff scan will not reach that commit.
-- **Existing Tests:** Tests only create branches with 1–2 commits.
-- **Missing Tests:** Test with a secret committed 60 commits in the past, verifying detection.
-- **Impact:** Secret leakage: credentials buried deep in branch history could be fetched into the central repository.
-- **V3 Canonical Remediation:** Scan the full divergence between candidate branch and merge base using `git log -p mergeBase..commitSha`.
-- **Acceptance Criteria:** All commits introduced on the feature branch since branching from `master` are scanned without depth truncation.
+- **Component:** `company-mcp/src/services/git-mediation-service.ts` (`scanCommitFiles`).
+- **Remediation Details:**
+  1. Replaced bounded `-n 50` commit cap with full divergence scan: `git log -p -m --full-history mergeBase..commitSha`, inspecting every commit in branch divergence regardless of depth.
+  2. Added working-tree inspection via `git status --porcelain -uall` to detect untracked and staged forbidden patterns prior to commit.
+- **Verification Evidence:** `company-mcp/test/t16-security-stabilization.test.ts` (Test 10: creates a branch with 55 commits where a forbidden secret pattern was introduced and deleted in an early commit; verifies detection).
 
 ---
 

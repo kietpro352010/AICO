@@ -58,11 +58,14 @@ export class ObservabilityQuotaService {
     this.connManager = connManager;
     const resolvedKey = process.env.AICO_AUDIT_HMAC_KEY || hmacKey;
     if (!resolvedKey) {
-      if (process.env.NODE_ENV !== "test" && process.env.AICO_ALLOW_TEST_HMAC !== "1") {
+      if (process.env.NODE_ENV !== "test") {
         throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY environment variable is mandatory outside NODE_ENV=test");
       }
       this.hmacKey = "aico_audit_hmac_test_key_v221_min32bytes!";
     } else {
+      if (resolvedKey.length < 32 && process.env.NODE_ENV !== "test") {
+        throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY must be at least 32 characters in production");
+      }
       if (resolvedKey.length < 16) {
         throw new Error("CONFIGURATION_ERROR: AICO_AUDIT_HMAC_KEY must be at least 16 characters");
       }
@@ -135,9 +138,25 @@ export class ObservabilityQuotaService {
 
       const detailsJson = JSON.stringify(input.sanitizedDetails || {});
 
-      // HMAC-SHA256 calculation
+      // HMAC-SHA256 calculation covering all security-relevant canonical fields
       const hmac = crypto.createHmac("sha256", this.hmacKey);
-      hmac.update(`${prevHash}:${requestId}:${principalId}:${eventCategory}:${actionName}:${targetResource}:${input.outcome}:${nowIso}`);
+      const payloadToSign = [
+        prevHash,
+        eventId,
+        requestId,
+        sourceGateway,
+        principalType,
+        principalId,
+        credentialId || "",
+        eventCategory,
+        actionName,
+        targetResource,
+        input.outcome,
+        input.errorCode || "",
+        detailsJson,
+        nowIso
+      ].join(":");
+      hmac.update(payloadToSign);
       const eventHash = hmac.digest("hex");
 
       const res = db.prepare(`
@@ -204,7 +223,26 @@ export class ObservabilityQuotaService {
   public verifyAuditChainIntegrity(): { valid: boolean; totalEvents: number; brokenAtEventId?: string | number } {
     return this.connManager.withReadTransaction((db) => {
       const rows = db.prepare("SELECT * FROM audit_events ORDER BY audit_id ASC").all() as any[];
-      if (rows.length === 0) return { valid: true, totalEvents: 0 };
+
+      // Truncation defense: if database table is empty, check whether external anchor file contains recorded events
+      if (rows.length === 0) {
+        if (fs.existsSync(this.anchorFilePath)) {
+          try {
+            const content = fs.readFileSync(this.anchorFilePath, "utf8");
+            const lines = content.split("\n").filter((l) => l.trim().length > 0);
+            if (lines.length > 0) {
+              return {
+                valid: false,
+                totalEvents: 0,
+                brokenAtEventId: "AUDIT_LOG_MISSING_OR_TRUNCATED"
+              };
+            }
+          } catch {
+            // Unreadable anchor file with 0 records
+          }
+        }
+        return { valid: true, totalEvents: 0 };
+      }
 
       let expectedPrevHash = GENESIS_ANCHOR;
       const rowByAuditId = new Map<number, any>();
@@ -217,7 +255,23 @@ export class ObservabilityQuotaService {
         }
 
         const hmac = crypto.createHmac("sha256", this.hmacKey);
-        hmac.update(`${expectedPrevHash}:${row.request_id}:${row.principal_id}:${row.event_category}:${row.action_name}:${row.target_resource}:${row.outcome}:${row.recorded_at}`);
+        const payloadToSign = [
+          expectedPrevHash,
+          row.event_id || "",
+          row.request_id,
+          row.source_gateway,
+          row.principal_type,
+          row.principal_id,
+          row.credential_id || "",
+          row.event_category,
+          row.action_name,
+          row.target_resource,
+          row.outcome,
+          row.error_code || "",
+          row.sanitized_details_json,
+          row.recorded_at
+        ].join(":");
+        hmac.update(payloadToSign);
         const computedHash = hmac.digest("hex");
 
         if (computedHash !== row.event_hash_hmac_sha256) {
