@@ -1,12 +1,11 @@
 # AICO V3 MASTER BLUEPRINT — TEST STRATEGY, QUALITY GATES & RELEASE PLAN
 
 **Document ID:** `BP-V3-11`  
-**Version:** `3.1.0-reconciled`  
+**Version:** `3.2.0-reconciled`  
 **Date:** 2026-11-07  
 **Author:** `flash-02` — Engineering & QA Lead  
 **Design Phase:** Architecture & Contracts Design Only (No Implementation Authorized)  
-**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Commit `cd749107c4b34e26f61e14a238336e414f78779d`  
-**Actual HEAD:** `21f3aad16911eb076e2245a791bde51178a0d222`  
+**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Actual HEAD: `6f33ba5ea5515187db0445dad443f3d06d4aa3a4`  
 **Target Workspace:** `D:\AI-COMPANY`
 
 ---
@@ -37,9 +36,10 @@ flowchart TD
 ### 2.1 Level 1: Unit Tests
 - **Target:** Isolated functions, data structures, state machine transition tables, and algorithms.
 - **Key Suites:**
-  - `test/unit/state-machine-23.test.ts`: Tests all 23 states and 26 valid transitions (`REQ-V3-021`).
+  - `test/unit/state-machine-23.test.ts`: Tests all 23 states and 28 valid transitions (`REQ-V3-021`).
   - `test/unit/dag-validator.test.ts`: Verifies cycle detection using Kahn's algorithm (`REQ-V3-022`).
   - `test/unit/token-diet.test.ts`: Verifies observation masking and prompt token counting (`REQ-V3-026`).
+  - `test/unit/jcs-canonicalization.test.ts`: Asserts RFC 8785 deterministic ordering across nested test vectors (`REQ-V3-030`).
 
 ### 2.2 Level 2: Contract Tests
 - **Target:** All 28 MCP tool schemas and event payloads (`REQ-V3-002`, `REQ-V3-003`).
@@ -50,8 +50,9 @@ flowchart TD
 ### 2.3 Level 3: Database & Transport Integration Tests
 - **Target:** SQLite WAL concurrency and protocol transports (`REQ-V3-003`, `REQ-V3-008`).
 - **Key Suites:**
-  - `test/integration/sqlite-wal.test.ts`: Validates concurrent read/write transactions and 5000ms busy timeout.
-  - `test/integration/fts5-sync.test.ts`: Validates automatic FTS5 synchronization via triggers (`REQ-V3-020`).
+  - `test/integration/sqlite-wal.test.ts`: Validates concurrent read/write transactions and 5000ms busy timeout on 29 base tables.
+  - `test/integration/fts5-sync.test.ts`: Validates automatic FTS5 synchronization via triggers (`REQ-V3-020`) and rebuild routine.
+  - `test/integration/legacy-views.test.ts`: Validates that the 4 legacy views return correct rows.
   - `test/integration/stdio-adapter.test.ts`: Validates 2 MiB stream guard and clean JSON-RPC over STDIO.
   - `test/integration/http-adapter.test.ts`: Validates `/mcp` on loopback (`127.0.0.1:3334`).
 
@@ -62,7 +63,8 @@ flowchart TD
   - `test/security/argon-gate.test.ts`: Proves automated Argon invocation is blocked (`E_FOUNDER_APPROVAL_REQUIRED`).
   - `test/security/human-approval.test.ts`: Proves AI agents cannot grant Founder approvals (`E_HUMAN_AUTHORIZATION_REQUIRED`).
   - `test/security/path-traversal.test.ts`: Proves traversal outside `D:\AI-COMPANY` is blocked.
-  - `test/security/audit-chain.test.ts`: Simulates table truncation with external anchor and verifies detection.
+  - `test/security/audit-chain.test.ts`: Simulates table truncation with external anchor and asserts fail-closed detection (`E_AUDIT_LOG_MISSING_OR_TRUNCATED`).
+  - `test/security/git-history-scan.test.ts`: Asserts secrets committed 60 commits in the past are detected (`mergeBase..commitSha`).
 
 ### 2.5 Level 5: Concurrency & Stress Tests
 - **Target:** High-contention lease acquisition (`REQ-V3-023`).
@@ -87,16 +89,22 @@ flowchart TD
 
 Advancement between implementation phases is strictly governed by 8 sequential Quality Gates:
 
-| Gate | Phase Name | Entry Criteria | Required Deliverables | Mandatory Reviewers | Exit Criteria |
-| :---: | :--- | :--- | :--- | :--- | :--- |
-| **V3-G0** | Blueprint & Architecture | Baseline git clean on commit `cd74910`. | All 12 reconciled Blueprint docs in `docs/blueprint/v3/`. | Founder (Human), CTO (`flash-01`) | Explicit human Founder approval on Master Blueprint. |
-| **V3-G1** | Domain & Database Sandbox | Gate `V3-G0` APPROVED. | 27 sandbox tables, FTS5 table, 3 triggers, 4 legacy views. | CTO (`flash-01`), QA (`flash-02`) | Unit + integration tests pass on isolated test DB. |
-| **V3-G2** | Event Bus & MCP Core | Gate `V3-G1` APPROVED. | In-process EventBus, Zod contracts, token auth filter. | CTO (`flash-01`), QA (`flash-02`) | Contract test suite passes 100%. |
-| **V3-G3** | Collaboration Hub | Gate `V3-G2` APPROVED. | 6 chat room types, threads, message types, notifications inbox. | CTO (`flash-01`), QA (`flash-02`) | Room collaboration integration tests pass. |
-| **V3-G4** | Unified Memory Engine | Gate `V3-G3` APPROVED. | 5-tier memory store, FTS5 sync, context snapshotting. | CTO (`flash-01`), QA (`flash-02`) | Snapshot rehydration tests pass; ABAC holds. |
-| **V3-G5** | Task Orchestration | Gate `V3-G4` APPROVED. | 23-state engine, DAG validator, partitioned lease recovery. | CTO (`flash-01`), QA (`flash-02`) | Concurrency stress & lease timeout pass. |
-| **V3-G6** | Multi-Agent Integration | Gate `V3-G5 APPROVED`. | Full collaborative pipeline, JIT skill discovery. | CEO (`chatgpt-01`), QA (`flash-02`) | Multi-agent E2E test suite passes 100%. |
-| **V3-G7** | Sandbox Sign-Off | Gate `V3-G6` APPROVED. | Final QA audit report, 100% test pass logs, zero CVEs. | **FOUNDER (MANDATORY)** | **Authorizes sandbox implementation completion ONLY. Does NOT open production Gate G4.** |
+| Gate | Name | Definition | Authority |
+|---|---|---|---|
+| **V3-G0** | Baseline & Risk Freeze | Freeze v2.2.1 baseline at 6f33ba5; catalog carry-over risks; freeze production DB at v0.3.0. | Founder |
+| **V3-G1** | Product Requirements & Scope Approval | Formal approval of V3 scope, 24 domain entities, and non-goals. | Founder |
+| **V3-G2** | Target Architecture & ADR Approval | Approval of Hexagonal architecture, event-driven model, and ADRs. | Founder |
+| **V3-G3** | Domain & Database Design Approval | Verification of DDL in isolated sandbox; 29 base tables, 1 virtual table (FTS5), 3 triggers, 4 views, 17 indexes; zero changes to production DB. | Founder |
+| **V3-G4** | MCP/API/Event Contract Approval | Approval of 28 MCP tools, event schemas, and Zod contracts. | Founder |
+| **V3-G5** | Security, Governance & Runtime Approval | Verification of verifiable human approval pipeline, HMAC-SHA256 audit log, and Argon isolation. | Founder |
+| **V3-G6** | Test Strategy & Acceptance Criteria Approval | Approval of 7-level test pyramid and acceptance test suites. | Founder |
+| **V3-G7** | Sandbox Implementation Authorization | Formal Founder approval to begin implementation in isolated sandbox branch. Does NOT open production Gate G4. | Founder |
+
+> [!CAUTION]
+> **CRITICAL BOUNDARY ENFORCEMENT:**  
+> **Gate G4 (Production Database Migration) is NOT V3-G4.** Gate G4 is a production deployment gate that remains **CLOSED** until post-V3 production rollout authorization.  
+> **Gate `V3-G7` authorizes sandbox implementation completion ONLY.**  
+> `V3-G7` does **NOT** authorize production deployment, does **NOT** apply Windows NTFS ACLs, and does **NOT** open production database Gate G4. Production Gate G4 is a separate, human-gated operational milestone that requires independent, explicit human Founder authorization.
 
 ---
 
@@ -104,7 +112,7 @@ Advancement between implementation phases is strictly governed by 8 sequential Q
 
 > [!IMPORTANT]
 > **CONCEPTUAL SPECIFICATION ONLY — DO NOT EXECUTE DIRECTLY DURING DESIGN PHASE.**  
-> Destructive commands such as `Stop-Process -Force`, `git reset --hard`, and `icacls /reset /T` are strictly prohibited. The following non-destructive procedures define the design-time recovery architecture:
+> Destructive operations such as forced process termination, hard git branch resets, and recursive permission resets are strictly prohibited. The following non-destructive procedures define the design-time recovery architecture:
 
 ### 4.1 Non-Destructive Process Shutdown Procedure (Conceptual)
 1. Signal the Node.js server process gracefully using standard IPC (`SIGTERM` or MCP administrative shutdown tool).
@@ -113,7 +121,7 @@ Advancement between implementation phases is strictly governed by 8 sequential Q
 
 ### 4.2 Non-Destructive Git Inspection & Recovery Procedure (Conceptual)
 If an implementation branch requires investigation or safe rollback:
-1. Never run `git reset --hard` or discard uncommitted modifications.
+1. Never force-reset git working trees or discard uncommitted modifications.
 2. Create an isolated inspection branch: `git checkout -b inspect/safety-checkpoint`.
 3. Stash any uncommitted work non-destructively: `git stash save "checkpoint-before-investigation"`.
 4. Inspect differences against baseline: `git diff feat/v2.2.1-implementation..HEAD`.

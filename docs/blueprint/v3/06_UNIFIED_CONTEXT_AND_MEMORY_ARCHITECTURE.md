@@ -1,12 +1,11 @@
 # AICO V3 MASTER BLUEPRINT — UNIFIED CONTEXT & MEMORY ARCHITECTURE
 
 **Document ID:** `BP-V3-06`  
-**Version:** `3.1.0-reconciled`  
+**Version:** `3.2.0-reconciled`  
 **Date:** 2026-11-07  
 **Author:** `flash-02` — Engineering & QA Lead  
 **Design Phase:** Architecture & Contracts Design Only (No Implementation Authorized)  
-**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Commit `cd749107c4b34e26f61e14a238336e414f78779d`  
-**Actual HEAD:** `21f3aad16911eb076e2245a791bde51178a0d222`  
+**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Actual HEAD: `6f33ba5ea5515187db0445dad443f3d06d4aa3a4`  
 **Target Workspace:** `D:\AI-COMPANY`
 
 ---
@@ -44,11 +43,11 @@ flowchart TD
 
 | Tier | Scope Enum | Access Policy | Lifetime | Storage Location | Invalidation Trigger |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1. Company** | `COMPANY` | Read: All Agents. Write: `founder-human`, `chatgpt-01`, `flash-01`. | Permanent | `memory_entries` + canonical `.md` files | Founder manifest update |
-| **2. Project** | `PROJECT` | Read: Project members. Write: CTO, Lead, Assigned Engineers. | Project duration | `memory_entries` + `docs/adr/` | Architectural revision |
-| **3. Task** | `TASK` | Read: All project agents. Write: Active leaseholder, Reviewer, QA. | Task duration | `tasks` + `context_snapshots` | Task completion or lease re-claim |
-| **4. Room** | `ROOM` | Read/Write: Active room members. | Rolling / Archived | `messages` + `threads` | Room archival or rolling compaction |
-| **5. Private** | `AGENT_PRIVATE` | Read/Write: Strictly owning agent. **Zero cross-agent leakage (`REQ-V3-017`).** | Session or long-term | `memory_entries` (isolated by `scope_id = agent_id`) | Agent explicit overwrite or tombstone |
+| **1. Company** | `COMPANY` | Read: All Principals. Write: `founder-01`, `chatgpt-01`, `flash-01`. | Permanent | `memory_entries` + canonical `.md` files | Founder manifest update |
+| **2. Project** | `PROJECT` | Read: Project members. Write: CTO, Lead, Assigned Engineers, Founder. | Project duration | `memory_entries` + `docs/adr/` | Architectural revision |
+| **3. Task** | `TASK` | Read: All project agents. Write: Active leaseholder, Reviewer, QA, Founder. | Task duration | `tasks` + `context_snapshots` | Task completion or lease re-claim |
+| **4. Room** | `ROOM` | Read/Write: Active room members (`principals`). | Rolling / Archived | `messages` + `threads` | Room archival or rolling compaction |
+| **5. Private** | `AGENT_PRIVATE` | Read/Write: Strictly owning principal. **Zero cross-agent leakage (`REQ-V3-017`).** | Session or long-term | `memory_entries` (isolated by `scope_id = principal_id`) | Principal explicit overwrite or tombstone |
 
 ---
 
@@ -103,14 +102,19 @@ AICO V3 uses formal **Context Snapshots** to compress state into a standardized,
 }
 ```
 
+### 4.3 Versioning & Tokenizer-Specific Counting
+- Context Snapshots are immutable and versioned monotonically per task.
+- `total_tokens` is measured using model-family tokenizers (tiktoken `o200k_base` for OpenAI, Gemini tokenizer for Google, character heuristic `chars / 4` fallback).
+- Hard ceiling: 1,500 tokens. Any snapshot exceeding 1,500 tokens fails validation with `E_INVALID_PAYLOAD`.
+
 ---
 
 ## 5. PROVENANCE, FRESHNESS & TOMBSTONING (`REQ-V3-019`)
 
 ### 5.1 Provenance Tracking
 Every memory item stored in `memory_entries` must record:
-- `provenance_agent_id`: The author agent.
-- `provenance_ref`: Verifiable proof (e.g. `commit:cd74910`, `file:company-manifest.json#L40`, `task:uuid`).
+- `provenance_principal_id`: The author principal (`principals.principal_id`, agent or `founder-01`).
+- `provenance_ref`: Verifiable proof (e.g. `commit:6f33ba5`, `file:company-manifest.json#L40`, `task:uuid`).
 - `confidence_score`: Float between 0.0 (speculative) and 1.0 (verified by test/commit).
 
 ### 5.2 Tombstoning & Invalidation (Soft Deletion)
@@ -118,14 +122,18 @@ In autonomous multi-agent environments, deleting historical records causes synch
 1. `is_tombstoned` is updated to `1`.
 2. `tombstone_reason` is set (e.g., "Superseded by ADR 0004").
 3. Active memory lookups filter `WHERE is_tombstoned = 0`.
-4. Historical audit queries can reconstruct the exact state of knowledge at any historical timestamp.
+4. The schema enforces uniqueness only on active entries via partial unique index:
+   ```sql
+   CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_unique_active ON memory_entries(scope, scope_id, key) WHERE is_tombstoned = 0;
+   ```
+   This allows a key to be tombstoned and subsequently re-created with a new, corrected active entry without primary or unique key collision.
 
 ```mermaid
 stateDiagram-v2
     [*] --> ACTIVE: company_store_memory()
     ACTIVE --> ACTIVE: confidence_score updated
-    ACTIVE --> TOMBSTONED: Fact refuted or superseded
-    TOMBSTONED --> [*]: Excluded from prompt injection
+    ACTIVE --> TOMBSTONED: Fact refuted or superseded (is_tombstoned = 1)
+    TOMBSTONED --> [*]: Excluded from active lookups
 ```
 
 ---
@@ -146,6 +154,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 ```
 - **Automated Synchronization:** Synchronized automatically via database triggers (`trg_memory_entries_ai`, `trg_memory_entries_ad`, `trg_memory_entries_au`).
 - **BM25 Ranking:** Fast, sub-millisecond keyword relevance scoring across all permitted memory scopes.
+- **Manual Rebuild Procedure:**
+  ```sql
+  INSERT INTO memory_fts(memory_fts) VALUES('rebuild');
+  ```
 - **Zero Token Cost:** Filtered locally inside SQLite before any tokens are sent to LLMs.
 
 ### 6.2 Semantic Vector Search Roadmap (`DEC-V3-001`)

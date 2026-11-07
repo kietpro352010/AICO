@@ -1,26 +1,25 @@
 # AICO V3 — CURRENT STATE, BASELINE AUDIT & GAP ANALYSIS
 
 **Document ID:** `BP-V3-01`  
-**Version:** `3.1.0-reconciled`  
+**Version:** `3.2.0-reconciled`  
 **Date:** 2026-11-07  
 **Author:** `flash-02` — Engineering & QA Lead  
 **Design Phase:** Architecture & Contracts Design Only  
-**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Commit `cd749107c4b34e26f61e14a238336e414f78779d`  
-**Actual HEAD:** `21f3aad16911eb076e2245a791bde51178a0d222`  
+**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Actual HEAD: `6f33ba5ea5515187db0445dad443f3d06d4aa3a4`  
 **Target Workspace:** `D:\AI-COMPANY`
 
 ---
 
 ## 1. EXECUTIVE SUMMARY
 
-To establish a solid, honest baseline for AICO V3, this document provides an exhaustive, source-verified audit of the repository as of commit `cd749107c4b34e26f61e14a238336e414f78779d` and reconciled at HEAD `21f3aad16911eb076e2245a791bde51178a0d222`. Rather than accepting self-reported claims at face value, every subsystem has been categorized using strict factual classifications:
+To establish a solid, honest baseline for AICO V3, this document provides an exhaustive, source-verified audit of the repository as of commit `6f33ba5ea5515187db0445dad443f3d06d4aa3a4`. Rather than accepting self-reported claims at face value, every subsystem has been categorized using strict factual classifications:
 - `VERIFIED_IN_SOURCE`: Directly inspected in TypeScript/SQL source code.
 - `TESTED_IN_SOURCE_TEST`: Formally asserted in an existing automated test file.
 - `RUNTIME_EVIDENCE_REPORTED`: Documented in test run logs executed in this environment.
 - `NOT_INDEPENDENTLY_REPRODUCED`: Code exists and passes locally, but has not been confirmed on an independent third-party clean machine.
 - `NOT_VERIFIED`: Documented or conceptual requirement lacking implementation or test evidence.
 
-The audit confirms that while the repository has achieved a functional modular baseline (10 services, 38 MCP tools, 15 passing test suites), **significant technical debt and carry-over risks remain** in state machine ABAC, approval expiration, audit anchor truncation defense, and Git history inspection. These items form the **v2.2.1 Baseline Carry-Over Risk Register** and must be resolved before V3 is deployed.
+The audit confirms that while the repository has achieved a functional modular baseline (10 services, 38 MCP tools, 15 passing test suites), **significant technical debt and carry-over risks remain OPEN** in state machine ABAC, approval expiration, audit anchor truncation defense, and Git history inspection. These items form the **v2.2.1 Baseline Carry-Over Risk Register** and must be resolved before V3 is deployed.
 
 Furthermore, this reconciliation directly addresses the architectural boundary: Gate `V3-G0` establishes the baseline freeze and risk register acceptance, while Phase 7 and Gate `V3-G7` authorize sandbox implementation completion ONLY. Production database Gate G4 remains strictly FROZEN at v0.3.0 and CLOSED until a separate human Founder directive.
 
@@ -30,16 +29,16 @@ Furthermore, this reconciliation directly addresses the architectural boundary: 
 
 | Subsystem Component | Actual File Location | Verification Status | Source & Test Reality | Target Requirement |
 | :--- | :--- | :---: | :--- | :---: |
-| **S01: Registry & Manifest** | `src/services/company-registry-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Manifest parsed from disk; agent identities and quota pools loaded; validated against schema in `baseline.test.ts`. | `REQ-V3-006` |
-| **S02: Identity & Access** | `src/services/identity-access-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Token issue/revoke working; timing-safe verification implemented; live DB checks on every request. | `REQ-V3-029` |
-| **S03: Approval Lifecycle** | `src/services/approval-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Creation, decision, and consumption working. Re-Audit fixed payload hash binding for Argon. Carry-over: `expires_at` not enforced; Founder modeled as agent instead of human principal. | `REQ-V3-030` |
+| **S01: Registry & Manifest** | `src/services/company-registry-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Manifest parsed from disk; 6 agent identities (`chatgpt-01`, `flash-01`, `flash-02`, `codex-01`, `argon-01`, `argon-02`) and 5 quota pools (`google-pro-01`, `google-pro-02`, `gemini-web-01`, `gemini-web-02`, `openai-go-shared`) loaded; validated in `baseline.test.ts`. | `REQ-V3-006` |
+| **S02: Identity & Access** | `src/services/identity-access-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Token issue/revoke working; timing-safe verification implemented; live DB checks on every request. Canonical Founder identity is `founder-01` (Human Principal). | `REQ-V3-029` |
+| **S03: Approval Lifecycle** | `src/services/approval-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Creation, decision, and consumption working. Payload hash binding for Argon. Carry-over risks OPEN: `expires_at` not enforced; Founder modeled as agent instead of human principal. | `REQ-V3-030` |
 | **S04: Workspace Artifacts** | `src/services/workspace-artifact-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Path traversal blocked; symlink escape checks implemented; dotfiles filtered in `listFiles`. Carry-over: Windows `Hidden` file attribute. | `REQ-V3-001` |
 | **S05: Git Mediation** | `src/services/git-mediation-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Tree scanning (`git ls-tree`) implemented; recent 50 commits diff scanned. Carry-over: deep history (>50 commits) not scanned. | `REQ-V3-001` |
-| **S06: Tasks & States** | `src/services/project-task-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | 26 state transitions implemented; Argon retries blocked; leases tracked. Carry-over: TR-04/TR-18 non-Argon critical approvals, TR-25 designee check, blanket lease recovery. | `REQ-V3-021` |
+| **S06: Tasks & States** | `src/services/project-task-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | 26 state transitions implemented; Argon retries blocked; leases tracked. Carry-over risks OPEN: TR-04/TR-18 non-Argon critical approvals, TR-25 designee check, blanket lease recovery. | `REQ-V3-021` |
 | **S07: Messaging** | `src/services/messaging-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | 1:1 message delivery, inbox listing, and message acknowledgements working. Gap: No group chat rooms, no threads, no mentions. | `REQ-V3-011` |
-| **S08: Orchestration** | `src/services/orchestration-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Milestone recording for external dispatches. Re-Audit fixed ABAC: restricted to Founder, CEO, CTO, or task assignee. | `REQ-V3-022` |
+| **S08: Orchestration** | `src/services/orchestration-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Milestone recording for external dispatches. ABAC restricted to Founder, CEO, CTO, or task assignee. | `REQ-V3-022` |
 | **S09: Knowledge & Memory** | `src/services/knowledge-memory-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | SQLite FTS5 search implemented; memory key-value read/write working. Gap: No scoped memory partitions, no context snapshots, no provenance. | `REQ-V3-016` |
-| **S10: Observability & Audit** | `src/services/observability-quota-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | HMAC-SHA256 audit chaining and JSONL anchoring implemented. Carry-over: table truncation recovery, `AICO_ALLOW_TEST_HMAC`. | `REQ-V3-032` |
+| **S10: Observability & Audit** | `src/services/observability-quota-service.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | HMAC-SHA256 audit chaining and JSONL anchoring implemented. Carry-over risk OPEN: table truncation recovery, `AICO_ALLOW_TEST_HMAC`. | `REQ-V3-032` |
 | **38 MCP Tool Contracts** | `src/registry-core.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | All 38 tools registered; 1-to-1 match with `TOOL_REQUIRED_SCOPES`; fail-closed check prevents unmapped tools from executing. | `REQ-V3-003` |
 | **HTTP Security Pipeline** | `src/security/http-security-pipeline.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | 10-step middleware on `:3334` & `:3335`; Content-Length & chunked 413 limit verified; Bearer auth timing-safe; secret scanning verified. | `REQ-V3-004` |
 | **STDIO Stream Guard** | `src/security/stdio-security-pipeline.ts` | `VERIFIED_IN_SOURCE`<br>`TESTED_IN_SOURCE_TEST` | Raw reader guard enforces 2 MiB line frame cap; stream destroyed on violation; live credential re-validation verified. | `REQ-V3-005` |
@@ -50,11 +49,12 @@ Furthermore, this reconciliation directly addresses the architectural boundary: 
 
 ## 3. V2.2.1 BASELINE CARRY-OVER RISK REGISTER & TRACEABILITY
 
-The following risks have been identified in the codebase as of commit `cd749107c4b34e26f61e14a238336e414f78779d`. These findings **must be remediated in Phase 0 of the V3 development cycle** and are mapped directly to canonical requirements:
+The following risks are confirmed **OPEN** in the v2.2.1 codebase as of commit `6f33ba5ea5515187db0445dad443f3d06d4aa3a4`. These findings **must be remediated in Phase 0 of the V3 development cycle** and are mapped directly to canonical requirements:
 
 ### P0 — Task Authorization & Approval Gaps
 
 #### `RISK-V221-001` (Severity: Critical / P0) → `REQ-V3-030`
+- **Status:** **OPEN** in current source code.
 - **Title:** Critical Task Approval Verification Gap on Non-Argon Tasks (TR-04 & TR-18).
 - **Component:** `company-mcp/src/services/project-task-service.ts` (lines 623–635, 735–745).
 - **Observed Behavior:** When a non-Argon task is created with `risk_class = 'critical'`, it correctly starts in `waiting_approval`. However, in TR-04 (`waiting_approval -> queued`) and TR-18 (`waiting_approval -> in_progress`), the check `if (isArgon)` only verifies Founder approvals for Argon tasks. A non-Argon critical task can be transitioned to `queued` or `in_progress` by any principal with `tasks:manage` or `tasks:transition` without providing an `approvalId` or verifying Founder sign-off.
@@ -65,13 +65,14 @@ The following risks have been identified in the codebase as of commit `cd749107c
 - **Acceptance Criteria:** Any task with `requires_founder_gate = 1` must fail transition to execution without a verified, unconsumed human Founder approval.
 
 #### `RISK-V221-002` (Severity: High / P0) → `REQ-V3-025`
+- **Status:** **OPEN** in current source code.
 - **Title:** Designated Reviewer Verification Gap in TR-25 (`review_required -> completed`).
 - **Component:** `company-mcp/src/services/project-task-service.ts` (lines 788–795).
 - **Observed Behavior:** In TR-25, the state machine verifies Separation of Duties by ensuring `task.assigned_agent_id !== actorId` (an agent cannot approve their own task). However, it does not check whether `actorId` matches the designated `task.reviewer_agent_id` or belongs to the authorized executive tier (`founder-01`, `chatgpt-01`, `flash-01`). An arbitrary third agent with `tasks:review` could approve the task.
 - **Existing Tests:** `t07` tests that `flash-02` cannot approve their own work, and that `flash-01` can approve it.
 - **Missing Tests:** Negative test where an unauthorized agent (e.g., `codex-01`) attempts to review and complete a task designated to `flash-01` or `flash-02`.
 - **Impact:** QA bypass: tasks could be signed off by non-QA/non-lead agents, violating engineering governance.
-- **V3 Canonical Remediation:** In `REQ-V3-025`, `company_approve_review` verifies both anti-self-approval (`actor != task.created_by && actor != task_execution.agent_id`) AND designated role (`actor === task.reviewer_agent_id || actor === 'founder-human' || actor === 'flash-01'`).
+- **V3 Canonical Remediation:** In `REQ-V3-025`, `company_approve_review` verifies both anti-self-approval (`actor != task.created_by && actor != task_execution.agent_id`) AND designated role (`actor === task.reviewer_agent_id || actor === 'founder-01' || actor === 'flash-01'`).
 - **Acceptance Criteria:** TR-25 rejects any caller who is neither the designated reviewer nor executive leadership.
 
 ---
@@ -79,6 +80,7 @@ The following risks have been identified in the codebase as of commit `cd749107c
 ### P1 — Approval Lifecycle & Expiration
 
 #### `RISK-V221-003` (Severity: High / P1) → `REQ-V3-030`
+- **Status:** **OPEN** in current source code.
 - **Title:** Missing Expiration (`expires_at`) Validation in `decideApproval` and `consumeApproval`.
 - **Component:** `company-mcp/src/services/approval-service.ts` (lines 140–210, 275–330).
 - **Observed Behavior:** The `approval_requests` table contains an `expires_at` column. However, neither `decideApproval()` nor `consumeApproval()` checks whether `new Date(row.expires_at) < new Date()`. An approval request created weeks ago could still be approved or consumed if still in `pending` or `approved` state.
@@ -93,6 +95,7 @@ The following risks have been identified in the codebase as of commit `cd749107c
 ### P1 — State Machine & Partitioned Lease Recovery
 
 #### `RISK-V221-004` (Severity: Medium / P1) → `REQ-V3-023`, `REQ-V3-024`, `REQ-V3-031`
+- **Status:** **OPEN** in current source code.
 - **Title:** Lease Expiry Recovery Not Verified with Controlled Wall-Clock Time & Blanket Recovery Threat.
 - **Component:** `company-mcp/src/services/project-task-service.ts` (lines 698–720) and `test/t08-task-state-machine-26.test.ts`.
 - **Observed Behavior:** Blanket lease recovery updates all expired tasks back to `READY_FOR_DEV`. If an Argon specialist lease expires, blanket recovery would automatically return it to the queue, permitting automatic retry or re-invocation, violating the Argon policy.
@@ -109,6 +112,7 @@ The following risks have been identified in the codebase as of commit `cd749107c
 ### P1 — Audit Integrity & Anchor Truncation Defense
 
 #### `RISK-V221-005` (Severity: High / P1) → `REQ-V3-032`
+- **Status:** **OPEN** in current source code.
 - **Title:** Audit Chain Validation Vulnerability if Table Truncated While External Anchors Exist.
 - **Component:** `company-mcp/src/services/observability-quota-service.ts` (lines 225–270).
 - **Observed Behavior:** In `verifyAuditChainIntegrity()`, if `rows.length === 0`, the function immediately returns `{ valid: true, totalEvents: 0 }`. If an attacker or operational error truncates the `audit_events` table in SQLite, but the external JSONL anchor file still exists on disk containing 100 historical anchor records, the verification reports `valid: true`.
@@ -123,6 +127,7 @@ The following risks have been identified in the codebase as of commit `cd749107c
 ### P1 — Git Mediation Full History Scanning
 
 #### `RISK-V221-006` (Severity: Medium / P1) → `REQ-V3-001`
+- **Status:** **OPEN** in current source code.
 - **Title:** Git History Scanning Bounded to Recent 50 Commits (`git log -p -n 50`).
 - **Component:** `company-mcp/src/services/git-mediation-service.ts` (lines 53–75).
 - **Observed Behavior:** `scanCommitFiles()` runs `git log -p -n 50 commitSha` to scan diff patches. If an agent submits a branch containing 60 commits where a secret was committed and subsequently deleted in commit 5, the diff scan will not reach that commit.
@@ -143,7 +148,7 @@ graph LR
         V2_Mem[Key-Value Memory + FTS5]
         V2_Task[Flat Task Transitions]
         V2_Skill[Static Skill Directory]
-        V2_Cost[Raw Quota Pools Table]
+        V2_Cost[Raw Quota Pools Table - 5 Pools]
     end
 
     subgraph V3["V3 Vision (Autonomous AI Company)"]
@@ -151,7 +156,7 @@ graph LR
         V3_Mem[Unified Memory: 5 Tiers, Snapshots, Provenance]
         V3_Task[Orchestrator: DAG Decomposition, Partitioned Leases]
         V3_Skill[Dynamic Capability Registry & Token Diet]
-        V3_Cost[Cost Intelligence: Budgeting, Routing, Caching]
+        V3_Cost[Cost Intelligence: Budgeting across 5 Pools, Routing, Caching]
     end
 
     V2_Msg -->|Major Redesign| V3_Msg
@@ -162,8 +167,8 @@ graph LR
 ```
 
 ### 4.1 Collaboration & Communication Gaps
-- **Current State:** `company_send_message` (M35) only delivers point-to-point text messages between two agents. There is no concept of a room, project channel, or public discussion.
-- **V3 Requirement (`REQ-V3-011` to `015`):** Multi-agent collaboration requires dedicated chat rooms (Executive Boardroom, Engineering Department, Project Rooms, Task Channels) with membership roles, message threads, mentions, and delivery tracking.
+- **Current State:** The v2.2.1 messaging tool (M35) only delivers point-to-point text messages between two agents. There is no concept of a room, project channel, or public discussion.
+- **V3 Requirement (`REQ-V3-011` to `015`):** Multi-agent collaboration requires dedicated chat rooms (Executive Boardroom, Announcements, Department Office, Project Rooms, Task Channels, Direct Messages) with membership roles, message threads, mentions, and delivery tracking.
 
 ### 4.2 Context & Memory Gaps
 - **Current State:** Key-value pairs in `agent_memory` and unstructured markdown files in `knowledge_documents`. No scoping, no provenance, and no automatic context compilation.
@@ -178,7 +183,7 @@ graph LR
 - **V3 Requirement (`REQ-V3-026`):** Dynamic Capability Registry that matches tasks to capability tags and dynamically injects only the required skills and tools for the current execution turn.
 
 ### 4.5 Cost & Token Intelligence Gaps
-- **Current State:** Static `quota_pools` table displaying provider limits. No telemetry on tokens spent per task, cost per project, or model routing logic.
+- **Current State:** Static `quota_pools` table displaying provider limits for 5 quota pools (`google-pro-01`, `google-pro-02`, `gemini-web-01`, `gemini-web-02`, `openai-go-shared`). No telemetry on tokens spent per task, cost per project, or model routing logic.
 - **V3 Requirement (`REQ-V3-027` to `028`):** Real-time token accounting, prompt caching prefix alignment, context compression, and complexity-based model routing.
 
 ---
@@ -188,14 +193,14 @@ graph LR
 | Component | V3 Strategy | Rationale & Migration Approach | Target Requirements |
 | :--- | :---: | :--- | :---: |
 | **`ConnectionManager`** | **REUSE** | Solid transaction management and connection lifecycle; directly reusable for SQLite V3. | `REQ-V3-008` |
-| **`IdentityAccessService`** | **REUSE & EXTEND** | Timing-safe verification and credential management are robust; extend with human principal distinction. | `REQ-V3-029` |
-| **`ApprovalService`** | **REDESIGN (V3)** | Redesign approval lifecycle for verifiable human Founder authorization with Ed25519 signature verification. | `REQ-V3-030` |
+| **`IdentityAccessService`** | **REUSE & EXTEND** | Timing-safe verification and credential management are robust; extend with human principal distinction (`founder-01`). | `REQ-V3-029` |
+| **`ApprovalService`** | **REDESIGN (V3)** | Redesign approval lifecycle for verifiable human Founder authorization with RFC 8785 (JCS) payload hash and Ed25519 signature verification. | `REQ-V3-030` |
 | **`WorkspaceArtifactService`** | **REUSE & EXTEND** | Path traversal, symlink guards, and atomic writes are proven; extend with Windows Hidden attribute checks. | `REQ-V3-001` |
 | **`GitMediationService`** | **REUSE & EXTEND** | Branch naming and tree scanning are solid; upgrade diff scanning from `-n 50` to `mergeBase..HEAD`. | `REQ-V3-001` |
 | **`ProjectTaskService`** | **REDESIGN (V3)** | Flat state machine cannot support DAG subtasks or dynamic reviewer assignment; redesign as Hexagonal Workflow Engine. | `REQ-V3-021` to `025` |
 | **`MessagingService`** | **REDESIGN (V3)** | 1:1 message model is obsolete; replace with Collaboration Hub (6 room types, threads, mentions). | `REQ-V3-011` to `015` |
 | **`KnowledgeMemoryService`** | **REDESIGN (V3)** | Replace unstructured memory with Scoped Memory Engine (5 tiers, context snapshots, FTS5 sync triggers). | `REQ-V3-016` to `020` |
-| **`ObservabilityQuotaService`**| **REUSE & EXTEND** | HMAC-SHA256 audit chaining is solid; add table-truncation defense and real-time token cost tracking. | `REQ-V3-027`, `032` |
+| **`ObservabilityQuotaService`**| **REUSE & EXTEND** | HMAC-SHA256 audit chaining is solid; add table-truncation defense and real-time token cost tracking across 5 quota pools. | `REQ-V3-027`, `032` |
 | **`HttpSecurityPipeline`** | **REUSE** | 10-step middleware (:3334/:3335) passed all E2E black-box tests; keep intact. | `REQ-V3-003`, `004` |
 | **`StdioSecurityPipeline`** | **REUSE** | 2 MiB stream guard and live credential checks passed all tests; keep intact. | `REQ-V3-005` |
 | **`DpapiManager`** | **REUSE** | Genuine Windows DPAPI with binary ciphertext verification is complete; keep intact. | `REQ-V3-030` |

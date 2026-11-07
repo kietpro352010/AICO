@@ -1,12 +1,11 @@
 # AICO V3 TARGET ARCHITECTURE — MODULAR MONOLITH & PORTS-AND-ADAPTERS
 
 **Document ID:** `BP-V3-02`  
-**Version:** `3.1.0-reconciled`  
+**Version:** `3.2.0-reconciled`  
 **Date:** 2026-11-07  
 **Author:** `flash-02` — Engineering & QA Lead  
 **Design Phase:** Architecture & Contracts Design Only  
-**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Commit `cd749107c4b34e26f61e14a238336e414f78779d`  
-**Actual HEAD:** `21f3aad16911eb076e2245a791bde51178a0d222`  
+**Baseline Git Reference:** Branch `feat/v2.2.1-implementation`, Actual HEAD: `6f33ba5ea5515187db0445dad443f3d06d4aa3a4`  
 **Target Workspace:** `D:\AI-COMPANY`
 
 ---
@@ -33,10 +32,10 @@ graph TD
 
     subgraph CoreDomain["Application Core (Pure Domain & Use Cases)"]
         CollabCore["Collaboration Hub Domain (6 Room Types)"]
-        WorkflowCore["DAG Workflow Engine (23 States)"]
+        WorkflowCore["DAG Workflow Engine (23 States, 28 Transitions)"]
         ContextCore["Unified Context Engine (5 Tiers)"]
-        SecurityCore["Zero-Trust ABAC & Human Governance"]
-        CostCore["Token & Cost Intelligence"]
+        SecurityCore["Zero-Trust ABAC & Human Governance (founder-01)"]
+        CostCore["Token & Cost Intelligence (5 Quota Pools)"]
     end
 
     subgraph PortsOut["Outbound Ports (Secondary / SPI)"]
@@ -48,11 +47,11 @@ graph TD
     end
 
     subgraph DrivenAdapters["Driven Adapters (Secondary / Outbound)"]
-        SqliteAdapter["SQLite Connection Adapter\n(WAL Mode, 27 Tables, Triggers)"]
+        SqliteAdapter["SQLite Connection Adapter\n(WAL Mode, 29 Base Tables, FTS5, 17 Indexes)"]
         NtfsAdapter["Windows NTFS Workspace Adapter\n(Option A SIDs & Path Guard)"]
         EventOutbox["Transactional Event Outbox\n(event_outbox Table)"]
         NotificationInbox["Notifications Inbox Adapter\n(notifications_inbox Table)"]
-        ModelRouter["AI Model Gateway Adapter\n(OpenAI / Gemini / Anthropic)"]
+        ModelRouter["AI Model Gateway Adapter\n(5 Quota Pools Telemetry)"]
         AnchorFs["JSONL External Anchor File Writer"]
     end
 
@@ -66,8 +65,8 @@ graph TD
 1. **Dependency Inversion (`REQ-V3-001`):** Dependencies flow strictly inward. The Core Domain imports no external libraries, no database drivers, and no protocol handlers.
 2. **Modular Cohesion:** Each business domain (Collaboration, Workflow, Context, Governance) is encapsulated with a private repository interface, public DTO contracts, and explicit domain events (`aico.event.v3`, `REQ-V3-002`).
 3. **Local-First Single Process:** The entire control plane runs inside a single, highly optimized Node.js process. Modules communicate via synchronous in-memory TypeScript function calls or asynchronous domain event handlers.
-4. **Zero-Trust ABAC with Human Final Authority (`REQ-V3-029`, `REQ-V3-030`):** Authentication happens at the adapter level; fine-grained ABAC, Separation of Duties (SoD), and verifiable human Founder cryptographic authorization are enforced strictly inside the Core Domain interactors.
-5. **Sandbox Isolation & Gate G4 Decoupling (`REQ-V3-007`):** All V3 development, migrations, and quality gates (`V3-G0` through `V3-G7`) operate exclusively on isolated test sandboxes. Gate G4 for the production database remains frozen and closed.
+4. **Zero-Trust ABAC with Human Final Authority (`REQ-V3-029`, `REQ-V3-030`):** Authentication happens at the adapter level; fine-grained ABAC, Separation of Duties (SoD), and verifiable human Founder (`founder-01`) cryptographic authorization are enforced strictly inside the Core Domain interactors.
+5. **Sandbox Isolation & Gate G4 Decoupling (`REQ-V3-007`):** All V3 development, migrations, and quality gates (`V3-G0` through `V3-G7`) operate exclusively on isolated test sandboxes. Gate G4 for the production database remains frozen at v0.3.0 and closed.
 
 ---
 
@@ -91,19 +90,20 @@ classDiagram
         +CollaborationHubService
         +ContextMemoryService
         +IdentityAccessService
-        +HumanApprovalService
+        +HumanApprovalService (RFC 8785 JCS)
     }
     class DomainLayer {
         <<Layer 2: Core Domain>>
-        +TaskAggregate (23 States)
+        +TaskAggregate (23 States, 28 Transitions)
         +ChatRoomAggregate (6 Types)
         +ContextSnapshotEntity
         +HumanApprovalEntity
         +AuditEventValueObject
+        +UnifiedPrincipalEntity (founder-01 vs 6 Agents)
     }
     class InfrastructureLayer {
         <<Layer 1: Persistence & Storage>>
-        +SQLiteRepository (27 Tables)
+        +SQLiteRepository (29 Base Tables)
         +TransactionalOutbox
         +NotificationsInbox
         +Fts5SearchIndex
@@ -124,7 +124,7 @@ classDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Founder as Founder (Human Principal)
+    actor Founder as Founder (Human Principal 'founder-01')
     participant CEO as chatgpt-01 (CEO)
     participant CTO as flash-01 (CTO)
     participant SWE as codex-01 (SWE)
@@ -203,7 +203,7 @@ The following 10 architectural choices were evaluated to establish the V3 design
 
 ### 2. SQLite vs. PostgreSQL
 - **Comparison:** PostgreSQL provides advanced concurrency and connection pooling, but introduces external daemon dependencies, network round-trips, and infrastructure burdens. SQLite (WAL mode, `busy_timeout = 5000ms`, `ConnectionManager`) supports single-writer/multi-reader at up to 50,000 queries/second locally with zero configuration.
-- **Verdict:** **SQLite WAL Mode (`REQ-V3-008`)**. Retained for local single-node architecture. Production database Gate G4 remains strictly decoupled and frozen.
+- **Verdict:** **SQLite WAL Mode (`REQ-V3-008`)**. Retained for local single-node architecture (29 base tables, 1 virtual FTS5 table). Production database Gate G4 remains strictly decoupled and frozen.
 
 ### 3. Synchronous Requests vs. Event-Driven Workflow
 - **Comparison:** Pure synchronous processing blocks clients during long-running agent tasks. Pure event-driven systems (Kafka/RabbitMQ) add heavy infrastructure.
@@ -223,7 +223,7 @@ The following 10 architectural choices were evaluated to establish the V3 design
 
 ### 7. Central CEO Orchestrator vs. Decentralized P2P Choreography
 - **Comparison:** Decentralized choreography leads to agent deadlocks, duplicate execution, and uncoordinated drift. Pure centralization overburdens the CEO.
-- **Verdict:** **Hierarchical Delegation with Separation of Duties (`REQ-V3-021`, `REQ-V3-025`)**. CEO (`chatgpt-01`) decomposes strategic directives; CTO (`flash-01`) reviews architecture and technical code; QA Lead (`flash-02`) independently tests; Founder retains final sign-off.
+- **Verdict:** **Hierarchical Delegation with Separation of Duties (`REQ-V3-021`, `REQ-V3-025`)**. CEO (`chatgpt-01`) decomposes strategic directives; CTO (`flash-01`) reviews architecture and technical code; QA Lead (`flash-02`) independently tests; Founder (`founder-01`) retains final sign-off.
 
 ### 8. Static Skills Directory vs. Dynamic Capability Registry
 - **Comparison:** Loading all 12 skills statically bloats prompt overhead by 3,000–8,000 tokens per turn.
