@@ -70,3 +70,10 @@ jobs:
             Write-Host "  -> Security boundary: Production database is deliberately excluded from git repository."
             Write-Host "  -> Status: SKIPPED in cloud CI. Production DB immutability is verified locally on Founder workstation."
           }
+
+      - name: CI Verification Summary
+        shell: powershell
+        run: |
+          Write-Host "=========================================================="
+          Write-Host "  ALL APPLICABLE GATES PASS -- PRODUCTION DB CHECK SKIPPED"
+          Write-Host "=========================================================="

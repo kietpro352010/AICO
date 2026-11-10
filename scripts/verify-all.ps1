@@ -101,6 +101,12 @@ if ($prodDbStatus -eq "PRESENT_VERIFIED") {
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  VERIFICATION COMPLETE: ALL GATES PASS (EXIT CODE 0)    " -ForegroundColor Cyan
+if ($prodDbStatus -eq "PRESENT_VERIFIED") {
+    Write-Host "  VERIFICATION COMPLETE: ALL GATES PASS (EXIT CODE 0)    " -ForegroundColor Green
+    Write-Host "  (INCLUDING LOCAL PRODUCTION DB IMMUTABILITY VERIFIED)  " -ForegroundColor Green
+} else {
+    Write-Host "  ALL APPLICABLE GATES PASS -- PRODUCTION DB CHECK SKIPPED" -ForegroundColor Yellow
+    Write-Host "  (EXIT CODE 0)                                          " -ForegroundColor Yellow
+}
 Write-Host "==========================================================" -ForegroundColor Cyan
 exit 0

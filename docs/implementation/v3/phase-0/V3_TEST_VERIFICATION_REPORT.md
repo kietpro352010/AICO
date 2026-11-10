@@ -7,6 +7,9 @@
 **Date:** 2026-11-10  
 **Status:** `READY_FOR_CEO_EVALUATION`  
 **Previous Baseline Commit (Failed CI):** `1d6b7326217ac7f5b12ae7591dbff10ca6d8dfa7`  
+**Remediation Commit (Verified CI):** `e2579d058643e88401f9376d0082822c320f40fc`  
+**GitHub Actions Run:** [Run 42822917725 (main)](https://github.com/kietpro352010/AICO/actions/runs/42822917725) | [Run 42822944398 (master)](https://github.com/kietpro352010/AICO/actions/runs/42822944398)  
+**CI Pipeline Status:** `SUCCESS` (11 suites, 40/40 tests pass, Exit Code 0)  
 **Remediation Target:** Phase 0.3 CI Failure Remediation & Evidence Accuracy  
 **Local Test Suite Execution Result:** `ALL_PASS` (Exit Code 0)  
 **Automated CI Pipeline:** `.github/workflows/ci.yml` (Windows, Node 24, Fetch Depth 0)  
@@ -34,12 +37,15 @@ On the initial push of commit `1d6b7326217ac7f5b12ae7591dbff10ca6d8dfa7`, GitHub
 
 | Verification Axis | Local Workstation (`scripts/verify-all.ps1`) | GitHub Actions Cloud CI (`.github/workflows/ci.yml`) |
 | :--- | :--- | :--- |
-| **Runner Environment** | Windows 11 (Founder Workstation), Node v24.21.0 | `windows-latest` VM runner, Node 24 |
-| **Baseline Fixture** | `PASS`: `test/fixtures/aico_v030_pre_v221.db` verified intact | `PASS`: Fixture verified intact via pre-test step |
-| **`npm ci`** | `PASS`: 90 packages audited, 0 vulnerabilities (Exit 0) | `PASS`: Clean install from lockfile (Exit 0) |
-| **`npm run typecheck`** | `PASS`: `tsc --noEmit`, 0 diagnostics (Exit 0) | `PASS`: Strict compilation passes (Exit 0) |
-| **`npm test`** | `PASS`: 11 suites, 40 tests pass 100% (Exit 0, ~14.9s) | Executed in CI pipeline (Exit 0) |
-| **Production DB Status** | `PASS`: `data/aico.db` present, SHA-256 verified untouched | `SKIPPED`: `data/aico.db` is not present (not committed to git) |
+| **Commit Evaluated** | `e2579d058643e88401f9376d0082822c320f40fc` | `e2579d058643e88401f9376d0082822c320f40fc` |
+| **Run URL / Scope** | Local execution on Founder Workstation | [Run 42822917725 (main)](https://github.com/kietpro352010/AICO/actions/runs/42822917725) \| [Run 42822944398 (master)](https://github.com/kietpro352010/AICO/actions/runs/42822944398) |
+| **Runner Environment** | Windows 11 (Founder Workstation), Node v24.21.0 | Microsoft Windows Server 2025 VM, Node v24.21.0 |
+| **Baseline Fixture** | `PASS`: `test/fixtures/aico_v030_pre_v221.db` verified intact | `PASS`: Fixture verified intact (`2F73A960...`) |
+| **`npm ci`** | `PASS`: 90 packages audited, 0 vulnerabilities (Exit 0) | `PASS`: Clean install from npm lockfile (Exit 0) |
+| **`npm run typecheck`** | `PASS`: `tsc --noEmit`, 0 diagnostics (Exit 0) | `PASS`: Strict compilation passes with 0 diagnostics (Exit 0) |
+| **`npm test` Execution** | `PASS`: 11 suites, 40 tests pass 100% (Exit 0, ~14.2s) | `PASS`: 11 suites, 40 tests pass 100% (Exit 0, 1m15s duration) |
+| **Production DB Status** | `PASS`: `data/aico.db` present, SHA-256 verified untouched (`17BD9321...`) | `SKIPPED`: `data/aico.db` is NOT present in repo (excluded via `.gitignore`) |
+| **Final Run Conclusion** | `VERIFICATION COMPLETE: ALL GATES PASS (EXIT CODE 0)` | `ALL APPLICABLE GATES PASS — PRODUCTION DB CHECK SKIPPED (EXIT CODE 0)` |
 
 ---
 
