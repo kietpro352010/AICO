@@ -229,12 +229,12 @@ export class ObservabilityQuotaService {
     return this.connManager.withReadTransaction((db) => {
       const rows = db.prepare("SELECT * FROM audit_events ORDER BY audit_id ASC").all() as any[];
 
-      // Truncation defense: if database table is empty, check whether external anchor file contains recorded events
+      // Truncation defense: if database table is empty, check whether external anchor file or sequence metadata contains recorded events
       if (rows.length === 0) {
         if (fs.existsSync(this.anchorFilePath)) {
           try {
             const content = fs.readFileSync(this.anchorFilePath, "utf8");
-            const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
+            const lines = content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
             if (lines.length > 0) {
               return {
                 valid: false,
@@ -242,10 +242,30 @@ export class ObservabilityQuotaService {
                 brokenAtEventId: "AUDIT_LOG_MISSING_OR_TRUNCATED"
               };
             }
-          } catch {
-            // Unreadable anchor file with 0 records
+          } catch (err: any) {
+            // Unreadable anchor file must NEVER produce a valid integrity result (P0/P1-B)
+            return {
+              valid: false,
+              totalEvents: 0,
+              brokenAtEventId: `UNREADABLE_AUDIT_ANCHOR_FILE: ${err.message}`
+            };
           }
         }
+
+        // Even if anchor file is missing or empty, check sqlite_sequence for historical evidence of truncation
+        try {
+          const seqRow = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'audit_events'").get() as any;
+          if (seqRow && Number(seqRow.seq) > 0) {
+            return {
+              valid: false,
+              totalEvents: 0,
+              brokenAtEventId: `TAIL_TRUNCATION_DETECTED: sqlite_sequence indicates historical audit events existed (seq=${seqRow.seq}) but audit_events table is empty`
+            };
+          }
+        } catch {
+          // sqlite_sequence may not exist in mock environments
+        }
+
         return { valid: true, totalEvents: 0 };
       }
 
@@ -413,6 +433,28 @@ export class ObservabilityQuotaService {
     return this.connManager.withWriteTransaction((db) => {
       const rows = db.prepare("SELECT * FROM audit_events ORDER BY audit_id ASC").all() as any[];
       if (rows.length === 0) {
+        if (fs.existsSync(this.anchorFilePath)) {
+          let lines: string[] = [];
+          try {
+            const content = fs.readFileSync(this.anchorFilePath, "utf8");
+            lines = content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+          } catch (err: any) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Unreadable anchor file: ${err.message}`);
+          }
+          if (lines.length > 0) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Database has 0 events but historical anchor file contains ${lines.length} record(s). Truncation/data loss detected. Fail-closed: manual intervention required.`);
+          }
+        }
+
+        try {
+          const seqRow = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'audit_events'").get() as any;
+          if (seqRow && Number(seqRow.seq) > 0) {
+            throw new Error(`SAFE_RECONCILIATION_REFUSED: Database has 0 events but sqlite_sequence indicates historical records existed (seq=${seqRow.seq}). Truncation/data loss detected. Fail-closed: manual intervention required.`);
+          }
+        } catch (err: any) {
+          if (err.message && err.message.startsWith("SAFE_RECONCILIATION_REFUSED")) throw err;
+        }
+
         return { reconciledCount: 0, latestAnchorAuditId: 0 };
       }
 
@@ -458,52 +500,68 @@ export class ObservabilityQuotaService {
         expectedPrevHash = row.event_hash_hmac_sha256;
       }
 
-      // 2. STEP 2: Validate existing anchor file (fail-closed if malformed, corrupted, or tampered)
+      // 2. STEP 2: Validate existing anchor file (fail-closed if missing, empty, malformed, corrupted, or tampered)
+      // P0/P1-A: Missing or empty anchor file with existing audit records MUST fail closed!
+      if (!fs.existsSync(this.anchorFilePath)) {
+        throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file is completely missing while database contains ${rows.length} audit event(s). Cannot silently reconstruct anchor history. Manual intervention required.`);
+      }
+
+      let content = "";
+      try {
+        content = fs.readFileSync(this.anchorFilePath, "utf8");
+      } catch (err: any) {
+        throw new Error(`SAFE_RECONCILIATION_REFUSED: Unreadable anchor file: ${err.message}. Fail-closed: manual intervention required.`);
+      }
+
+      const lines = content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+      if (lines.length === 0) {
+        throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file is empty while database contains ${rows.length} audit event(s). Cannot silently reconstruct anchor history. Manual intervention required.`);
+      }
+
       let latestAnchorAuditId = 0;
       const rowByAuditId = new Map<number, any>();
       for (const r of rows) {
         rowByAuditId.set(r.audit_id, r);
       }
 
-      if (fs.existsSync(this.anchorFilePath)) {
-        const content = fs.readFileSync(this.anchorFilePath, "utf8");
-        const lines = content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
-        let prevAnchorId = 0;
-
-        for (let i = 0; i < lines.length; i++) {
-          let anchor: any;
-          try {
-            anchor = JSON.parse(lines[i]);
-          } catch (err: any) {
-            throw new Error(`SAFE_RECONCILIATION_REFUSED: Malformed anchor JSON at line ${i + 1}: ${err.message}. Fail-closed: manual intervention required.`);
-          }
-
-          if (!anchor || typeof anchor.last_audit_id !== "number" || !anchor.event_hash_sha256) {
-            throw new Error(`SAFE_RECONCILIATION_REFUSED: Malformed anchor record structure at line ${i + 1}. Fail-closed.`);
-          }
-
-          if (anchor.last_audit_id <= prevAnchorId) {
-            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file contains duplicate or out-of-order audit_id ${anchor.last_audit_id} at line ${i + 1}. Fail-closed.`);
-          }
-
-          const matchingRow = rowByAuditId.get(anchor.last_audit_id);
-          if (!matchingRow) {
-            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor audit_id ${anchor.last_audit_id} does not exist in database (rollback detected). Fail-closed.`);
-          }
-
-          const expectedHash = matchingRow.event_hash_hmac_sha256 || matchingRow.event_hash_sha256;
-          if (anchor.event_hash_sha256 !== expectedHash) {
-            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor hash mismatch at audit_id ${anchor.last_audit_id}. Fail-closed.`);
-          }
-
-          // Check continuity: anchor i must match row i
-          if (anchor.last_audit_id !== rows[i].audit_id) {
-            throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file has gap at line ${i + 1}: expected audit_id ${rows[i].audit_id}, found ${anchor.last_audit_id}. Fail-closed.`);
-          }
-
-          prevAnchorId = anchor.last_audit_id;
-          latestAnchorAuditId = anchor.last_audit_id;
+      let prevAnchorId = 0;
+      for (let i = 0; i < lines.length; i++) {
+        let anchor: any;
+        try {
+          anchor = JSON.parse(lines[i]);
+        } catch (err: any) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Malformed anchor JSON at line ${i + 1}: ${err.message}. Fail-closed: manual intervention required.`);
         }
+
+        if (!anchor || typeof anchor.last_audit_id !== "number" || !anchor.event_hash_sha256) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Malformed anchor record structure at line ${i + 1}. Fail-closed.`);
+        }
+
+        if (anchor.last_audit_id <= prevAnchorId) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file contains duplicate or out-of-order audit_id ${anchor.last_audit_id} at line ${i + 1}. Fail-closed.`);
+        }
+
+        if (i >= rows.length) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file contains ${lines.length} records, exceeding database event count of ${rows.length} (database rollback/truncation detected). Fail-closed.`);
+        }
+
+        const matchingRow = rowByAuditId.get(anchor.last_audit_id);
+        if (!matchingRow) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor audit_id ${anchor.last_audit_id} does not exist in database (rollback detected). Fail-closed.`);
+        }
+
+        const expectedHash = matchingRow.event_hash_hmac_sha256 || matchingRow.event_hash_sha256;
+        if (anchor.event_hash_sha256 !== expectedHash) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor hash mismatch at audit_id ${anchor.last_audit_id}. Fail-closed.`);
+        }
+
+        // Check continuity: anchor i must match row i
+        if (anchor.last_audit_id !== rows[i].audit_id) {
+          throw new Error(`SAFE_RECONCILIATION_REFUSED: Anchor file has gap at line ${i + 1}: expected audit_id ${rows[i].audit_id}, found ${anchor.last_audit_id}. Fail-closed.`);
+        }
+
+        prevAnchorId = anchor.last_audit_id;
+        latestAnchorAuditId = anchor.last_audit_id;
       }
 
       // 3. STEP 3: Only recover strictly unanchored events (audit_id > latestAnchorAuditId)
