@@ -12,6 +12,10 @@ export class ConnectionManager {
     this.dbPath = dbPath;
   }
 
+  public getDbPath(): string {
+    return this.dbPath;
+  }
+
   public getConnection(): DatabaseConnection {
     const db = new DatabaseSync(this.dbPath);
     db.exec("PRAGMA busy_timeout = 5000;");
