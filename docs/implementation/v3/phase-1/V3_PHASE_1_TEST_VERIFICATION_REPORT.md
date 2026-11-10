@@ -16,6 +16,9 @@ This report records the complete test execution results for **AICO V3 Phase 1** 
 All verification commands executed from a clean state on the local engineering workstation and verified 100% passing across all legacy and newly introduced test suites.
 
 ### Summary Metrics
+- **Commit SHA:** `3740148ae548b3640efae9e5d6857a2ac3b7d91c`
+- **GitHub Actions CI (`main`):** Run ID `42841015316` (https://github.com/kietpro352010/AICO/actions/runs/42841015316) — `✓ SUCCESS` (1m 31s)
+- **GitHub Actions CI (`master`):** Run ID `42841015723` (https://github.com/kietpro352010/AICO/actions/runs/42841015723) — `✓ SUCCESS` (1m 22s)
 - **Total Test Suites:** 13
 - **Total Test Cases Executed:** 82
 - **Passed:** 82 (100%)
