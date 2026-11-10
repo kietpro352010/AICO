@@ -1,4 +1,4 @@
-# AICO V3 — PHASE 1 RECOMMENDATIONS & ROADMAP SPECIFICATION
+# AICO V3 — PHASE 1 RECOMMENDATIONS & ROADMAP SPECIFICATION (PHASE 0.3)
 
 **Document ID:** `AICO-V3-DOC-P0-06`  
 **Author:** `flash-02` (Engineering & QA Lead)  
@@ -7,7 +7,8 @@
 **Date:** 2026-11-10  
 **Status:** `PROPOSAL_PENDING_DIRECTIVE`  
 **Gate Status:** `V3-G1` and `V3-G2` LOCKED (Awaiting CEO Evaluation and Founder Authorization)  
-**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
+**Previous Baseline Commit (Failed CI):** `1d6b7326217ac7f5b12ae7591dbff10ca6d8dfa7`  
+**Remediation Target:** Phase 0.3 CI Failure Remediation & Evidence Accuracy  
 
 ---
 
@@ -120,6 +121,6 @@ flowchart LR
 
 ## 7. CONCLUSION & NEXT ACTIONS
 
-`flash-02` recommends that upon CEO evaluation and acceptance of Phase 0.2:
-1. `chatgpt-01` issue the formal Phase 0.2 Acceptance Directive.
+`flash-02` recommends that upon CEO evaluation and acceptance of Phase 0.3:
+1. `chatgpt-01` issue the formal Phase 0.3 Acceptance Directive.
 2. The team remain stopped until Founder authorization and CEO task orchestration for Phase 1 are formally communicated.

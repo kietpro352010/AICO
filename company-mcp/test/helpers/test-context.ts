@@ -24,8 +24,8 @@ export function createSandboxTestContext(prefix = "aico-test-"): TestContext {
   const anchorPath = path.join(tempDir, "audit_anchors.jsonl");
 
   const candidates = [
-    path.resolve(__dirname, "../../../backup/aico_v030_pre_v221.db"),
-    "D:/AI-COMPANY/backup/aico_v030_pre_v221.db"
+    path.resolve(__dirname, "../fixtures/aico_v030_pre_v221.db"),
+    path.resolve(__dirname, "../../../backup/aico_v030_pre_v221.db")
   ];
 
   let baseDb: string | null = null;

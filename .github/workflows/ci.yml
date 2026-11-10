@@ -28,6 +28,22 @@ jobs:
           cache: npm
           cache-dependency-path: company-mcp/package-lock.json
 
+      - name: Verify Baseline Test Fixture Integrity
+        shell: powershell
+        run: |
+          $fixturePath = "test\fixtures\aico_v030_pre_v221.db"
+          $expectedHash = "2F73A9602DBBC50DA68B323FA00D2D7808855DF7A21FAA3DBEE64EC3EFD1477A"
+          if (-not (Test-Path $fixturePath)) {
+            Write-Error "CRITICAL: Canonical baseline fixture '$fixturePath' is missing from repo checkout!"
+            exit 1
+          }
+          $actualHash = (Get-FileHash -Algorithm SHA256 $fixturePath).Hash
+          if ($actualHash -ne $expectedHash) {
+            Write-Error "CRITICAL: Fixture hash mismatch! Expected $expectedHash, got $actualHash"
+            exit 1
+          }
+          Write-Host "RESULT: PASS - Baseline fixture verified intact ($actualHash)"
+
       - name: Install Dependencies
         run: npm ci
 
@@ -37,7 +53,7 @@ jobs:
       - name: Execute Full Test Suite
         run: npm test
 
-      - name: Verify Production Database Immutability
+      - name: Production Database Status (Isolated CI Environment)
         shell: powershell
         run: |
           $dbPath = "..\data\aico.db"
@@ -45,10 +61,12 @@ jobs:
             $expectedHash = "17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416"
             $actualHash = (Get-FileHash -Algorithm SHA256 $dbPath).Hash
             if ($actualHash -ne $expectedHash) {
-              Write-Error "Production database data/aico.db was modified! Expected $expectedHash, got $actualHash"
+              Write-Error "FAIL: Production database data/aico.db was modified! Expected $expectedHash, got $actualHash"
               exit 1
             }
-            Write-Host "Production database data/aico.db SHA-256 verified untouched: $actualHash"
+            Write-Host "RESULT: PASS - Production database verified untouched: $actualHash"
           } else {
-            Write-Host "data/aico.db not present; skipping hash check."
+            Write-Host "RESULT: SKIPPED - Production database data/aico.db is NOT present in clean CI checkout."
+            Write-Host "  -> Security boundary: Production database is deliberately excluded from git repository."
+            Write-Host "  -> Status: SKIPPED in cloud CI. Production DB immutability is verified locally on Founder workstation."
           }

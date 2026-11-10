@@ -1,4 +1,4 @@
-# AICO V3 — SECURITY AND DATABASE SAFETY SPECIFICATION
+# AICO V3 — SECURITY AND DATABASE SAFETY SPECIFICATION (PHASE 0.3)
 
 **Document ID:** `AICO-V3-DOC-P0-04`  
 **Author:** `flash-02` (Engineering & QA Lead)  
@@ -6,8 +6,9 @@
 **Authority:** Founder  
 **Date:** 2026-11-10  
 **Status:** `READY_FOR_CEO_EVALUATION`  
-**Security Baseline:** `SEC-P0-01` through `SEC-P0-03` remediated and verified  
-**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
+**Security Baseline:** `SEC-P0-01` through `SEC-P0-04` remediated and verified  
+**Previous Baseline Commit (Failed CI):** `1d6b7326217ac7f5b12ae7591dbff10ca6d8dfa7`  
+**Remediation Target:** Phase 0.3 CI Failure Remediation & Evidence Accuracy  
 
 ---
 
@@ -144,15 +145,28 @@ To prevent replay and cross-task authorization hijacking:
 
 The central production database is located at `D:\AI-COMPANY\data\aico.db`.
 
-### 7.1 Immutability Evidence
+### 7.1 Immutability Evidence (Local Workstation)
 - **Baseline SHA-256 Hash:**  
   `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`
 - **Post-Verification SHA-256 Hash:**  
   `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`
 - **State Change:** **0 bytes modified. Exact hash match confirmed.**
 
-### 7.2 Sandbox Isolation Protocol
-- All Phase 0, Phase 0.1, and security stabilization tests operate exclusively on ephemeral, in-memory databases or sandboxed SQLite instances (`data/sandbox.db`, `data/test_*.db`).
+### 7.2 Cloud CI Isolation & Production DB Exclusion
+- The production database `data/aico.db` contains company runtime state and credentials, and is strictly excluded from version control via `.gitignore`.
+- In GitHub Actions cloud CI, `data/aico.db` is deliberately absent; CI logs report `RESULT: SKIPPED (production DB not committed to repository)`.
+- Cloud CI must never claim production database immutability when the file is absent. Production immutability is proven strictly via verified local execution on the Founder workstation.
+
+### 7.3 Canonical Test Fixture Provenance & Sanitization
+- Clean checkouts and cloud CI initialize sandboxed tests from the tracked canonical baseline fixture:
+  `company-mcp/test/fixtures/aico_v030_pre_v221.db` (mirrored at `backup/aico_v030_pre_v221.db`).
+- **Fixture SHA-256 Hash:**  
+  `2F73A9602DBBC50DA68B323FA00D2D7808855DF7A21FAA3DBEE64EC3EFD1477A` (Exact 45,056 bytes).
+- **Sanitization Attestation:** Contains ONLY the baseline public manifest tables (`agents`, `quota_pools`, empty `agent_usage_events`, and `sqlite_sequence`). It contains zero production secrets, tokens, customer data, or historical audit logs.
+- Automated CI enforces a pre-test hash verification step before test execution.
+
+### 7.4 Sandbox Isolation Protocol
+- All Phase 0, Phase 0.1, Phase 0.2, and Phase 0.3 tests operate exclusively on ephemeral, in-memory databases or sandboxed SQLite instances (`company-mcp/test/sandbox.db`, ephemeral temporary files).
 - No DDL statements, migrations, or schema mutations were executed against `data/aico.db`.
 - Gate `V3-G3` (Production Database Cutover) remains **LOCKED**. Any future migration of `data/aico.db` requires:
   1. An explicit Founder directive.

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { createSandboxTestContext } from "./helpers/test-context.js";
 import { ConnectionManager } from "../src/db/connection-manager.js";
 import { GitMediationService } from "../src/services/git-mediation-service.js";
@@ -144,8 +145,9 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
     assert.equal(verifyAfterTamper.brokenAtEventId, ev1.event_id || ev1.audit_id);
 
     // Assert that repo backup directory was not contaminated
+    const repoBackupAnchor = path.resolve(process.cwd(), "../backup/audit_anchors.jsonl");
     assert.equal(
-      fs.existsSync("D:/AI-COMPANY/backup/audit_anchors.jsonl"),
+      fs.existsSync(repoBackupAnchor),
       false,
       "Test execution must never contaminate production backup directory"
     );

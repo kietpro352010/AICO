@@ -1583,7 +1583,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
     // Part 6: Git Working Tree Content & History Secret Scanning
     // ------------------------------------------------------------------------
     await t.test("6.1 Full divergence and working tree secret scanning", () => {
-      const gitService = new GitMediationService("D:/AI-COMPANY", "D:/AICO-WORKTREES/security-stabilization");
+      const gitService = new GitMediationService(path.resolve(process.cwd(), ".."), path.join(os.tmpdir(), "aico-worktrees"));
       const tempRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "aico-git-test-"));
 
       try {

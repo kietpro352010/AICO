@@ -1,11 +1,12 @@
-# AICO V3 — BASELINE DEFECT REGISTER (PHASE 0, PHASE 0.1 & PHASE 0.2)
+# AICO V3 — BASELINE DEFECT REGISTER (PHASE 0, PHASE 0.1, PHASE 0.2 & PHASE 0.3)
 
 **Document ID:** `AICO-V3-DOC-P0-03`  
 **Author:** `flash-02` (Engineering & QA Lead)  
 **Reviewer:** `chatgpt-01` (CEO & Main Orchestrator)  
 **Date:** 2026-11-10  
 **Status:** `ALL_DEFECTS_RESOLVED`  
-**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
+**Previous Baseline Commit (Failed CI):** `1d6b7326217ac7f5b12ae7591dbff10ca6d8dfa7`  
+**Remediation Target:** Phase 0.3 CI Failure Remediation & Evidence Accuracy  
 
 ---
 
@@ -27,6 +28,7 @@
 | **`DEF-P0-B`** | P0 | `ObservabilityQuotaService` | **Empty DB Swallowed Verification Error:** In `verifyAuditChainIntegrity()`, when the DB table had 0 rows, anchor file read errors were caught and swallowed, incorrectly returning `valid: true`. Also ignored historical `sqlite_sequence`. | Reading errors now fail closed returning `UNREADABLE_AUDIT_ANCHOR_FILE`. Non-zero `sqlite_sequence` on empty table returns `TAIL_TRUNCATION_DETECTED`. | `test/t16-security-stabilization.test.ts` (Test 5.7 Scenarios 5 & 6) | **CLOSED** |
 | **`DEF-P0-C`** | P0 | `ObservabilityQuotaService` | **Empty DB Reconciliation Bypass:** When `rows.length === 0`, `reconcileUnanchoredEvents()` immediately returned success without checking if historical anchors or SQLite sequence existed, masking database wipes. | Inspects both external anchor file and `sqlite_sequence`. If historical evidence remains while table is empty, throws `SAFE_RECONCILIATION_REFUSED`. | `test/t16-security-stabilization.test.ts` (Test 5.7 Scenarios 4 & 6) | **CLOSED** |
 | **`DEF-P0-03`** | P0 | `ObservabilityQuotaService` | **Unsafe Tail Reconstruction (Phase 0.2):** `reconcileUnanchoredEvents()` allowed automatically appending missing tail anchors if the DB HMAC chain was valid, unable to distinguish a valid crash from deliberate tail deletion. | Completely eliminated automated tail reconstruction. Lacking independent recovery evidence, any anchor deficit (`lines.length < rows.length`) fails closed with `SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW`. | `test/t16-security-stabilization.test.ts` (Test 5.2, Test 5.7 Scenarios 1, 2, 10) | **CLOSED** |
+| **`DEF-P0-04`** | P0 | CI / Test Infrastructure | **CI Test Fixture Missing & Machine Fallback (Phase 0.3):** Canonical test database fixture `aico_v030_pre_v221.db` was ignored by `.gitignore` (`*.db`), causing GitHub Actions clean checkouts to fail with `BASELINE_FIXTURE_MISSING`. `test-context.ts` used a hardcoded machine fallback `D:/AI-COMPANY/...` that hid the missing tracked file on the local workstation. | Whitelisted sanitized fixture `company-mcp/test/fixtures/aico_v030_pre_v221.db` and `backup/aico_v030_pre_v221.db` (SHA-256 `2F73A960...`), removed all machine-specific paths from tests and migrations, and added CI pre-test fixture hash check. | GitHub Actions CI workflow + `scripts/verify-all.ps1` Step 2 + `company-mcp/test/fixtures/README.md` | **CLOSED** |
 | **`DEF-P1-01`** | P1 | `ProjectTaskService` | In `reviewTask()`, callers could pass `reviewerId` string and omit `ctx`, prompting the service to fabricate an `effectiveCtx` with `authenticated: true`, bypassing real authentication. | Removed `reviewerId` fallback and `effectiveCtx`. Strictly mandates `params.ctx && ctx.authenticated === true` with valid `principalId` and `principalType`. | `test/t16-security-stabilization.test.ts` (Tests 3.2, 3.3, 3.4) | **CLOSED** |
 | **`DEF-P1-02`** | P1 | `ApprovalService` | In `decideApproval()`, context validation did not check `ctx.authenticated === true`, accepting raw unauthenticated principal contexts. | Mandates `ctx.authenticated === true`. Enforces human `founder-01` for Founder-tier and authenticated `founder-01`/`flash-01` for Technical-tier. | `test/t16-security-stabilization.test.ts` (Test 2.3) | **CLOSED** |
 | **`DEF-P1-03`** | P1 | `ProjectTaskService` | `verifyAndConsumeTaskApproval()` did not supply `expectedTargetResource` or `expectedTargetAgentId` to `consumeApproval()`, allowing an approval intended for one task/agent to be reused on another. | Passes `expectedTargetResource = task:${task.task_id}` and `expectedTargetAgentId = task.assigned_agent_id` into `consumeApproval()`. | `test/t16-security-stabilization.test.ts` (Tests 2.4, 3.5) | **CLOSED** |
@@ -44,4 +46,4 @@
 - **Open P2 Defects:** **0**
 - **Total Open Defects:** **0**
 
-All 13 logged defects across Phase 0, Phase 0.1, and Phase 0.2 have been resolved with reproducible regression tests permanently integrated into the automated test suite.
+All 14 logged defects across Phase 0, Phase 0.1, Phase 0.2, and Phase 0.3 have been resolved with reproducible regression tests permanently integrated into the automated test suite.

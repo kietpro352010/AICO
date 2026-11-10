@@ -25,16 +25,10 @@ export const migrationV050Schema: Migration = {
   checksum: computeSchemaChecksum(),
   up: (db: DatabaseSync) => {
     const localSql = path.join(__dirname, "schema-v050-rc2.sql");
-    const fallbackSql = "D:/AICO_V2_2_1_IMPLEMENTATION_PACK/AICO_DATABASE_SCHEMA_V0.5.0_RC2.sql";
-
-    let sqlContent = "";
-    if (fs.existsSync(localSql)) {
-      sqlContent = fs.readFileSync(localSql, "utf8");
-    } else if (fs.existsSync(fallbackSql)) {
-      sqlContent = fs.readFileSync(fallbackSql, "utf8");
-    } else {
+    if (!fs.existsSync(localSql)) {
       throw new Error("Canonical schema file schema-v050-rc2.sql not found");
     }
+    const sqlContent = fs.readFileSync(localSql, "utf8");
 
     db.exec(sqlContent);
 

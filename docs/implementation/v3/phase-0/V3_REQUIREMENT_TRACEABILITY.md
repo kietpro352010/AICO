@@ -1,4 +1,4 @@
-# AICO V3 — REQUIREMENT TRACEABILITY MATRIX
+# AICO V3 — REQUIREMENT TRACEABILITY MATRIX (PHASE 0.3)
 
 **Document ID:** `AICO-V3-DOC-P0-02`  
 **Author:** `flash-02` (Engineering & QA Lead)  
@@ -6,7 +6,8 @@
 **Authority:** Founder  
 **Date:** 2026-11-10  
 **Status:** `READY_FOR_CEO_EVALUATION`  
-**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
+**Previous Baseline Commit (Failed CI):** `1d6b7326217ac7f5b12ae7591dbff10ca6d8dfa7`  
+**Remediation Target:** Phase 0.3 CI Failure Remediation & Evidence Accuracy  
 
 ---
 

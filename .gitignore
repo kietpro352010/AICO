@@ -23,8 +23,14 @@ node_modules/
 data/
 *.sqlite-journal
 
-# Database backups & snapshots
-backup/
+# Whitelist canonical sanitized test fixtures (NO production data)
+!company-mcp/test/fixtures/aico_v030_pre_v221.db
+!backup/aico_v030_pre_v221.db
+
+# Database backups & snapshots (exclude whitelisted canonical baseline fixture)
+backup/*
+!backup/aico_v030_pre_v221.db
+company-mcp/backup/
 *.backup
 *.bak
 

@@ -454,8 +454,9 @@ test("T07: End-to-End Integration, Fail-Closed RBAC/ABAC & Negative Security Tes
     assert.ok(chainIntegrity.totalEvents >= 6, "All mutating MCP operations must append audit events");
 
     // Verify tests never contaminated repo backup directory
+    const repoBackupAnchor = path.resolve(process.cwd(), "../backup/audit_anchors.jsonl");
     assert.equal(
-      fs.existsSync("D:/AI-COMPANY/backup/audit_anchors.jsonl"),
+      fs.existsSync(repoBackupAnchor),
       false,
       "Test execution must never contaminate production backup directory"
     );
