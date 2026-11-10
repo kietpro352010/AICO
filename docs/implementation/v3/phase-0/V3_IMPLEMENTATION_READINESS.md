@@ -51,6 +51,7 @@ This readiness report provides the objective evidence base demonstrating that:
 | `SEC-P0-A` | P0 | `ObservabilityQuotaService` | **Silent Anchor Reconstruction:** Refuses to silently recreate missing anchor file when DB has records. Fails closed with `SAFE_RECONCILIATION_REFUSED`. | `VERIFIED_PASS` (Test 5.7 Scenarios 1 & 2) |
 | `SEC-P0-B` | P0 | `ObservabilityQuotaService` | **Empty DB Verification Fail-Closed:** Unreadable anchor file throws `UNREADABLE_AUDIT_ANCHOR_FILE`. Empty DB with historical `sqlite_sequence` detects `TAIL_TRUNCATION_DETECTED`. | `VERIFIED_PASS` (Test 5.7 Scenarios 5 & 6) |
 | `SEC-P0-C` | P0 | `ObservabilityQuotaService` | **Empty DB Reconciliation Fail-Closed:** Reconcile on empty DB with existing anchor records or historical sequence throws `SAFE_RECONCILIATION_REFUSED`. | `VERIFIED_PASS` (Test 5.7 Scenarios 4 & 6) |
+| `SEC-P0-03` | P0 | `ObservabilityQuotaService` | **Unsafe Tail Reconstruction Elimination (Phase 0.2):** Reconcile fails closed on any anchor deficit (`lines.length < rows.length`) with `SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW`. | `VERIFIED_PASS` (Test 5.2, Test 5.7 Scenarios 1, 2, 10) |
 
 ---
 

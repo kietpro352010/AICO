@@ -72,15 +72,16 @@ flowchart TD
     VerifyHMAC -- Valid --> ParseAnchors{Parse Anchor Records}
     
     ParseAnchors -- Malformed/Surplus --> RefuseCorrupt[FAIL-CLOSED: SAFE_RECONCILIATION_REFUSED\nMalformed or excess anchor detected]
-    ParseAnchors -- Valid Prefix --> AppendTail[Append Missing Anchors from Tail]
-    AppendTail --> Complete[Reconciliation Complete]
+    ParseAnchors -- Anchor Lines < DB Rows --> RefuseTail[FAIL-CLOSED: SAFE_RECONCILIATION_REFUSED\nANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW\nAutomated tail reconstruction prohibited]
+    ParseAnchors -- Exact Parity (Lines = Rows) --> InSync[Return unanchoredCount: 0, latestAnchorAuditId: N]
 ```
 
-### Safety Rules Enforced:
-1. **No Silent Reconstruction from Scratch:** If the anchor file is missing or 0 bytes while the database contains audit events, automated reconstruction is explicitly refused (`SAFE_RECONCILIATION_REFUSED`). Manual intervention and cryptographic forensics are required.
-2. **Empty DB Tamper Detection:** If the database `audit_events` table contains 0 rows, the engine inspects `sqlite_sequence` and the external anchor file. If `sqlite_sequence.seq > 0` or anchor lines exist, the system detects a table wipe/truncation attack and refuses reconciliation.
-3. **HMAC Pre-Condition:** No anchor reconciliation is permitted without prior verification of the database HMAC chain from genesis.
-4. **Zero State Alteration on Error:** If any exception or discrepancy occurs during reconciliation, no records are written to disk, and the database state remains 100% unaltered.
+### Safety Rules Enforced (Phase 0.2 Hardened):
+1. **Elimination of Unsafe Tail Reconstruction (P0.1 / P0.2):** Valid DB HMAC chain alone is NOT sufficient proof to reconstruct missing trailing anchor records. If `lines.length < rows.length`, automated reconstruction is strictly prohibited. The system fails closed with `SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW` requiring manual Founder investigation.
+2. **No Silent Reconstruction from Scratch:** If the anchor file is missing or 0 bytes while the database contains audit events, automated reconstruction is explicitly refused (`SAFE_RECONCILIATION_REFUSED`).
+3. **Empty DB Tamper Detection:** If the database `audit_events` table contains 0 rows, the engine inspects `sqlite_sequence` and the external anchor file. If `sqlite_sequence.seq > 0` or anchor lines exist, the system detects a table wipe/truncation attack and refuses reconciliation.
+4. **HMAC Pre-Condition:** No anchor reconciliation is permitted without prior verification of the database HMAC chain from genesis.
+5. **Zero State Alteration on Error:** If any exception or discrepancy occurs during reconciliation, no records are written to disk, and the database state remains 100% unaltered.
 
 ---
 

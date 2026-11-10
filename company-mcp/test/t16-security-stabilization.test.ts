@@ -1031,14 +1031,24 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       assert.equal(unanchoredCheck.valid, false, "Must detect that DB tail is ahead of latest anchor");
       assert.match(String(unanchoredCheck.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT|UNANCHORED_DB_EVENTS_DETECTED/);
 
-      // 4. RECONCILIATION: Reconcile unanchored events to catch up anchor log
-      const reconcileRes = drillObs.reconcileUnanchoredEvents();
-      assert.equal(reconcileRes.reconciledCount, 1);
-      assert.equal(reconcileRes.latestAnchorAuditId, ev3.audit_id);
+      // 4. In Phase 0.2: Safe reconciliation MUST REFUSE automatic tail recovery without independent evidence!
+      const dbCountBeforeRec = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+      const anchorContentBeforeRec = fs.readFileSync(freshAnchorPath, "utf8");
 
-      // 5. Verification passes after reconciliation
-      const reconciledCheck = drillObs.verifyAuditChainIntegrity();
-      assert.equal(reconciledCheck.valid, true);
+      assert.throws(
+        () => drillObs.reconcileUnanchoredEvents(),
+        /SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW/
+      );
+
+      // Invariants: 0 DB rows modified, 0 anchor bytes modified, no silent reconstruction
+      const dbCountAfterRec = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+      assert.equal(dbCountAfterRec, dbCountBeforeRec, "0 DB rows modified");
+      assert.equal(fs.readFileSync(freshAnchorPath, "utf8"), anchorContentBeforeRec, "0 anchor bytes modified");
+
+      // Verification remains fail-closed
+      const stillFailingCheck = drillObs.verifyAuditChainIntegrity();
+      assert.equal(stillFailingCheck.valid, false, "Integrity verification must remain fail-closed without independent evidence");
+      assert.match(String(stillFailingCheck.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT/);
 
       // Clean up temp anchor file
       if (fs.existsSync(freshAnchorPath)) {
@@ -1218,457 +1228,354 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
     });
 
     // ------------------------------------------------------------------------
-    // Part 5.7: Phase 0.1 Required Regression Tests (Scenarios 1-10)
+    // Part 5.7: Phase 0.2 Required Regression Tests (Scenarios 1-10)
     // ------------------------------------------------------------------------
-    await t.test("5.7 Phase 0.1 Required Regression Tests (Scenarios 1-10)", async () => {
+    await t.test("5.7 Phase 0.2 Required Regression Tests (Scenarios 1-10)", async () => {
       const hmacKey = "test_hmac_secret_key_v221_32bytes_long";
 
-      // 1. Non-empty DB + missing anchor file
-      {
-        const nonExistentAnchor = path.join(os.tmpdir(), `aico-missing-anchor-${Date.now()}-${Math.random()}.jsonl`);
-        if (fs.existsSync(nonExistentAnchor)) fs.unlinkSync(nonExistentAnchor);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, nonExistentAnchor);
-
+      // Helper to populate N valid audit events
+      const populateAuditEvents = (obs: ObservabilityQuotaService, count: number, prefix: string) => {
         conn.withWriteTransaction((db: any) => {
           db.exec("DELETE FROM audit_events;");
+          db.prepare("DELETE FROM sqlite_sequence WHERE name = 'audit_events'").run();
         });
-
-        // Insert 3 events
-        for (let i = 1; i <= 3; i++) {
-          obs.appendAuditEvent({
+        const events: any[] = [];
+        for (let i = 1; i <= count; i++) {
+          const ev = obs.appendAuditEvent({
             ctx: flash1Ctx,
             sourceGateway: "local",
             principalType: "agent",
             principalId: "flash-01",
             credentialId: "cred_01",
             eventCategory: "task",
-            actionName: `scen1_ev_${i}`,
+            actionName: `${prefix}_ev_${i}`,
             targetResource: `res:${i}`,
             outcome: "succeeded",
             errorCode: null,
             sanitizedDetails: { step: i }
           });
+          events.push(ev);
         }
-        // Force delete anchor file to simulate completely missing anchor file
-        if (fs.existsSync(nonExistentAnchor)) fs.unlinkSync(nonExistentAnchor);
+        return events;
+      };
 
-        const dbCountBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-        assert.equal(dbCountBefore, 3);
-        assert.equal(fs.existsSync(nonExistentAnchor), false);
+      // Scenario 1: DB has 3 events, anchor has 2 complete records -> recovery refused (Founder review required)
+      {
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen1-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 3, "scen1");
 
-        // Verification must fail closed with MISSING_AUDIT_ANCHOR_FILE
-        const vResult = obs.verifyAuditChainIntegrity();
-        assert.equal(vResult.valid, false);
-        assert.equal(vResult.brokenAtEventId, "MISSING_AUDIT_ANCHOR_FILE");
+        // Keep only first 2 complete anchor records
+        const allLines = fs.readFileSync(anchorPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
+        assert.equal(allLines.length, 3);
+        fs.writeFileSync(anchorPath, allLines[0] + "\n" + allLines[1] + "\n", "utf8");
 
-        // Reconciliation must fail closed and refuse to reconstruct
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
+
+        // Verification must detect deficit
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+        assert.match(String(vRes.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT/);
+
+        // Reconcile must refuse tail reconstruction and require Founder review
+        assert.throws(
+          () => obs.reconcileUnanchoredEvents(),
+          /SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW/
+        );
+
+        // Invariants
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
+        assert.equal(obs.verifyAuditChainIntegrity().valid, false, "Verification must remain fail-closed");
+
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
+      }
+
+      // Scenario 2: DB has 3 events, anchor only has 1 complete record -> recovery refused (Founder review required)
+      {
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen2-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 3, "scen2");
+
+        // Keep only 1st anchor record
+        const allLines = fs.readFileSync(anchorPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
+        assert.equal(allLines.length, 3);
+        fs.writeFileSync(anchorPath, allLines[0] + "\n", "utf8");
+
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
+
+        // Verification fails closed
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+        assert.match(String(vRes.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT/);
+
+        // Reconcile refused
+        assert.throws(
+          () => obs.reconcileUnanchoredEvents(),
+          /SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW/
+        );
+
+        // Invariants
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
+        assert.equal(obs.verifyAuditChainIntegrity().valid, false, "Must remain invalid");
+
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
+      }
+
+      // Scenario 3: DB has 3 events, anchor file completely missing / deleted -> recovery refused
+      {
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen3-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 3, "scen3");
+
+        // Delete entire anchor file
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
+        assert.equal(fs.existsSync(anchorPath), false);
+
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+
+        // Verification fails closed
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+        assert.equal(vRes.brokenAtEventId, "MISSING_AUDIT_ANCHOR_FILE");
+
+        // Reconcile refused
         assert.throws(
           () => obs.reconcileUnanchoredEvents(),
           /SAFE_RECONCILIATION_REFUSED: Anchor file is completely missing while database contains 3 audit event\(s\)/
         );
 
-        // Invariant assertions
-        const dbCountAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-        assert.equal(dbCountAfter, dbCountBefore, "Database rows must not be modified");
-        assert.equal(fs.existsSync(nonExistentAnchor), false, "Missing anchor file must not be silently recreated");
+        // Invariants
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.existsSync(anchorPath), false, "Missing anchor file must not be silently recreated");
       }
 
-      // 2. Non-empty DB + deleted entire anchor file
+      // Scenario 4: DB has 3 events, anchor truncated midway through JSON record -> recovery refused
       {
-        const deletedAnchorPath = path.join(os.tmpdir(), `aico-deleted-anchor-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, deletedAnchorPath);
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen4-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 3, "scen4");
 
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-        });
+        const allLines = fs.readFileSync(anchorPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
+        const corruptedTail = allLines[0] + "\n" + allLines[1] + "\n{\"last_audit_id\": 3, \"event_hash_sha256\n";
+        fs.writeFileSync(anchorPath, corruptedTail, "utf8");
 
-        for (let i = 1; i <= 3; i++) {
-          obs.appendAuditEvent({
-            ctx: flash1Ctx,
-            sourceGateway: "local",
-            principalType: "agent",
-            principalId: "flash-01",
-            credentialId: "cred_01",
-            eventCategory: "task",
-            actionName: `scen2_ev_${i}`,
-            targetResource: `res:${i}`,
-            outcome: "succeeded",
-            errorCode: null,
-            sanitizedDetails: { step: i }
-          });
-        }
-        assert.equal(obs.verifyAuditChainIntegrity().valid, true);
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
 
-        // Tamper: Delete entire anchor file
-        fs.unlinkSync(deletedAnchorPath);
-        assert.equal(fs.existsSync(deletedAnchorPath), false);
+        // Verification fails closed
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+        assert.match(String(vRes.brokenAtEventId), /MALFORMED_ANCHOR_RECORD/);
 
-        const dbCountBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-
-        // Verify fails closed
-        const vResult = obs.verifyAuditChainIntegrity();
-        assert.equal(vResult.valid, false);
-        assert.equal(vResult.brokenAtEventId, "MISSING_AUDIT_ANCHOR_FILE");
-
-        // Reconcile fails closed
-        assert.throws(
-          () => obs.reconcileUnanchoredEvents(),
-          /SAFE_RECONCILIATION_REFUSED: Anchor file is completely missing/
-        );
-
-        // Invariant assertions
-        const dbCountAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-        assert.equal(dbCountAfter, dbCountBefore, "0 DB rows modified");
-        assert.equal(fs.existsSync(deletedAnchorPath), false, "Anchor file must not be silently recreated on deletion");
-      }
-
-      // 3. Non-empty DB + truncated anchor tail (malformed incomplete JSON at tail)
-      {
-        const truncTailPath = path.join(os.tmpdir(), `aico-trunc-tail-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, truncTailPath);
-
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-        });
-
-        for (let i = 1; i <= 3; i++) {
-          obs.appendAuditEvent({
-            ctx: flash1Ctx,
-            sourceGateway: "local",
-            principalType: "agent",
-            principalId: "flash-01",
-            credentialId: "cred_01",
-            eventCategory: "task",
-            actionName: `scen3_ev_${i}`,
-            targetResource: `res:${i}`,
-            outcome: "succeeded",
-            errorCode: null,
-            sanitizedDetails: { step: i }
-          });
-        }
-
-        const validLines = fs.readFileSync(truncTailPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
-        // Truncate tail into an incomplete JSON fragment
-        const corruptedTail = validLines[0] + "\n" + validLines[1] + "\n{\"last_audit_id\": 3, \"event_hash\n";
-        fs.writeFileSync(truncTailPath, corruptedTail, "utf8");
-
-        const dbCountBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-        const anchorContentBefore = fs.readFileSync(truncTailPath, "utf8");
-
-        // Verify fails closed with MALFORMED_ANCHOR_RECORD
-        const vResult = obs.verifyAuditChainIntegrity();
-        assert.equal(vResult.valid, false);
-        assert.match(String(vResult.brokenAtEventId), /MALFORMED_ANCHOR_RECORD/);
-
-        // Reconcile fails closed
+        // Reconcile refused
         assert.throws(
           () => obs.reconcileUnanchoredEvents(),
           /SAFE_RECONCILIATION_REFUSED: Malformed anchor JSON/
         );
 
-        // Invariant assertions
-        const dbCountAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-        assert.equal(dbCountAfter, dbCountBefore, "0 DB rows modified");
-        assert.equal(fs.readFileSync(truncTailPath, "utf8"), anchorContentBefore, "0 anchor bytes modified");
+        // Invariants
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
 
-        if (fs.existsSync(truncTailPath)) fs.unlinkSync(truncTailPath);
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
       }
 
-      // 4. Empty DB + existing non-empty anchor file
+      // Scenario 5: DB has 3 events, anchor last line content modified (hash mismatch) -> recovery refused
       {
-        const emptyDbAnchorPath = path.join(os.tmpdir(), `aico-empty-db-anchor-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, emptyDbAnchorPath);
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen5-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 3, "scen5");
 
+        const allLines = fs.readFileSync(anchorPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
+        const alteredLine3 = JSON.stringify({
+          last_audit_id: 3,
+          event_hash_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+          recorded_at: new Date().toISOString()
+        });
+        fs.writeFileSync(anchorPath, allLines[0] + "\n" + allLines[1] + "\n" + alteredLine3 + "\n", "utf8");
+
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
+
+        // Verification fails closed
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+        assert.match(String(vRes.brokenAtEventId), /ANCHOR_HASH_MISMATCH/);
+
+        // Reconcile refused
+        assert.throws(
+          () => obs.reconcileUnanchoredEvents(),
+          /SAFE_RECONCILIATION_REFUSED: Anchor hash mismatch/
+        );
+
+        // Invariants
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
+
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
+      }
+
+      // Scenario 6: DB has 3 events, anchor valid & complete -> verification succeeds, reconcile reports 0 unanchored
+      {
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen6-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 3, "scen6");
+
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
+
+        // Verification passes 100%
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, true);
+        assert.equal(vRes.totalEvents, 3);
+
+        // Reconcile returns 0 reconciled (already in sync)
+        const recResult = obs.reconcileUnanchoredEvents();
+        assert.equal(recResult.reconciledCount, 0);
+        assert.equal(recResult.latestAnchorAuditId, 3);
+
+        // Invariants
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
+
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
+      }
+
+      // Scenario 7: DB has 3 events, HMAC tampered in DB -> recovery refused
+      {
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen7-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 3, "scen7");
+
+        // Tamper DB row 2
+        conn.withWriteTransaction((db: any) => {
+          db.prepare("UPDATE audit_events SET target_resource = 'tampered:resource' WHERE action_name = 'scen7_ev_2'").run();
+        });
+
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
+
+        // Verification fails closed
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+
+        // Reconcile refused
+        assert.throws(
+          () => obs.reconcileUnanchoredEvents(),
+          /SAFE_RECONCILIATION_REFUSED: Database HMAC/
+        );
+
+        // Invariants
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
+
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
+      }
+
+      // Scenario 8: DB empty, anchor has historical records -> fail-closed
+      {
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen8-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 2, "scen8");
+
+        // Wipe DB rows while leaving anchor file intact
         conn.withWriteTransaction((db: any) => {
           db.exec("DELETE FROM audit_events;");
         });
 
-        for (let i = 1; i <= 2; i++) {
-          obs.appendAuditEvent({
-            ctx: flash1Ctx,
-            sourceGateway: "local",
-            principalType: "agent",
-            principalId: "flash-01",
-            credentialId: "cred_01",
-            eventCategory: "task",
-            actionName: `scen4_ev_${i}`,
-            targetResource: `res:${i}`,
-            outcome: "succeeded",
-            errorCode: null,
-            sanitizedDetails: { step: i }
-          });
-        }
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
 
-        // Empty the DB table while leaving anchor file with 2 records
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-        });
+        // Verification fails closed
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+        assert.equal(vRes.brokenAtEventId, "AUDIT_LOG_MISSING_OR_TRUNCATED");
 
-        const dbCountBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-        assert.equal(dbCountBefore, 0);
-        const anchorContentBefore = fs.readFileSync(emptyDbAnchorPath, "utf8");
-
-        // Verify fails closed with AUDIT_LOG_MISSING_OR_TRUNCATED
-        const vResult = obs.verifyAuditChainIntegrity();
-        assert.equal(vResult.valid, false);
-        assert.equal(vResult.brokenAtEventId, "AUDIT_LOG_MISSING_OR_TRUNCATED");
-
-        // Reconcile fails closed
+        // Reconcile refused
         assert.throws(
           () => obs.reconcileUnanchoredEvents(),
           /SAFE_RECONCILIATION_REFUSED: Database has 0 events but historical anchor file contains/
         );
 
         // Invariants
-        const dbCountAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
-        assert.equal(dbCountAfter, 0, "0 DB rows modified");
-        assert.equal(fs.readFileSync(emptyDbAnchorPath, "utf8"), anchorContentBefore, "0 anchor bytes modified");
+        const dbCount = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbCount, 0, "DB remains empty");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
 
-        if (fs.existsSync(emptyDbAnchorPath)) fs.unlinkSync(emptyDbAnchorPath);
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
       }
 
-      // 5. Empty DB + unreadable anchor file
+      // Scenario 9: DB empty, sqlite_sequence has historical records -> fail-closed
       {
-        const unreadableAnchorDir = path.join(os.tmpdir(), `aico-unreadable-anchor-${Date.now()}-${Math.random()}.jsonl`);
-        // Creating a directory with the anchorFilePath makes fs.readFileSync throw EISDIR
-        if (fs.existsSync(unreadableAnchorDir)) fs.rmdirSync(unreadableAnchorDir);
-        fs.mkdirSync(unreadableAnchorDir);
-
-        const obs = new ObservabilityQuotaService(conn, hmacKey, unreadableAnchorDir);
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen9-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
 
         conn.withWriteTransaction((db: any) => {
           db.exec("DELETE FROM audit_events;");
-        });
-
-        // Verify fails closed with UNREADABLE_AUDIT_ANCHOR_FILE
-        const vResult = obs.verifyAuditChainIntegrity();
-        assert.equal(vResult.valid, false);
-        assert.match(String(vResult.brokenAtEventId), /UNREADABLE_AUDIT_ANCHOR_FILE/);
-
-        // Reconcile fails closed
-        assert.throws(
-          () => obs.reconcileUnanchoredEvents(),
-          /SAFE_RECONCILIATION_REFUSED: Unreadable anchor file/
-        );
-
-        if (fs.existsSync(unreadableAnchorDir)) fs.rmdirSync(unreadableAnchorDir);
-      }
-
-      // 6. Empty DB + non-zero sqlite_sequence
-      {
-        const seqAnchorPath = path.join(os.tmpdir(), `aico-seq-trunc-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, seqAnchorPath);
-
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-          // Simulate historical records in sqlite_sequence
           db.prepare("INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES ('audit_events', 99)").run();
         });
 
-        // Verify fails closed with TAIL_TRUNCATION_DETECTED
-        const vResult = obs.verifyAuditChainIntegrity();
-        assert.equal(vResult.valid, false);
-        assert.match(String(vResult.brokenAtEventId), /TAIL_TRUNCATION_DETECTED: sqlite_sequence indicates historical audit events existed/);
+        // Verification fails closed
+        const vRes = obs.verifyAuditChainIntegrity();
+        assert.equal(vRes.valid, false);
+        assert.match(String(vRes.brokenAtEventId), /TAIL_TRUNCATION_DETECTED: sqlite_sequence indicates historical audit events existed/);
 
-        // Reconcile fails closed
+        // Reconcile refused
         assert.throws(
           () => obs.reconcileUnanchoredEvents(),
           /SAFE_RECONCILIATION_REFUSED: Database has 0 events but sqlite_sequence indicates historical records existed/
         );
 
-        // Cleanup sqlite_sequence to not contaminate other tests
+        // Cleanup sqlite_sequence to not leak into subsequent tests
         conn.withWriteTransaction((db: any) => {
           db.prepare("DELETE FROM sqlite_sequence WHERE name = 'audit_events'").run();
         });
 
-        if (fs.existsSync(seqAnchorPath)) fs.unlinkSync(seqAnchorPath);
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
       }
 
-      // 7. Valid DB + valid anchor file + legitimate pending anchor recovery
+      // Scenario 10: Recovery without independent evidence -> explicitly requires Founder review
       {
-        const legRecPath = path.join(os.tmpdir(), `aico-leg-rec-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, legRecPath);
+        const anchorPath = path.join(os.tmpdir(), `aico-p02-scen10-${Date.now()}-${Math.random()}.jsonl`);
+        const obs = new ObservabilityQuotaService(conn, hmacKey, anchorPath);
+        populateAuditEvents(obs, 4, "scen10");
 
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-          db.prepare("DELETE FROM sqlite_sequence WHERE name = 'audit_events'").run();
-        });
+        // Keep only first 2 lines in anchor file (simulating missing trailing anchors without independent witness)
+        const allLines = fs.readFileSync(anchorPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
+        assert.equal(allLines.length, 4);
+        fs.writeFileSync(anchorPath, allLines[0] + "\n" + allLines[1] + "\n", "utf8");
 
-        for (let i = 1; i <= 3; i++) {
-          obs.appendAuditEvent({
-            ctx: flash1Ctx,
-            sourceGateway: "local",
-            principalType: "agent",
-            principalId: "flash-01",
-            credentialId: "cred_01",
-            eventCategory: "task",
-            actionName: `scen7_ev_${i}`,
-            targetResource: `res:${i}`,
-            outcome: "succeeded",
-            errorCode: null,
-            sanitizedDetails: { step: i }
-          });
-        }
-
-        // Simulate crash right after DB commit of event 3: remove line 3 from anchor file
-        const lines = fs.readFileSync(legRecPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
-        assert.equal(lines.length, 3);
-        fs.writeFileSync(legRecPath, lines[0] + "\n" + lines[1] + "\n", "utf8");
+        const dbBefore = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        const anchorBefore = fs.readFileSync(anchorPath, "utf8");
 
         // Verification must detect deficit
         const vBefore = obs.verifyAuditChainIntegrity();
         assert.equal(vBefore.valid, false);
         assert.match(String(vBefore.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT/);
 
-        // Reconciliation must succeed recovering exactly 1 record
-        const recResult = obs.reconcileUnanchoredEvents();
-        assert.equal(recResult.reconciledCount, 1);
-
-        // Verification must now pass 100%
-        const vAfter = obs.verifyAuditChainIntegrity();
-        assert.equal(vAfter.valid, true);
-        assert.equal(vAfter.totalEvents, 3);
-
-        if (fs.existsSync(legRecPath)) fs.unlinkSync(legRecPath);
-      }
-
-      // 8. Tampered DB HMAC chain + reconciliation attempt
-      {
-        const tamperPath = path.join(os.tmpdir(), `aico-tamper-db-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, tamperPath);
-
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-          db.prepare("DELETE FROM sqlite_sequence WHERE name = 'audit_events'").run();
-        });
-
-        for (let i = 1; i <= 3; i++) {
-          obs.appendAuditEvent({
-            ctx: flash1Ctx,
-            sourceGateway: "local",
-            principalType: "agent",
-            principalId: "flash-01",
-            credentialId: "cred_01",
-            eventCategory: "task",
-            actionName: `scen8_ev_${i}`,
-            targetResource: `res:${i}`,
-            outcome: "succeeded",
-            errorCode: null,
-            sanitizedDetails: { step: i }
-          });
-        }
-
-        // Tamper DB row 2
-        conn.withWriteTransaction((db: any) => {
-          db.prepare("UPDATE audit_events SET target_resource = 'tampered:evil' WHERE action_name = 'scen8_ev_2'").run();
-        });
-
-        const anchorContentBefore = fs.readFileSync(tamperPath, "utf8");
-
-        // Reconcile must refuse and throw fail-closed
+        // Reconcile without independent evidence MUST fail closed and require Founder review
         assert.throws(
           () => obs.reconcileUnanchoredEvents(),
-          /SAFE_RECONCILIATION_REFUSED: Database HMAC/
+          /SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW: Anchor file has fewer records \(2\) than database events \(4\)/
         );
 
-        // Invariant: anchor file not touched
-        assert.equal(fs.readFileSync(tamperPath, "utf8"), anchorContentBefore);
+        // Invariants: 0 DB rows modified, 0 anchor bytes modified, verification strictly remains fail-closed
+        const dbAfter = (conn.withReadTransaction((db) => db.prepare("SELECT COUNT(*) as c FROM audit_events").get()) as any).c;
+        assert.equal(dbAfter, dbBefore, "0 DB rows modified");
+        assert.equal(fs.readFileSync(anchorPath, "utf8"), anchorBefore, "0 anchor bytes modified");
+        assert.equal(obs.verifyAuditChainIntegrity().valid, false, "Verification must never report fake valid state");
 
-        if (fs.existsSync(tamperPath)) fs.unlinkSync(tamperPath);
-      }
-
-      // 9. Malformed anchor JSON + reconciliation attempt
-      {
-        const malformedPath = path.join(os.tmpdir(), `aico-malformed-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, malformedPath);
-
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-          db.prepare("DELETE FROM sqlite_sequence WHERE name = 'audit_events'").run();
-        });
-
-        for (let i = 1; i <= 3; i++) {
-          obs.appendAuditEvent({
-            ctx: flash1Ctx,
-            sourceGateway: "local",
-            principalType: "agent",
-            principalId: "flash-01",
-            credentialId: "cred_01",
-            eventCategory: "task",
-            actionName: `scen9_ev_${i}`,
-            targetResource: `res:${i}`,
-            outcome: "succeeded",
-            errorCode: null,
-            sanitizedDetails: { step: i }
-          });
-        }
-
-        // Corrupt anchor file with invalid JSON
-        fs.appendFileSync(malformedPath, "\n{not_valid_json_corrupted\n", "utf8");
-        const corruptedContent = fs.readFileSync(malformedPath, "utf8");
-
-        assert.throws(
-          () => obs.reconcileUnanchoredEvents(),
-          /SAFE_RECONCILIATION_REFUSED: Malformed anchor/
-        );
-
-        // Invariant: anchor file content unchanged
-        assert.equal(fs.readFileSync(malformedPath, "utf8"), corruptedContent);
-
-        if (fs.existsSync(malformedPath)) fs.unlinkSync(malformedPath);
-      }
-
-      // 10. Existing valid anchor prefix + additional legitimate unanchored events
-      {
-        const prefixPath = path.join(os.tmpdir(), `aico-prefix-unanchored-${Date.now()}-${Math.random()}.jsonl`);
-        const obs = new ObservabilityQuotaService(conn, hmacKey, prefixPath);
-
-        conn.withWriteTransaction((db: any) => {
-          db.exec("DELETE FROM audit_events;");
-          db.prepare("DELETE FROM sqlite_sequence WHERE name = 'audit_events'").run();
-        });
-
-        for (let i = 1; i <= 4; i++) {
-          obs.appendAuditEvent({
-            ctx: flash1Ctx,
-            sourceGateway: "local",
-            principalType: "agent",
-            principalId: "flash-01",
-            credentialId: "cred_01",
-            eventCategory: "task",
-            actionName: `scen10_ev_${i}`,
-            targetResource: `res:${i}`,
-            outcome: "succeeded",
-            errorCode: null,
-            sanitizedDetails: { step: i }
-          });
-        }
-
-        // Leave only first 2 lines in anchor file (events 3 and 4 unanchored)
-        const allLines = fs.readFileSync(prefixPath, "utf8").split(/\r?\n/).filter(l => l.trim().length > 0);
-        assert.equal(allLines.length, 4);
-        const prefixLines = allLines[0] + "\n" + allLines[1] + "\n";
-        fs.writeFileSync(prefixPath, prefixLines, "utf8");
-
-        // Verify deficit
-        const vBefore = obs.verifyAuditChainIntegrity();
-        assert.equal(vBefore.valid, false);
-        assert.match(String(vBefore.brokenAtEventId), /ANCHOR_COVERAGE_DEFICIT/);
-
-        // Reconcile must process exactly 2 unanchored events
-        const recResult = obs.reconcileUnanchoredEvents();
-        assert.equal(recResult.reconciledCount, 2);
-
-        // Content verification: original prefix preserved byte-for-byte at the start
-        const fullContent = fs.readFileSync(prefixPath, "utf8");
-        assert.equal(fullContent.startsWith(prefixLines), true, "Original verified prefix must remain unchanged");
-
-        // All 4 lines must now verify
-        const vAfter = obs.verifyAuditChainIntegrity();
-        assert.equal(vAfter.valid, true);
-        assert.equal(vAfter.totalEvents, 4);
-
-        if (fs.existsSync(prefixPath)) fs.unlinkSync(prefixPath);
+        if (fs.existsSync(anchorPath)) fs.unlinkSync(anchorPath);
       }
     });
 

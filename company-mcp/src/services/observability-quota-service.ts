@@ -564,24 +564,16 @@ export class ObservabilityQuotaService {
         latestAnchorAuditId = anchor.last_audit_id;
       }
 
-      // 3. STEP 3: Only recover strictly unanchored events (audit_id > latestAnchorAuditId)
-      const unanchoredRows = db.prepare(
-        "SELECT * FROM audit_events WHERE audit_id > ? ORDER BY audit_id ASC"
-      ).all(latestAnchorAuditId) as any[];
-
-      if (unanchoredRows.length === 0) {
-        return { reconciledCount: 0, latestAnchorAuditId };
+      // 3. STEP 3: P0.1 / P0.2 - Eliminate unsafe tail reconstruction
+      // Automated reconstruction without independent evidence is strictly forbidden.
+      if (lines.length < rows.length) {
+        throw new Error(
+          `SAFE_RECONCILIATION_REFUSED: ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW: Anchor file has fewer records (${lines.length}) than database events (${rows.length}). Automated tail reconstruction without independent evidence is prohibited. Discrepancy requires manual Founder review.`
+        );
       }
 
-      let reconciledCount = 0;
-      for (const row of unanchoredRows) {
-        const hash = row.event_hash_hmac_sha256 || row.event_hash_sha256;
-        this.writeAnchorRecord(row.audit_id, hash, row.recorded_at);
-        reconciledCount++;
-        latestAnchorAuditId = row.audit_id;
-      }
-
-      return { reconciledCount, latestAnchorAuditId };
+      // Parity confirmed (lines.length === rows.length): 0 unanchored events
+      return { reconciledCount: 0, latestAnchorAuditId: rows[rows.length - 1].audit_id };
     });
   }
 

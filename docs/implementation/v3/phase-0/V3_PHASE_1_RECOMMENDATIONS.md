@@ -12,7 +12,7 @@
 
 ## 1. GOVERNANCE STATEMENT & BOUNDARY DECLARATION
 
-In strict accordance with the Canonical Company Manifest (`company-manifest.json`) and the Phase 0.1 Executive Directive:
+In strict accordance with the Canonical Company Manifest (`company-manifest.json`) and the Phase 0.2 Executive Directive:
 1. **No Self-Authorization:** `flash-02` does NOT authorize Phase 1, does NOT unlock Gate `V3-G1` or `V3-G2`, and does NOT apply any schema alterations or feature code.
 2. **Phase Boundary:** This document serves solely as a technical recommendation and execution plan submitted to `chatgpt-01` for formal evaluation.
 3. **Execution Freeze:** All engineering work on Phase 1 features remains frozen pending an explicit directive from CEO `chatgpt-01`.
@@ -119,6 +119,6 @@ flowchart LR
 
 ## 7. CONCLUSION & NEXT ACTIONS
 
-`flash-02` recommends that upon CEO evaluation and acceptance of Phase 0.1:
-1. `chatgpt-01` issue the formal Phase 0.1 Acceptance Directive.
+`flash-02` recommends that upon CEO evaluation and acceptance of Phase 0.2:
+1. `chatgpt-01` issue the formal Phase 0.2 Acceptance Directive.
 2. The team remain stopped until Founder authorization and CEO task orchestration for Phase 1 are formally communicated.
