@@ -6,7 +6,8 @@
 **Authority:** Founder  
 **Date:** 2026-11-10  
 **Status:** `READY_FOR_CEO_EVALUATION`  
-**Security Baseline:** `SEC-P0-01` through `SEC-P1-05` remediated and verified  
+**Security Baseline:** `SEC-P0-01` through `SEC-P0-03` remediated and verified  
+**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
 
 ---
 
@@ -14,7 +15,7 @@
 
 The security architecture of AICO V3 enforces strict defense-in-depth across cryptographic data integrity, identity authentication, dual-tier governance authorization, credential confidentiality, and production database immutability.
 
-During Phase 0 and Phase 0.1, all legacy identity fallbacks, unverified anchor reconstructions, surrogate serialization loopholes, and truncated history scanners were eliminated. This document details the cryptographic principles, fail-closed reconciliation models, credential safeguards, and production safety guarantees established in the codebase.
+During Phase 0, Phase 0.1, and Phase 0.2, all legacy identity fallbacks, unverified anchor reconstructions, unsafe tail re-appends, surrogate serialization loopholes, and truncated history scanners were eliminated. This document details the cryptographic principles, fail-closed reconciliation models, credential safeguards, and production safety guarantees established in the codebase.
 
 ---
 

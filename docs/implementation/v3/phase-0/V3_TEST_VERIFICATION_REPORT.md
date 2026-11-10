@@ -7,6 +7,9 @@
 **Date:** 2026-11-10  
 **Status:** `READY_FOR_CEO_EVALUATION`  
 **Test Suite Execution Result:** `ALL_PASS` (Exit Code 0)  
+**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
+**Automated CI Pipeline:** `.github/workflows/ci.yml` (Windows, Node 24)  
+**Independent Local Script:** `scripts/verify-all.ps1`  
 
 ---
 

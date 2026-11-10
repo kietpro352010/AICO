@@ -1,4 +1,4 @@
-# AICO V3 — PHASE 0 IMPLEMENTATION READINESS REPORT
+# AICO V3 — PHASE 0.2 IMPLEMENTATION READINESS REPORT
 
 **Document ID:** `AICO-V3-DOC-P0-01`  
 **Author:** `flash-02` (Engineering & QA Lead)  
@@ -6,19 +6,22 @@
 **Authority:** Founder  
 **Date:** 2026-11-10  
 **Status:** `READY_FOR_CEO_EVALUATION`  
-**Current Gate:** `V3-G0` (CLOSED pending Founder & CEO approval)
+**Current Gate:** `V3-G0` (CLOSED pending Founder & CEO approval)  
+**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
 
 ---
 
 ## 1. EXECUTIVE OVERVIEW
 
-Phase 0 of the AICO V3 initiative establishes the verified engineering foundation, architectural blueprint reconciliation, and rigorous security baseline required before any runtime V3 capabilities (Chat Rooms, Outbox Dispatch, Memory Engine V3) can be activated.
+Phase 0, Phase 0.1, and Phase 0.2 of the AICO V3 initiative establish the verified engineering foundation, architectural blueprint reconciliation, and rigorous security baseline required before any runtime V3 capabilities (Chat Rooms, Outbox Dispatch, Memory Engine V3) can be activated.
 
 This readiness report provides the objective evidence base demonstrating that:
-1. All critical security defects identified in previous audits (P0/P1 and Phase 0.1 findings) have been definitively remediated, tested, and validated.
-2. The central production database (`data/aico.db`) has been kept completely untouched (SHA-256 preserved).
-3. The codebase satisfies all baseline quality, type-safety, and test-automation requirements across 11 test suites comprising 40 distinct security and integration tests with a 100% pass rate.
-4. Governance guardrails remain intact: Gate G4 is CLOSED, Public Gateway is DISABLED, Argon specialist agents are strictly MANUAL-ONLY, and no V3 features have been premature deployed.
+1. All critical security defects identified in previous audits (P0/P1, Phase 0.1, and Phase 0.2 findings) have been definitively remediated, tested, and validated.
+2. Unsafe audit anchor tail reconstruction without independent evidence has been completely eliminated; any anchor deficit strictly fails closed with `ANCHOR_RECOVERY_REQUIRES_FOUNDER_REVIEW`.
+3. The central production database (`data/aico.db`) has been kept completely untouched (SHA-256 preserved: `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`).
+4. Automated, reproducible CI verification is established via `.github/workflows/ci.yml` and `scripts/verify-all.ps1`.
+5. The codebase satisfies all baseline quality, type-safety, and test-automation requirements across 11 test suites comprising 40 distinct security and integration tests with a 100% pass rate.
+6. Governance guardrails remain intact: Gate G4 is CLOSED, Public Gateway is DISABLED, Argon specialist agents are strictly MANUAL-ONLY, and no V3 features have been premature deployed.
 
 ---
 
@@ -37,7 +40,7 @@ This readiness report provides the objective evidence base demonstrating that:
 
 ---
 
-## 3. SECURITY REMEDIATION SUMMARY (PHASE 0 & PHASE 0.1)
+## 3. SECURITY REMEDIATION SUMMARY (PHASE 0, PHASE 0.1 & PHASE 0.2)
 
 | Vulnerability ID | Classification | Subsystem | Description & Resolution | Verification Status |
 | :--- | :---: | :--- | :--- | :---: |
@@ -58,19 +61,47 @@ This readiness report provides the objective evidence base demonstrating that:
 ## 4. CODEBASE ENVIRONMENT & ARTIFACT METRICS
 
 - **Repository Root:** `D:\AI-COMPANY`
-- **Active Git Branch:** `main` (synchronized with `master` at commit `9d0d3d587a349ae1375e1ebf1a5b1865f1e1fd46` + working changes)
+- **Active Git Branch:** `main` (synchronized with `master` on remote `origin`)
+- **Remote URL:** `https://github.com/kietpro352010/AICO.git` (Private)
 - **Node.js Environment:** v24.21.0
 - **TypeScript Compilation:** Strict mode (`tsc --noEmit`), 0 errors
-- **Test Automation:** Node.js native test runner via tsx
+- **Automated CI Workflow:** `.github/workflows/ci.yml` (Windows runner, Node 24, full history fetch, typecheck, test, DB hash verification)
+- **Local Verification Script:** `scripts/verify-all.ps1` (Deterministic 5-step verification drill, exit 0)
 - **Total Test Suites:** 11 suites (`AICO Baseline`, `T01`, `T02`, `T03`, `T04-T08`, `T05`, `T06`, `T07`, `T08`, `T09`, `T10`, `T16`)
 - **Total Test Cases:** 40 tests executed, 40 passed (100%), 0 failures, 0 skipped
 - **Production Database Safety:** Hash `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416` verified intact.
 
 ---
 
-## 5. READINESS DETERMINATION
+## 5. UNVERIFIED ITEMS AND SCOPE BOUNDARIES (NHỮNG ĐIỂM CHƯA THỂ XÁC MINH)
+
+In strict adherence to engineering integrity, `flash-02` explicitly reports items that **CANNOT** and **MUST NOT** be claimed as verified at the conclusion of Phase 0.2:
+
+1. **Gate G4 / Public Gateway Live Exposure (`UNVERIFIED_BY_DESIGN`):**  
+   - Public Gateway (:3335) and ngrok tunnels remain strictly **DISABLED**.  
+   - Remote WAN penetration testing or external network exposure has NOT been performed because Gate G4 is locked. Verifying live external traffic before Gate G4 authorization is strictly forbidden.
+2. **Production Database Migration to Schema v0.5.0 (`BLOCKED_BY_GATE_G3`):**  
+   - Schema v0.5.0 has been dry-run tested **ONLY** on sandbox databases (`company-mcp/data/sandbox.db`, ephemeral test instances).  
+   - The production database `data/aico.db` has **NOT** been migrated and remains at schema v0.4.1. Verifying production cutover is blocked until Founder grants explicit Gate `V3-G3` approval.
+3. **Argon Specialists Live Autonomy (`FORBIDDEN_BY_POLICY`):**  
+   - Specialists `argon-01` and `argon-02` are under strict `MANUAL ONLY` policy.  
+   - Live autonomous execution, background fan-out, and retry loops for Argon have NOT been verified and MUST NEVER be tested or executed in automated pipelines without explicit Founder authorization.
+4. **V3 Runtime Features (Chat Rooms, Outbox Dispatch, Model Routing) (`NOT_IMPLEMENTED`):**  
+   - 10 canonical V3 requirements are explicitly `NOT_IMPLEMENTED` (`REQ-V3-002`, `009`, `011`, `012`, `013`, `014`, `015`, `018`, `026`, `027`).  
+   - 4 canonical V3 requirements are `IMPLEMENTED_PARTIAL` (`REQ-V3-006`, `007`, `010`, `016`).  
+   - These runtime features belong to Phases 1–6 and are not active or claimed as verified in Phase 0.
+5. **Independent Write-Ahead Intent Journaling for Audit Anchors (`UNSUPPORTED_BY_CURRENT_ARCHITECTURE`):**  
+   - The current architecture lacks an independent third-party witness or write-ahead intent journal.  
+   - Therefore, software cannot distinguish an interrupted crash from malicious tail deletion. Automated tail recovery is provably unverifiable and thus intentionally eliminated (fail-closed to Founder review).
+6. **Multi-Host / Distributed SQLite Concurrency (`OUT_OF_SCOPE`):**  
+   - Verification covers single-node execution with SQLite WAL mode and local file locking. Multi-node distributed concurrency over shared network filesystems (NFS/SMB) is not supported or verified.
+
+---
+
+## 6. READINESS DETERMINATION
 
 Based on complete empirical evidence, `flash-02` submits that:
-- **Phase 0 Baseline Freeze & Security Stabilization is 100% COMPLETE.**
-- The system is architecturally sound and structurally defended against historical bypasses.
-- The repository is in a clean, reproducible state ready for formal independent evaluation by CEO `chatgpt-01`.
+- **Phase 0 Baseline Freeze & Security Stabilization (Phase 0, 0.1, 0.2) is 100% COMPLETE.**
+- The system is architecturally sound, fail-closed, and structurally defended against historical bypasses.
+- The repository is in a clean, reproducible state with automated CI ready for formal independent evaluation by CEO `chatgpt-01`.
+- All governance gates (`V3-G1` through `V3-G7`) remain securely **LOCKED** awaiting CEO evaluation and Founder directive.

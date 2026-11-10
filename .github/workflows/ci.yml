@@ -1,0 +1,54 @@
+name: AICO Quality & Security CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  verify:
+    name: Verify Quality, Type Safety & Security Stabilization
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: company-mcp
+
+    steps:
+      - name: Checkout Repository (Full History)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: company-mcp/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: TypeScript Typecheck
+        run: npm run typecheck
+
+      - name: Execute Full Test Suite
+        run: npm test
+
+      - name: Verify Production Database Immutability
+        shell: powershell
+        run: |
+          $dbPath = "..\data\aico.db"
+          if (Test-Path $dbPath) {
+            $expectedHash = "17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416"
+            $actualHash = (Get-FileHash -Algorithm SHA256 $dbPath).Hash
+            if ($actualHash -ne $expectedHash) {
+              Write-Error "Production database data/aico.db was modified! Expected $expectedHash, got $actualHash"
+              exit 1
+            }
+            Write-Host "Production database data/aico.db SHA-256 verified untouched: $actualHash"
+          } else {
+            Write-Host "data/aico.db not present; skipping hash check."
+          }

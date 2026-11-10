@@ -7,6 +7,7 @@
 **Date:** 2026-11-10  
 **Status:** `PROPOSAL_PENDING_DIRECTIVE`  
 **Gate Status:** `V3-G1` and `V3-G2` LOCKED (Awaiting CEO Evaluation and Founder Authorization)  
+**Baseline Git Commit:** `84cff5ac20ce5c09a56db21fd2ebcd9a2d3f1b9f`  
 
 ---
 
