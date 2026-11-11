@@ -17,8 +17,9 @@ All verification commands executed from a clean state on the local engineering w
 
 ### Summary Metrics
 - **Prior Baseline Commit SHA:** `3740148ae548b3640efae9e5d6857a2ac3b7d91c`
-- **Prior Baseline CI Runs:** `main` Run `42841015316` / `master` Run `42841015723` (`✓ SUCCESS`)
-- **Remediation CI Status:** Pending post-commit remote push & GitHub Actions verification
+- **P1 Remediation Code & Test Commit SHA:** `75814e05f38740e51aae44f640310418a2c29857`
+- **GitHub Actions CI (`main`):** Run ID `42975717730` (https://github.com/kietpro352010/AICO/actions/runs/42975717730) — `✓ SUCCESS` (**104/104** passed, 0 failed, 0 skipped; Production DB check `SKIPPED` in isolated CI)
+- **GitHub Actions CI (`master`):** Run ID `42975717973` (https://github.com/kietpro352010/AICO/actions/runs/42975717973) — `✓ SUCCESS` (**104/104** passed, 0 failed, 0 skipped; Production DB check `SKIPPED` in isolated CI)
 - **Total Test Files / Suites:** 13 `.test.ts` files (14 suite blocks: `T-BASE`, `T01`–`T10`, `T16`, `T17`, `T18`)
 - **Total Test Nodes Executed:** **104**
 - **Passed:** **104 (100%)**

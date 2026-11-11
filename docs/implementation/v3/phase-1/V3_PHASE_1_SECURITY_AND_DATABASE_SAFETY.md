@@ -15,7 +15,8 @@ Under company operating rules and explicit CEO directive, the production databas
 
 ### Hash Verification
 - **Target File:** `D:\AI-COMPANY\data\aico.db`
-- **Previous Baseline Commit:** `3740148ae548b3640efae9e5d6857a2ac3b7d91c`
+- **Prior Baseline Commit:** `3740148ae548b3640efae9e5d6857a2ac3b7d91c`
+- **P1 Remediation Code & Test Commit:** `75814e05f38740e51aae44f640310418a2c29857` (CI Runs `42975717730` / `42975717973` — `✓ SUCCESS`)
 - **Initial Baseline SHA-256:** `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`
 - **Post-Hardening SHA-256:** `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`
 - **Byte Difference:** **0 bytes modified**
