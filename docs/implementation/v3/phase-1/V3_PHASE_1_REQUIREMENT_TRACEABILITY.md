@@ -5,7 +5,7 @@
 **Recipient:** `chatgpt-01` (CEO & Main Orchestrator)  
 **Governance Authority:** Founder  
 **Date:** 2026-11-11  
-**Status:** DELIVERED & VERIFIED (P1 HARDENING APPLIED)  
+**Status:** DELIVERED & VERIFIED (P1 & P2 HARDENING APPLIED)  
 
 ---
 
@@ -18,7 +18,9 @@
 | **0. Pre-Flight** | Production DB immutability check | `data/aico.db` | `verify-all.ps1` [1/6] & [6/6] | Verified hash `17BD9321...` unchanged (0 bytes modified) |
 | **1. V3-G1** | 24 Domain Entities in strict TypeScript | `company-mcp/src/domain/**/*.ts` | `test/t17-domain-models-g1.test.ts` | 24 TypeScript interfaces defined |
 | **1. V3-G1** | Zod runtime validation schemas for all 24 entities | `company-mcp/src/domain/**/*.ts` | `test/t17-domain-models-g1.test.ts` | 24 Zod schemas with 1:1 validation parity |
-| **1. V3-G1** | Public DTO boundaries, strict metadata allowlist & sanitization | `company-mcp/src/domain/**/*.ts` (`toPublic*DTO`, `sanitization.ts`, `secret-scanner.ts`) | `test/t17-domain-models-g1.test.ts` (46/46) | 24 Public DTOs omit tokens/nonces/IVs/payloads; strict allowlisted metadata/details, WeakMap DAG/cycle guard, PEM/URL/token redaction |
+| **1. V3-G1** | Public DTO boundaries, strict metadata allowlist & sanitization | `company-mcp/src/domain/**/*.ts` (`toPublic*DTO`, `sanitization.ts`, `secret-scanner.ts`) | `test/t17-domain-models-g1.test.ts` (58/58) | 24 Public DTOs omit internal fields; strict allowlisted metadata/details, WeakMap DAG/cycle guard, 20-pattern `AICO_SECRET_CATALOG` + public-text entry guards |
+| **1. V3-G1/G2** | Expanded Secret Catalog & public-text entry prevention (P2) | `secret-scanner.ts`, `sanitization.ts`, `messaging-service.ts`, `domain/**/*.ts` | `test/t17-domain-models-g1.test.ts` (Suites A & B) | Covers legacy `aico_<agentId>_<hex>`, JWT, Basic/Bearer, provider/cloud/Slack/PEM/PGP/URL/env keys + rejects secrets in authored public text & `sendMessage`/`ackMessage` |
+| **1. V3-G2** | SQL schema storage mapping & round-trip persistence (P2) | `v0.5.0-v3-foundation.sql` (`internal_metadata_json`, `internal_details_json`), `v3-storage-mappers.ts` | `test/t18-sandbox-migration-g2.test.ts` (Tests 18–19, 20/20) | Syncs `ChatMessage.internal_metadata` & `RoomAuditLog.internal_details`, 24-entity mapping contract, fail-closed row mappers, end-to-end SQLite round-trip + DTO strip checks |
 | **1. V3-G2** | Forward migration script `v0.5.0-v3-foundation.sql` | `company-mcp/src/db/migrations/v0.5.0-v3-foundation.sql` | `test/t18-sandbox-migration-g2.test.ts` | Creates 24 tables/virtual tables, FKs, CHECKs, indexes |
 | **1. V3-G2** | Backward rollback script `v0.5.0-down.sql` | `company-mcp/src/db/migrations/v0.5.0-down.sql` | `test/t18-sandbox-migration-g2.test.ts` | Drops 24 tables in reverse order cleanly |
 | **1. V3-G2** | TypeScript migration runner wrapper | `company-mcp/src/db/migrations/v050-v3-foundation.ts` | `test/t18-sandbox-migration-g2.test.ts` | Computes SHA-256 checksum, implements up & down |
@@ -42,6 +44,6 @@
 
 ## 2. SIGN-OFF & HANDOFF READINESS
 
-Phase 1 deliverables and P1 security hardening fixes (`75814e05f38740e51aae44f640310418a2c29857`) are complete, verified locally (`verify-all.ps1` exit code 0, **104/104 passing tests**, local production DB immutability verified) and on GitHub Actions CI (`main` Run `42975717730`, `master` Run `42975717973` — **104/104 passed, 0 failed, 0 skipped**), and ready for executive acceptance.
+Phase 1 deliverables alongside P1 (`75814e05f38740e51aae44f640310418a2c29857`) and P2 (`5998a6968aa1b385f40aaf5faacb7e6693771617`) security & storage-parity hardening fixes are complete, verified locally (`verify-all.ps1` exit code 0, **118/118 passing tests**, local production DB immutability verified) and on GitHub Actions CI (`main` Run `42982903767`, `master` Run `42982904277` — **118/118 passed, 0 failed, 0 skipped**), and ready for executive acceptance.
 Engineering Lead (`flash-02`) submits this report to CEO (`chatgpt-01`) for evaluation and next directive.
 Gate V3-G3 remains LOCKED pending formal evaluation.

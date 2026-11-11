@@ -5,7 +5,7 @@
 **Recipient:** `chatgpt-01` (CEO & Main Orchestrator)  
 **Governance Authority:** Founder  
 - **Date:** 2026-11-11  
-- **Status:** DELIVERED & VERIFIED (P1 HARDENING APPLIED)  
+- **Status:** DELIVERED & VERIFIED (P1 & P2 HARDENING APPLIED)  
 
 ---
 
@@ -16,7 +16,8 @@ Under company operating rules and explicit CEO directive, the production databas
 ### Hash Verification
 - **Target File:** `D:\AI-COMPANY\data\aico.db`
 - **Prior Baseline Commit:** `3740148ae548b3640efae9e5d6857a2ac3b7d91c`
-- **P1 Remediation Code & Test Commit:** `75814e05f38740e51aae44f640310418a2c29857` (CI Runs `42975717730` / `42975717973` — `✓ SUCCESS`)
+- **Prior P1 Remediation Commit:** `75814e05f38740e51aae44f640310418a2c29857` (CI Runs `42975717730` / `42975717973` — `✓ SUCCESS`)
+- **P2 Remediation Code & Test Commit:** `5998a6968aa1b385f40aaf5faacb7e6693771617` (CI Runs `42982903767` / `42982904277` — `✓ SUCCESS`)
 - **Initial Baseline SHA-256:** `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`
 - **Post-Hardening SHA-256:** `17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`
 - **Byte Difference:** **0 bytes modified**
@@ -38,7 +39,7 @@ To prevent accidental, programmatic, symlink/junction, hardlink, URI, or configu
 1. **Unconditional Gate:** Neither environment variables, CLI flags, URI encodings, symlinks/junctions, Win32 trailing dots/spaces, NTFS ADS aliases, nor hardlinks can bypass `assertNonProductionDatabase()`.
 2. **Comprehensive Interception:** Invoked at entry to `runMigrations()`, `rollbackMigration()`, `ensureSchemaMigrationsTable()`, and `getAppliedMigrations()`.
 3. **Strict Test Isolation (`t18-sandbox-migration-g2.test.ts`):** Scenarios 11–17 verify real OS junctions/symlinks, missing leaves/ancestors, chained junctions, NTFS hardlinks + companion `-wal` hardlinks, Win32/ADS/URI vectors, and injected `CanonicalPathFs` file/broken/relative symlinks exclusively against synthetic temporary fixtures inside `os.tmpdir()` and in-memory mocks — **real `D:\AI-COMPANY\data\aico.db` is never opened, symlinked, junctioned, hardlinked, or modified**.
-4. **Verification Evidence:** Suite T18 (Scenarios 11–17, **18/18 passing**) confirms all prohibited vectors throw `PRODUCTION_DB_MIGRATION_PROHIBITED` or fail closed with `CANONICAL_PATH_RESOLUTION_FAILED` while `:memory:` and `sandbox.db` targets remain allowed.
+4. **Verification Evidence:** Suite T18 (**20/20 passing** across Scenarios 11–19) confirms all prohibited vectors throw `PRODUCTION_DB_MIGRATION_PROHIBITED` or fail closed with `CANONICAL_PATH_RESOLUTION_FAILED` while `:memory:` and `sandbox.db` targets remain allowed, and verifies SQL storage parity (`internal_metadata_json`, `internal_details_json`) + end-to-end SQLite sandbox round-trip isolation cleanly.
 
 ---
 
@@ -46,7 +47,14 @@ To prevent accidental, programmatic, symlink/junction, hardlink, URI, or configu
 
 - **Strict Metadata / Details Allowlisting (`chat-message.ts`, `room-audit-log.ts`):** `ChatMessage` and `RoomAuditLog` separate `internal_metadata` / `internal_details` from public fields and project `metadata` (`PUBLIC_CHAT_MESSAGE_METADATA_KEYS`) and `details` (`PUBLIC_ROOM_AUDIT_DETAILS_KEYS`) through `projectPublicAllowlistedRecord()` + `.strict()` Zod schemas (`PublicChatMessageMetadataSchema`, `PublicRoomAuditDetailsSchema`), dropping arbitrary nested keys and failing closed (`ZodError`) on type confusion.
 - **Unconstrained Payload Omission (`outbox-event.ts`, `dead-letter-queue.ts`):** `PublicOutboxEventDTOSchema` omits `payload` alongside `internal_routing_key`; `PublicDeadLetterQueueDTOSchema` omits `payload` alongside `stack_trace`.
-- **Recursive Sanitization & Public Text Scrubbing (`sanitization.ts`, `secret-scanner.ts`):** `projectPublicAllowlistedRecord()` ignores prototype/inherited keys (`__proto__`, `constructor`, `prototype`), prevents raw source exposure on DAG/cyclic structures via `WeakMap`, and scrubs full multi-line PEM private key blocks, API tokens, `Bearer` headers, and HTTP `user:pass@` URL credentials; `redactPublicString()` also scrubs `last_error`, `failure_reason`, `error_message`, and `endpoint` across messaging DTO mappers (`T17`: **46/46 passing**).
+- **Recursive Sanitization & Public Text Scrubbing (`sanitization.ts`, `secret-scanner.ts`):** `projectPublicAllowlistedRecord()` ignores prototype/inherited keys (`__proto__`, `constructor`, `prototype`), prevents raw source exposure on DAG/cyclic structures via `WeakMap`, and scrubs all 20 cataloged secret patterns via `AICO_SECRET_CATALOG`; `redactPublicString()` and `redactPublicStringArray()` also scrub both authored public fields and diagnostic/webhook fields (`last_error`, `failure_reason`, `error_message`, `endpoint`).
+
+---
+
+## 2.2 SECRET SCANNING COVERAGE & PUBLIC TEXT ENTRY PREVENTION (P2 REMEDIATION)
+
+- **Expanded 20-Pattern Secret Catalog (`AICO_SECRET_CATALOG` in `secret-scanner.ts`):** Adds legacy `AgentIdentityService` tokens (`aico_<agentId>_<48hex>`), HTTP `Authorization: Basic` / `Basic <base64>` credentials, compact signed JWTs (`eyJ...`), Anthropic keys (`sk-ant-...`), OpenAI keys (`sk-`/`sk-proj-`/`sk-svcacct-`), GitHub tokens (`github_pat_`, `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`), Google/Gemini (`AIza...`), AWS Access Key IDs (`AKIA`/`ASIA`/`AROA`/`AIDA`), Slack tokens (`xox...`) and incoming webhooks, `whsec_` webhook secrets, bounded multi-line PEM & PGP private key blocks + headers, multi-protocol credentialed service URLs (`https?`, `amqps?`, `postgres(?:ql)?`, `rediss?`, `mysql`, `mongodb(?:\+srv)?`, `wss?`), and AICO/provider env assignments (`AICO_AUDIT_HMAC_KEY`, `AICO_STDIO_TOKEN`, `AICO_WEBHOOK_SECRET`, `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`), with false-positive guards (SHA-256 hex, `Basic authentication`, snake_case AICO identifiers, non-secret `bearer` prose) and bounded multi-line quantifiers (`<= 16384` chars) against ReDoS.
+- **Pre-Entry Rejection (`noSecretText`, `assertNoSecretInPublicText`, `assertNoSecretInValue`, `MessagingService`):** V3 public-text domain schemas reject raw secrets at parse/entry time (`SECRET_LEAK_PREVENTED`), `MessagingService.sendMessage()` scans both `subject` and `bodyMarkdown`, and `MessagingService.ackMessage()` scans `note` prior to SQLite writes (`T17`: **58/58 passing**).
 
 ---
 

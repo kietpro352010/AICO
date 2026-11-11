@@ -5,24 +5,25 @@
 **Recipient:** `chatgpt-01` (CEO & Main Orchestrator)  
 **Governance Authority:** Founder  
 **Date:** 2026-11-11  
-**Status:** DELIVERED & VERIFIED (P1 HARDENING APPLIED)  
+**Status:** DELIVERED & VERIFIED (P1 & P2 HARDENING APPLIED)  
 
 ---
 
 ## 1. EXECUTIVE SUMMARY
 
-This report records the complete test execution results for **AICO V3 Phase 1** (`V3-G1: Domain Model & Contract` and `V3-G2: Sandbox Database Migration v0.5.0`), including P1 security remediation verification for canonical production database path guards and strict Public DTO metadata sanitization.
+This report records the complete test execution results for **AICO V3 Phase 1** (`V3-G1: Domain Model & Contract` and `V3-G2: Sandbox Database Migration v0.5.0`), including P1 security remediation (canonical production DB path guards and strict Public DTO metadata sanitization) and P2 hardening (SQL storage parity with round-trip persistence tests and expanded AICO secret scanning + public-text entry prevention).
 
 All verification commands executed from a clean state on the local engineering workstation (`scripts/verify-all.ps1`) and verified 100% passing across all legacy, Phase 0.2/0.3, and Phase 1 test suites with zero modifications to `D:\AI-COMPANY\data\aico.db`.
 
 ### Summary Metrics
 - **Prior Baseline Commit SHA:** `3740148ae548b3640efae9e5d6857a2ac3b7d91c`
-- **P1 Remediation Code & Test Commit SHA:** `75814e05f38740e51aae44f640310418a2c29857`
-- **GitHub Actions CI (`main`):** Run ID `42975717730` (https://github.com/kietpro352010/AICO/actions/runs/42975717730) — `✓ SUCCESS` (**104/104** passed, 0 failed, 0 skipped; Production DB check `SKIPPED` in isolated CI)
-- **GitHub Actions CI (`master`):** Run ID `42975717973` (https://github.com/kietpro352010/AICO/actions/runs/42975717973) — `✓ SUCCESS` (**104/104** passed, 0 failed, 0 skipped; Production DB check `SKIPPED` in isolated CI)
-- **Total Test Files / Suites:** 13 `.test.ts` files (14 suite blocks: `T-BASE`, `T01`–`T10`, `T16`, `T17`, `T18`)
-- **Total Test Nodes Executed:** **104**
-- **Passed:** **104 (100%)**
+- **Prior P1 Remediation Code & Test Commit SHA:** `75814e05f38740e51aae44f640310418a2c29857` (CI Runs `42975717730` / `42975717973`)
+- **P2 Remediation Code & Test Commit SHA:** `5998a6968aa1b385f40aaf5faacb7e6693771617`
+- **GitHub Actions CI (`main`):** Run ID `42982903767` (https://github.com/kietpro352010/AICO/actions/runs/42982903767) — `✓ SUCCESS` (**118/118** passed, 0 failed, 0 skipped; Production DB check `SKIPPED` in isolated CI)
+- **GitHub Actions CI (`master`):** Run ID `42982904277` (https://github.com/kietpro352010/AICO/actions/runs/42982904277) — `✓ SUCCESS` (**118/118** passed, 0 failed, 0 skipped; Production DB check `SKIPPED` in isolated CI)
+- **Total Test Files / Suites:** 13 `.test.ts` files (`T-BASE`, `T01`–`T10`, `T16`, `T17`, `T18`)
+- **Total Test Nodes Executed:** **118**
+- **Passed:** **118 (100%)**
 - **Failed:** **0 (0%)**
 - **Skipped / Todo:** **0 (0%)**
 - **Production Database Touch:** ZERO bytes (`17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416` verified pre- and post-run)
@@ -46,15 +47,15 @@ All verification commands executed from a clean state on the local engineering w
 | **T09** | `test/t09-e2e-http-transport.test.ts` | Black-Box E2E HTTP Transport & Pipeline | 1 | **PASS** | 602 ms |
 | **T10** | `test/t10-stdio-and-dpapi.test.ts` | Windows DPAPI, STDIO Limits & Token Revocation | 1 | **PASS** | 2,471 ms |
 | **T16** | `test/t16-security-stabilization.test.ts` | RFC 8785, Audit Anchor & Scenarios 1-10 | 25 | **PASS** | 14,335 ms |
-| **T17** | `test/t17-domain-models-g1.test.ts` | **V3-G1:** 24 Domain Entities & Public DTO Boundaries + P1 #2 Sanitization | 46 | **PASS** | 448 ms (standalone) |
-| **T18** | `test/t18-sandbox-migration-g2.test.ts` | **V3-G2:** Sandbox Schema Migration v0.5.0 & Path Guard Suite | 18 | **PASS** | 1,236 ms (standalone) |
-| **TOTAL** | **13 Files / 14 Suites** | **Complete AICO V3 Regression & Phase 1 Scope** | **104** | **PASS (104/104)**| **14.7s** |
+| **T17** | `test/t17-domain-models-g1.test.ts` | **V3-G1:** 24 Entities, P1 Sanitization & P2 Secret Catalog/Entry Guards | 58 | **PASS** | 768 ms (standalone) |
+| **T18** | `test/t18-sandbox-migration-g2.test.ts` | **V3-G2:** Sandbox Schema v0.5.0, Path Guard & P2 Round-Trip Parity | 20 | **PASS** | 1,683 ms (standalone) |
+| **TOTAL** | **13 Test Files** | **Complete AICO V3 Regression & Phase 1 Scope** | **118** | **PASS (118/118)**| **14.3s** |
 
 ---
 
 ## 3. DETAILED BREAKDOWN OF NEW PHASE 1 TEST SUITES
 
-### Suite T17: V3-G1 Domain Model & Contract Verification (46 Tests: 30 Baseline + 16 P1 #2 Regression)
+### Suite T17: V3-G1 Domain Model & Contract Verification (58 Tests: 30 Baseline + 16 P1 #2 + 12 P2)
 
 - **Group 1: Core Collaboration Entities (7 tests)**
   - `ChatRoom`: Parses valid, validates slug regex, rejects invalid `room_type`, strips `internal_notes` in DTO.
@@ -97,9 +98,13 @@ All verification commands executed from a clean state on the local engineering w
   - `Entity 9 (EventSubscription)` & `Entity 11 (DeliveryAttempt)`: Scrub `endpoint` credentials/tokens and `error_message` while omitting `auth_secret_hash`/`internal_worker_id`.
   - `projectPublicAllowlistedRecord`: Ignores inherited properties and dangerous keys; sanitizes nested structures recursively with `WeakMap` shared-DAG & cycle guard.
 
+- **P2 Secret Scanning Catalog & Public Text Entry Prevention (Suites A & B: 12 `node --test` nodes):**
+  - `T17 P2 Suite A` (`6` nodes): Validates `AICO_SECRET_CATALOG` integrity (`20` unique entries), `.scan()` + idempotent `.redact()` across every real AICO/provider secret type (canonical & legacy `aico_<agentId>_<48hex>` live `AgentIdentityService` tokens, Bearer/Basic headers, compact JWT, Anthropic, OpenAI, GitHub `github_pat_`/`gh[pousr]_`, Google/Gemini, AWS Access Keys, Slack tokens/webhooks, `whsec_`, bounded PEM/PGP blocks + headers, multi-protocol credentialed URLs, and env assignments incl. trailing `=` Base64 padding), benign non-secret false-positive guards, and 32KB+ unclosed PEM/PGP ReDoS bounds.
+  - `T17 P2 Suite B` (`6` nodes): Validates fail-closed `SECRET_LEAK_PREVENTED` schema-entry rejection across all V3 public text fields (`ChatRoom.slug`/`name`, `ChatMessage.content`/`mentions`, `MessageAttachment`, `MessageReaction`, `ProjectTaskV3`, `TaskTransitionLog`, `TaskApprovalBinding`, `ReviewAssignment`, `ArtifactAttestation.artifact_path`, `MemoryRecordV3`, `KnowledgeChunkFTS`, `ContextSnapshot`, `AgentExecutionLock.resource_uri`/`purpose`, and strict `PublicChatMessageDTOSchema`/`PublicRoomAuditLogDTOSchema`), `assertNoSecretInPublicText`/`assertNoSecretInValue`, `MessagingService.sendMessage()` (`subject` + `bodyMarkdown`) and `MessagingService.ackMessage()` (`ack_note`), and unparsed defense-in-depth `toPublic*DTO()` scrubbing.
+
 ---
 
-### Suite T18: V3-G2 Sandbox Database Migration v0.5.0 (18 Tests: 1 Outer Suite + 17 Scenarios)
+### Suite T18: V3-G2 Sandbox Database Migration v0.5.0 (20 Tests: 1 Outer Suite + 19 Scenarios)
 
 1. **Virgin Sandbox Migration:** Clean migration on brand-new database creates all 24 foundation tables and virtual tables.
 2. **Seeded Sandbox Migration:** Migration against sanitized baseline fixture (`backup/aico_v030_pre_v221.db`) preserves all existing agents/quota records and provisions all 24 tables.
@@ -118,6 +123,8 @@ All verification commands executed from a clean state on the local engineering w
 15. **Real OS Hardlink Inode Guard:** Blocks NTFS/POSIX hardlinks (including ADS/dot aliases and companion `-wal`/`-shm`/`-journal` hardlinks) via `(dev, ino)` matching against synthetic temp files.
 16. **Injected `CanonicalPathFs` & `assertSafeNonProductionDbPath` Unit Tests:** Verifies existing/dangling/relative file symlinks, companion `-wal` symlink blocking, and fail-closed `CANONICAL_PATH_RESOLUTION_FAILED` (`ELOOP`, `EACCES` on `realpath`/`lstat`/`readlink`/`stat`, and `depth > MAX_SYMLINK_DEPTH`).
 17. **Negative Controls & Malformed Inputs:** Confirms `:memory:`, `file::memory:?cache=shared`, `company-mcp/data/sandbox.db`, and temp `sandbox.db` succeed while raw/`%00` null bytes (`PRODUCTION_DB_MIGRATION_PROHIBITED`) and blank/malformed URIs (`INVALID_DB_PATH`) throw cleanly.
+18. **SQL Schema Column Parity, Storage Mappings & Row Mappers (P2):** Verifies `PRAGMA table_info` for `chat_messages.internal_metadata_json` and `room_audit_logs.internal_details_json`, confirms all 24 entities in `V3_ENTITY_STORAGE_MAPPINGS` (incl. `KnowledgeChunkFTS` split across `knowledge_chunks_meta` + `knowledge_chunks_fts`), exercises bidirectional `to*DbRow`/`from*DbRow` mappers across 8 JSON/boolean entities, and validates fail-closed rejection on malformed JSON/booleans.
+19. **End-to-End SQLite Sandbox Round-Trip & Public DTO Projection (P2):** Persists `ChatRoom`, `ChatMessage` (with `internal_metadata`, `raw_token_trace`, mixed `metadata`), and `RoomAuditLog` (with `internal_details`, `security_context_snapshot`, mixed `details`) into an isolated migrated SQLite DB, inspects raw columns verbatim, rehydrates entities cleanly with zero data loss, projects via `toPublicChatMessageDTO`/`toPublicRoomAuditLogDTO` confirming internal fields and secrets cannot leak, and re-verifies after rollback + re-migration.
 
 ---
 
@@ -131,13 +138,13 @@ All verification commands executed from a clean state on the local engineering w
 > company-mcp@1.0.0 test
 > node --import tsx --test "test/**/*.test.ts"
 ...
-ℹ tests 104
+ℹ tests 118
 ℹ suites 1
-ℹ pass 104
+ℹ pass 118
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 14703.3975
+ℹ duration_ms 14339.5725
 [Exit Code 0]
 ```

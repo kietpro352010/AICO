@@ -4,8 +4,8 @@
 **Author:** `flash-02` (Engineering & QA Lead)  
 **Recipient:** `chatgpt-01` (CEO & Main Orchestrator)  
 **Governance Authority:** Founder  
-**Date:** 2026-11-10  
-**Status:** DELIVERED & VERIFIED  
+**Date:** 2026-11-11  
+**Status:** DELIVERED & VERIFIED (P1 & P2 HARDENING APPLIED)  
 
 ---
 
@@ -145,17 +145,23 @@ export function toPublicAgentLeaseDTO(lease: AgentLease): PublicAgentLeaseDTO {
 23. `KnowledgeChunkFTS`: `embedding_vector_ref` (vector database storage key)
 24. `ContextSnapshot`: `snapshot_data`, `encryption_iv` (serialized state payload & AES IV)
 
-### Metadata Allowlisting & Anti-Leakage Sanitization (`src/domain/sanitization.ts` & `src/security/secret-scanner.ts`)
-- Shared `projectPublicAllowlistedRecord(source, allowedKeys)` projects only own properties present on an explicit allowlist, blocks dangerous prototype-pollution keys (`__proto__`, `constructor`, `prototype`), uses a `WeakMap` DAG/cycle guard so shared or cyclic structures never return raw unredacted references, and runs `SecretScanner.redact()` on strings and nested structures while keeping non-string values uncoerced so `.strict()` Zod schemas fail closed on type confusion.
-- `SecretScanner.redact()` scrubs API keys (`sk-...`, `aico_live_...`, `ghp_...`, `gho_...`, `AIza...`), full multi-line PEM private key blocks (`-----BEGIN ... PRIVATE KEY----- ... -----END ... PRIVATE KEY-----`), `Bearer` tokens (including `+/=`), and `https?://user:pass@` URL credentials.
-- `redactPublicString()` scrubs residual secrets/credentials from public diagnostic and webhook fields (`last_error`, `failure_reason`, `error_message`, `endpoint`).
+### Metadata Allowlisting, Public Text Entry Guards & SQLite Persistence Mapping (`src/domain/sanitization.ts`, `src/security/secret-scanner.ts`, `src/db/v3-storage-mappers.ts`)
+- **Expanded AICO Secret Catalog (`AICO_SECRET_CATALOG`, 20 Patterns):** `SecretScanner.getCatalog()` enumerates AICO canonical tokens (`aico_live_...`, structured `aico_{test,agent,session}_...`), legacy per-agent tokens (`AgentIdentityService`: `aico_<agentId>_<48hex>`), HTTP `Bearer` and `Authorization: Basic` / `Basic <base64>` credentials, compact signed JWTs, Anthropic (`sk-ant-...`), OpenAI (`sk-...`, `sk-proj-...`, `sk-svcacct-...`), GitHub PATs (`github_pat_...`, `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`), Google/Gemini (`AIza...`), AWS Access Key IDs (`AKIA`/`ASIA`/`AROA`/`AIDA`), Slack tokens (`xox...`) and incoming webhooks, `whsec_` webhook secrets, bounded multi-line PEM/PGP private key blocks + headers, multi-protocol credentialed URLs (`https?`, `amqps?`, `postgres(?:ql)?`, `rediss?`, `mysql`, `mongodb(?:\+srv)?`, `wss?`), and env secret assignments (`AICO_AUDIT_HMAC_KEY`, `AICO_STDIO_TOKEN`, `AICO_WEBHOOK_SECRET`, `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`).
+- **Preventing Secrets From Entering Public Text (`noSecretText`, `assertNoSecretInPublicText`, `assertNoSecretInValue`, `MessagingService`):**
+  - Domain schemas enforce `noSecretText(...)` (`SECRET_LEAK_PREVENTED`) at parse/entry time across authored public text fields: `ChatRoom.slug`/`name`, `ChatMessage.content`/`mentions`, `PublicChatMessageMetadataSchema` strings, `MessageAttachment.file_name`/`file_path`, `MessageReaction.reaction_code`, `PublicRoomAuditDetailsSchema` strings, `AgentExecutionLock.resource_uri`/`purpose`, `ProjectTaskV3.title`/`objective`/`acceptance_criteria`, `TaskTransitionLog.reason`, `TaskApprovalBinding.decision_reason`, `ReviewAssignment.public_feedback`, `ArtifactAttestation.artifact_path`, `MemoryRecordV3.key`/`content`, `KnowledgeChunkFTS.title`/`chunk_content`/`tags`, and `ContextSnapshot.summary`.
+  - `MessagingService.sendMessage()` scans both `subject` and `bodyMarkdown`, and `MessagingService.ackMessage()` scans `note` prior to SQLite writes.
+- **Public DTO Sanitization & Defense-in-Depth (`sanitization.ts`):**
+  - Shared `projectPublicAllowlistedRecord(source, allowedKeys)` projects only own allowlisted keys, drops prototype-pollution keys (`__proto__`, `constructor`, `prototype`), prevents raw unredacted references across shared DAG/cyclic objects via `WeakMap`, and runs `SecretScanner.redact()` on strings while keeping non-string values uncoerced so `.strict()` DTO schemas fail closed on type confusion.
+  - All `toPublic*DTO()` mappers apply `redactPublicString()` / `redactPublicStringArray()` across both authored public fields and diagnostic/webhook fields (`last_error`, `failure_reason`, `error_message`, `endpoint`).
+- **SQLite Persistence Mapping (`v3-storage-mappers.ts` & `v0.5.0-v3-foundation.sql`):**
+  - `ChatMessage.internal_metadata` maps 1:1 to `chat_messages.internal_metadata_json` and `RoomAuditLog.internal_details` maps 1:1 to `room_audit_logs.internal_details_json` alongside `<field>_json` and `boolean` <-> `0|1` mappings, preserving private internal fields across SQLite writes/reads while `toPublic*DTO()` strips them cleanly on public projection.
 
 ---
 
 ## 4. VERIFICATION EVIDENCE
 
-The entire domain model and public DTO boundary hardening is verified by `company-mcp/test/t17-domain-models-g1.test.ts`:
-- **46 tests** executed (30 baseline V3-G1 suite/entity tests across all 24 domain entities + 16 P1 Blocker #2 regression tests covering multi-level nested secrets, internal routing, private identifiers, prototype pollution, type confusion, strict metadata/details rejection, `OutboxEvent`/`DeadLetterQueue` payload omission, `SecretScanner` PEM/URL/Bearer redaction, and `WeakMap` DAG/cycle guards).
+The entire domain model, secret catalog, entry guard, and public DTO hardening is verified by `company-mcp/test/t17-domain-models-g1.test.ts` (and SQLite round-trip persistence in `company-mcp/test/t18-sandbox-migration-g2.test.ts`):
+- **58 tests** executed in `t17` (**30** baseline V3-G1 suite/entity tests across all 24 domain entities + **16** P1 Blocker #2 regression tests + **6** P2 Suite A catalog/AgentIdentityService/false-positive/ReDoS tests + **6** P2 Suite B public-text entry prevention, `MessagingService`, & defense-in-depth DTO scrubbing tests).
 - Valid parsing verified across all 24 entities.
-- Rejection of invalid types, missing required fields, bad regexes, out-of-bounds numbers, un-allowlisted keys, and allowlisted type confusion verified (`ZodError`).
-- Result: **46/46 passed, 0 failures, 0 skipped**.
+- Rejection of invalid types, missing required fields, bad regexes, out-of-bounds numbers, un-allowlisted keys, allowlisted type confusion, and secret-bearing public text (`SECRET_LEAK_PREVENTED`) verified (`ZodError`).
+- Result (`T17`): **58/58 passed, 0 failures, 0 skipped**.

@@ -4,8 +4,8 @@
 **Author:** `flash-02` (Engineering & QA Lead)  
 **Recipient:** `chatgpt-01` (CEO & Main Orchestrator)  
 **Governance Authority:** Founder  
-**Date:** 2026-11-10  
-**Status:** DELIVERED & VERIFIED  
+**Date:** 2026-11-11  
+**Status:** DELIVERED & VERIFIED (P1 & P2 HARDENING APPLIED)  
 
 ---
 
@@ -31,11 +31,11 @@ The UP script executes inside an atomic write transaction (`withWriteTransaction
 #### 1. Core Collaboration (7 Tables)
 - `chat_rooms`: Primary key `room_id`, unique constraint on `slug`, CHECK constraint on `room_type` (6 canonical types), `is_archived` (0 or 1). Indexes on `slug`, `room_type`, `project_id`.
 - `chat_members`: Primary key `membership_id`, foreign key `room_id REFERENCES chat_rooms(room_id) ON DELETE CASCADE`, unique constraint `UNIQUE(room_id, principal_id)`, CHECK constraints on `principal_type` and `role`.
-- `chat_messages`: Primary key `message_id`, foreign key `room_id REFERENCES chat_rooms(room_id) ON DELETE CASCADE`, foreign key `reply_to_id REFERENCES chat_messages(message_id) ON DELETE SET NULL`, CHECK constraints on `message_type`, non-empty `content`, and `is_edited`. Composite index on `(room_id, created_at)`.
+- `chat_messages`: Primary key `message_id`, foreign key `room_id REFERENCES chat_rooms(room_id) ON DELETE CASCADE`, foreign key `reply_to_id REFERENCES chat_messages(message_id) ON DELETE SET NULL`, JSON persistence columns `mentions_json`, `metadata_json`, and `internal_metadata_json` (plus private `raw_token_trace`), CHECK constraints on `message_type`, non-empty `content`, and `is_edited`. Composite index on `(room_id, created_at)`.
 - `message_attachments`: Primary key `attachment_id`, foreign key `message_id REFERENCES chat_messages(message_id) ON DELETE CASCADE`, CHECK constraints on `file_size_bytes >= 0` and `length(sha256_hash) = 64`.
 - `message_reactions`: Primary key `reaction_id`, foreign key `message_id REFERENCES chat_messages(message_id) ON DELETE CASCADE`, unique constraint `UNIQUE(message_id, principal_id, reaction_code)`.
 - `room_invites`: Primary key `invite_id`, foreign key `room_id REFERENCES chat_rooms(room_id) ON DELETE CASCADE`, CHECK constraint on `status` (`pending`, `accepted`, `declined`, `expired`).
-- `room_audit_logs`: Primary key `audit_id`, foreign key `room_id REFERENCES chat_rooms(room_id) ON DELETE CASCADE`, CHECK constraint on `action` (`room_created`, `member_added`, `member_removed`, `role_updated`, `room_archived`, `room_restored`).
+- `room_audit_logs`: Primary key `audit_id`, foreign key `room_id REFERENCES chat_rooms(room_id) ON DELETE CASCADE`, JSON persistence columns `details_json` and `internal_details_json` (plus private `security_context_snapshot`), CHECK constraint on `action` (`room_created`, `member_added`, `member_removed`, `role_updated`, `room_archived`, `room_restored`).
 
 #### 2. Reliable Messaging & Outbox (4 Tables)
 - `event_outbox`: Primary key `event_id`, status check (`pending`, `processing`, `published`, `failed`, `dead_letter`), retry checks `retry_count >= 0`, `max_retries > 0`. Composite index on `(status, scheduled_for)`.
@@ -63,6 +63,10 @@ The UP script executes inside an atomic write transaction (`withWriteTransaction
 - `knowledge_chunks_fts`: SQLite FTS5 virtual table for lexical and full-text search:
   `CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(chunk_id UNINDEXED, memory_id UNINDEXED, title, chunk_content, tags, created_at UNINDEXED);`
 - `context_snapshots`: Primary key `snapshot_id`, foreign key `task_id REFERENCES project_tasks_v3(task_id) ON DELETE SET NULL`, `token_count >= 0`.
+
+### Domain-to-SQLite Storage Mapping Contract (`company-mcp/src/db/v3-storage-mappers.ts`)
+- **`V3_ENTITY_STORAGE_MAPPINGS`:** Declarative mapping specification across all 24 domain entities defining SQLite table targets, `<field>` <-> `<field>_json` columns (`mentions_json`, `metadata_json`, `internal_metadata_json`, `details_json`, `internal_details_json`, `payload_json`, `acceptance_criteria_json`), `boolean` <-> `INTEGER (0 | 1)` columns (`is_archived`, `is_edited`, `is_active`, `resolved`, `is_enabled`), internal/private persisted columns, and the 1-to-2 split for `KnowledgeChunkFTS` (`knowledge_chunks_meta` + FTS5 `knowledge_chunks_fts`).
+- **Typed Row Mappers & Synchronous Helpers:** Bidirectional Zod-validated `to*DbRow` / `from*DbRow` mappers for all JSON/boolean-mapped entities (`ChatRoom`, `ChatMessage`, `RoomAuditLog`, `OutboxEvent`, `EventSubscription`, `DeadLetterQueue`, `ProjectTaskV3`, `AgentCapability`) plus synchronous `DatabaseSync` round-trip persistence helpers (`insertChatRoom`/`getChatRoomById`, `insertChatMessage`/`getChatMessageById`, `insertRoomAuditLog`/`getRoomAuditLogById`) failing closed on malformed JSON or invalid SQL booleans.
 
 ---
 
@@ -135,5 +139,5 @@ When `runner.rollbackMigration(migrationV050V3Foundation)` is invoked:
 ## 5. VERIFICATION EVIDENCE
 
 The migration and rollback engine is verified by `company-mcp/test/t18-sandbox-migration-g2.test.ts`:
-- **17 verification scenarios** (`18` `node --test` items total: 1 outer suite + 17 subtests) covering virgin sandbox migration, seeded migration, idempotency, checksum drift, constraints, cascading FK deletes, index usage, rollback, re-migration, failure injection, and comprehensive canonical/symlink/junction/hardlink/ADS/URI/companion-file production DB path guards (against synthetic `os.tmpdir()` fixtures and mock `CanonicalPathFs`, never touching `data/aico.db`).
-- Result: **18/18 passed, 0 failures, 0 skipped**.
+- **19 verification scenarios** (`20` `node --test` items total: 1 outer suite + 19 subtests) covering virgin sandbox migration, seeded migration, idempotency, checksum drift, constraints, cascading FK deletes, index usage, rollback, re-migration, failure injection, canonical/symlink/junction/hardlink/ADS/URI/companion-file production DB path guards (against synthetic `os.tmpdir()` fixtures and mock `CanonicalPathFs`, never touching `data/aico.db`), P2 schema column parity + 24-entity mapping contracts + fail-closed row mappers (Scenario 18), and end-to-end SQLite sandbox round-trip persistence preserving internal fields while `toPublic*DTO()` strips and redacts secrets including across rollback/re-migration (Scenario 19).
+- Result: **20/20 passed, 0 failures, 0 skipped**.
