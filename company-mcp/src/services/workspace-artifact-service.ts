@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
 import type { PrincipalContext } from "../security/context-store.js";
+import { normalizeBoundedLimit } from "../contracts/query-limits.js";
 
 export interface WorkspaceActivityView {
   activity_id: number;
@@ -438,6 +439,7 @@ export class WorkspaceArtifactService {
     actionType?: string;
     limit?: number;
   }): WorkspaceActivityView[] {
+    const limit = normalizeBoundedLimit(filter?.limit);
     if (!this.connManager) return [];
     return this.connManager.withReadTransaction((db) => {
       let query = "SELECT * FROM agent_workspace_activities WHERE 1=1";
@@ -456,13 +458,8 @@ export class WorkspaceArtifactService {
         params.push(filter.actionType);
       }
 
-      query += " ORDER BY recorded_at DESC";
-      if (filter?.limit) {
-        query += " LIMIT ?";
-        params.push(filter.limit);
-      } else {
-        query += " LIMIT 50";
-      }
+      query += " ORDER BY recorded_at DESC LIMIT ?";
+      params.push(limit);
 
       const rows = db.prepare(query).all(...params) as any[];
       return rows.map((r) => ({

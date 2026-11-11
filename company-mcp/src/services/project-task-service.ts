@@ -91,6 +91,22 @@ export interface TransitionInput {
   metadata?: Record<string, unknown>;
 }
 
+function isArgonAgent(assignedAgentId: string | null | undefined): boolean {
+  return assignedAgentId === "argon-01" || assignedAgentId === "argon-02";
+}
+
+function isCriticalGovernanceTask(task: { risk_class: string; priority: string }): boolean {
+  return task.risk_class === "critical" || task.priority === "P0";
+}
+
+function requiresInitialFounderApproval(task: {
+  assigned_agent_id: string | null;
+  risk_class: string;
+  priority: string;
+}): boolean {
+  return isArgonAgent(task.assigned_agent_id) || isCriticalGovernanceTask(task);
+}
+
 export class ProjectTaskService {
   private connManager: ConnectionManager;
   private approvalService?: ApprovalService;
@@ -331,13 +347,18 @@ export class ProjectTaskService {
     const createdById = params.ctx?.principalId || params.createdBy || params.created_by || "chatgpt-01";
     const createdByType = params.ctx?.principalType || (createdById === "founder-01" ? "human" : "agent");
 
-    // Invariant: Argon tasks CANNOT have retries and start in waiting_approval
-    const isArgon = assignedAgentId === "argon-01" || assignedAgentId === "argon-02";
+    // Invariant: Critical, P0, and Argon tasks start in waiting_approval; Argon tasks cannot retry
+    const isArgon = isArgonAgent(assignedAgentId);
     const maxRetries = isArgon ? 0 : 2;
+    const needsInitialApproval = requiresInitialFounderApproval({
+      assigned_agent_id: assignedAgentId,
+      risk_class: riskClass,
+      priority
+    });
     const initialExecutionStatus: TaskExecutionStatus =
-      riskClass === "critical" || isArgon ? "waiting_approval" : "draft";
+      needsInitialApproval ? "waiting_approval" : "draft";
     const initialDispatchStatus: TaskDispatchStatus =
-      riskClass === "critical" || isArgon ? "approval_pending" : "not_dispatched";
+      needsInitialApproval ? "approval_pending" : "not_dispatched";
 
     const now = new Date().toISOString();
 
@@ -478,9 +499,27 @@ export class ProjectTaskService {
     });
   }
 
-  public heartbeatTask(params: { ctx?: PrincipalContext; taskId: string; agentId?: string }): TaskRecord {
-    const agentId = params.ctx?.agentId || params.agentId;
+  public heartbeatTask(params: {
+    ctx?: PrincipalContext;
+    taskId: string;
+    agentId?: string;
+    expectedVersion?: number;
+  }): TaskRecord {
+    if (!params.ctx || params.ctx.authenticated !== true || !params.ctx.principalId) {
+      throw new Error("AUTHENTICATION_REQUIRED: heartbeatTask requires an authenticated PrincipalContext");
+    }
+    if (
+      params.expectedVersion !== undefined &&
+      (typeof params.expectedVersion !== "number" ||
+        !Number.isInteger(params.expectedVersion) ||
+        params.expectedVersion < 1)
+    ) {
+      throw new Error("VALIDATION_ERROR: heartbeatTask expectedVersion must be a positive integer");
+    }
+
+    const callerActorId = params.ctx.agentId || params.ctx.principalId;
     const now = new Date();
+    const nowIso = now.toISOString();
     const newExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
 
     return this.connManager.withWriteTransaction((db) => {
@@ -491,21 +530,46 @@ export class ProjectTaskService {
         throw new Error(`TASK_INVALID_STATE_TRANSITION: Heartbeat only valid for claimed or in_progress tasks (current: ${task.execution_status})`);
       }
 
-      if (agentId && task.lease_owner_agent_id !== agentId && params.ctx?.principalId !== "founder-01") {
+      if (params.expectedVersion !== undefined && task.version !== params.expectedVersion) {
+        throw new Error(`TASK_VERSION_CONFLICT: Optimistic lock failure: expected version ${params.expectedVersion}, but found ${task.version}`);
+      }
+
+      if (!task.lease_owner_agent_id || (task.lease_owner_agent_id !== callerActorId && params.ctx!.principalId !== "founder-01")) {
         throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only current lease owner '${task.lease_owner_agent_id}' can heartbeat task`);
       }
 
-      db.prepare(`
+      const leaseExpiresMs = task.lease_expires_at ? Date.parse(task.lease_expires_at) : Number.NaN;
+      if (!task.lease_expires_at || Number.isNaN(leaseExpiresMs) || leaseExpiresMs <= now.getTime()) {
+        throw new Error(
+          `TASK_LEASE_EXPIRED: Cannot heartbeat task '${params.taskId}'; lease expired at '${task.lease_expires_at ?? "null"}'`
+        );
+      }
+
+      const upd = db.prepare(`
         UPDATE tasks
         SET lease_expires_at = ?, updated_at = ?
         WHERE task_id = ?
-      `).run(newExpiresAt, now.toISOString(), params.taskId);
+          AND version = ?
+          AND execution_status = ?
+          AND lease_owner_agent_id = ?
+          AND lease_expires_at = ?
+      `).run(
+        newExpiresAt,
+        nowIso,
+        params.taskId,
+        task.version,
+        task.execution_status,
+        task.lease_owner_agent_id,
+        task.lease_expires_at
+      );
 
-      return {
-        ...task,
-        lease_expires_at: newExpiresAt,
-        updated_at: now.toISOString()
-      };
+      if (upd.changes === 0) {
+        throw new Error(
+          `TASK_LEASE_CONFLICT: Lease renewal conflicted with concurrent state or lease update on task '${params.taskId}'`
+        );
+      }
+
+      return db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(params.taskId) as unknown as TaskRecord;
     });
   }
 
@@ -513,15 +577,18 @@ export class ProjectTaskService {
     ctx?: PrincipalContext;
     taskId: string;
     agentId?: string;
-    expectedVersion?: number;
+    expectedVersion: number;
   }): TaskRecord {
     const agentId = params.ctx?.agentId || params.agentId;
     if (!agentId) throw new Error("Agent ID required to claim task");
+    if (typeof params.expectedVersion !== "number" || !Number.isInteger(params.expectedVersion) || params.expectedVersion < 1) {
+      throw new Error("VALIDATION_ERROR: claimTask requires a positive integer expectedVersion");
+    }
 
     return this.transitionTask({
       ctx: params.ctx,
       taskId: params.taskId,
-      expectedVersion: params.expectedVersion ?? 1,
+      expectedVersion: params.expectedVersion,
       toStatus: "claimed",
       note: `Task claimed by ${agentId}`
     });
@@ -571,6 +638,15 @@ export class ProjectTaskService {
     }
     if (!params.ctx.principalType || (params.ctx.principalType !== "human" && params.ctx.principalType !== "agent")) {
       throw new Error("AUTHENTICATION_REQUIRED: reviewTask requires a valid principalType ('human' | 'agent') in PrincipalContext");
+    }
+
+    if (
+      params.expectedVersion !== undefined &&
+      (typeof params.expectedVersion !== "number" ||
+        !Number.isInteger(params.expectedVersion) ||
+        params.expectedVersion < 1)
+    ) {
+      throw new Error("VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer");
     }
 
     const reviewerId = params.ctx.principalId;
@@ -633,13 +709,16 @@ export class ProjectTaskService {
       let newCompletedAt = task.completed_at;
       let newApprovalRequestId = task.approval_request_id;
 
-      const isArgon = task.assigned_agent_id === "argon-01" || task.assigned_agent_id === "argon-02";
+      const isArgon = isArgonAgent(task.assigned_agent_id);
+      const isCritical = isCriticalGovernanceTask(task);
 
       // Match and validate across TR-01 to TR-26
       if (fromStatus === "draft" && toStatus === "queued") {
         // TR-01
-        if (task.risk_class === "critical") {
-          throw new Error("TASK_INVALID_STATE_TRANSITION: Critical task in draft must go to waiting_approval via TR-03");
+        if (requiresInitialFounderApproval(task)) {
+          throw new Error(
+            "TASK_INVALID_STATE_TRANSITION: Critical, P0, or Argon task in draft must go to waiting_approval via TR-03"
+          );
         }
         newDispatchStatus = "not_dispatched";
       } else if (fromStatus === "draft" && toStatus === "cancelled") {
@@ -650,7 +729,6 @@ export class ProjectTaskService {
         newDispatchStatus = "approval_pending";
       } else if (fromStatus === "waiting_approval" && toStatus === "queued") {
         // TR-04
-        const isCritical = task.risk_class === "critical" || task.priority === "P0";
         if (isArgon || isCritical) {
           this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
           newApprovalRequestId = input.approvalId || null;
@@ -720,7 +798,6 @@ export class ProjectTaskService {
         if (task.lease_expires_at && new Date(task.lease_expires_at) <= now) {
           throw new Error("TASK_LEASE_EXPIRED: Cannot move expired lease to in_progress");
         }
-        const isCritical = task.risk_class === "critical" || task.priority === "P0";
         if (isArgon || isCritical) {
           if (!task.approval_request_id && !input.approvalId) {
             throw new Error(isArgon
@@ -773,7 +850,6 @@ export class ProjectTaskService {
         newLeaseExpiresAt = null;
       } else if (fromStatus === "blocked" && toStatus === "in_progress") {
         // TR-16
-        const isCritical = task.risk_class === "critical" || task.priority === "P0";
         if (isArgon || isCritical) {
           this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
           newApprovalRequestId = input.approvalId || null;
@@ -785,7 +861,6 @@ export class ProjectTaskService {
         // TR-17
       } else if (fromStatus === "waiting_approval" && toStatus === "in_progress") {
         // TR-18
-        const isCritical = task.risk_class === "critical" || task.priority === "P0";
         if (isArgon || isCritical) {
           this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
           newApprovalRequestId = input.approvalId || null;

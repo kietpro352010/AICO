@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
 import { SecretScanner } from "../security/secret-scanner.js";
 import type { PrincipalContext } from "../security/context-store.js";
+import { normalizeBoundedLimit } from "../contracts/query-limits.js";
 
 export interface SendMessageParams {
   ctx?: PrincipalContext;
@@ -139,6 +140,7 @@ export class MessagingService {
   }
 
   public listInbox(principalId: string, filter?: { status?: string; limit?: number }): MessageView[] {
+    const limit = normalizeBoundedLimit(filter?.limit);
     return this.connManager.withReadTransaction((db) => {
       let query = `
         SELECT m.*, r.to_principal_id, r.delivery_status
@@ -153,11 +155,8 @@ export class MessagingService {
         params.push(filter.status);
       }
 
-      query += " ORDER BY m.created_at DESC";
-      if (filter?.limit) {
-        query += " LIMIT ?";
-        params.push(filter.limit);
-      }
+      query += " ORDER BY m.created_at DESC LIMIT ?";
+      params.push(limit);
 
       const rows = db.prepare(query).all(...params) as any[];
       return rows.map((r) => ({

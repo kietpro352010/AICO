@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from "./query-limits.js";
 
 // Shared Enums & Constants
 export const PrincipalIdSchema = z.enum([
@@ -349,7 +350,7 @@ export const ArtifactShareResultSchema = z.object({
 // M22: company_get_workspace_activity (Local/STDIO only)
 export const CompanyGetWorkspaceActivityInputSchema = z.object({
   agent_id: z.string().optional(),
-  limit: z.number().default(50)
+  limit: z.number().int().min(MIN_QUERY_LIMIT).max(MAX_QUERY_LIMIT).default(DEFAULT_QUERY_LIMIT)
 });
 
 export const WorkspaceActivityItemSchema = z.object({
@@ -455,7 +456,7 @@ export const CompanyGetTaskOutputSchema = z.object({
 // M29: company_claim_task
 export const CompanyClaimTaskInputSchema = z.object({
   task_id: z.string().min(1),
-  expected_version: z.number()
+  expected_version: z.number().int().min(1)
 });
 
 export const TaskClaimResultSchema = z.object({
@@ -468,7 +469,8 @@ export const TaskClaimResultSchema = z.object({
 
 // M30: company_heartbeat_task
 export const CompanyHeartbeatTaskInputSchema = z.object({
-  task_id: z.string().min(1)
+  task_id: z.string().min(1),
+  expected_version: z.number().int().min(1).optional()
 });
 
 export const TaskHeartbeatResultSchema = z.object({
@@ -512,6 +514,7 @@ export const TaskSubmitResultSchema = z.object({
 // M33: company_review_task (Local/STDIO only)
 export const CompanyReviewTaskInputSchema = z.object({
   task_id: z.string().min(1),
+  expected_version: z.number().int().min(1),
   decision: z.enum(["completed", "rework"]),
   reason: z.string().optional()
 });
@@ -531,6 +534,7 @@ export const CompanyRecordExternalDispatchInputSchema = z.object({
     "external_invocation_confirmed",
     "delivery_failed"
   ]),
+  expected_version: z.number().int().min(1).optional(),
   notes: z.string().optional()
 });
 
@@ -539,6 +543,8 @@ export const ExternalDispatchResultSchema = z.object({
   task_id: z.string(),
   milestone: z.string(),
   dispatch_status: z.string(),
+  version: z.number().optional(),
+  idempotent_replay: z.boolean().optional(),
   recorded_at: z.string()
 });
 
@@ -566,7 +572,10 @@ export const MessageViewSchema = z.object({
 });
 
 // M36: company_list_inbox
-export const CompanyListInboxInputSchema = z.object({});
+export const CompanyListInboxInputSchema = z.object({
+  status: z.string().optional(),
+  limit: z.number().int().min(MIN_QUERY_LIMIT).max(MAX_QUERY_LIMIT).default(DEFAULT_QUERY_LIMIT)
+});
 
 export const CompanyListInboxOutputSchema = z.object({
   success: z.boolean(),

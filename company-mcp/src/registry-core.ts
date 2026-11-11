@@ -16,6 +16,7 @@ import { ObservabilityQuotaService } from "./services/observability-quota-servic
 import { PUBLIC_TOOL_ALLOWLIST } from "./security/http-security-pipeline.js";
 import { getRequestContext } from "./security/context-store.js";
 import { CompanyKnowledgeMemoryOpsInputSchema } from "./contracts/mcp-tool-schemas.js";
+import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from "./contracts/query-limits.js";
 
 export const DB_PATH = RuntimeConfig.getDbPath();
 export const REGISTRY_VERSION = "0.3.0";
@@ -965,7 +966,10 @@ export function registerAllV221Tools(
     {
       title: "Get Workspace Activity",
       description: "List audit activity within workspaces.",
-      inputSchema: z.object({ agent_id: z.string().optional(), limit: z.number().default(50) })
+      inputSchema: z.object({
+        agent_id: z.string().optional(),
+        limit: z.number().int().min(MIN_QUERY_LIMIT).max(MAX_QUERY_LIMIT).default(DEFAULT_QUERY_LIMIT)
+      })
     },
     async ({ agent_id, limit }: { agent_id?: string; limit: number }, extra: any) => {
       const ctx = resolvePrincipal(extra);
@@ -1154,7 +1158,7 @@ export function registerAllV221Tools(
     {
       title: "Claim Task",
       description: "Claim an assigned task.",
-      inputSchema: z.object({ task_id: z.string().min(1), expected_version: z.number().default(1) })
+      inputSchema: z.object({ task_id: z.string().min(1), expected_version: z.number().int().min(1) })
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
@@ -1183,11 +1187,18 @@ export function registerAllV221Tools(
     {
       title: "Heartbeat Task",
       description: "Renew 30-minute lease on an active task.",
-      inputSchema: z.object({ task_id: z.string().min(1) })
+      inputSchema: z.object({
+        task_id: z.string().min(1),
+        expected_version: z.number().int().min(1).optional()
+      })
     },
-    async ({ task_id }: { task_id: string }, extra: any) => {
+    async ({ task_id, expected_version }: { task_id: string; expected_version?: number }, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const res = taskService.heartbeatTask({ ctx, taskId: task_id });
+      const res = taskService.heartbeatTask({
+        ctx,
+        taskId: task_id,
+        expectedVersion: expected_version
+      });
       return {
         content: [{ type: "text", text: JSON.stringify({ success: true, task_id, lease_expires_at: res.lease_expires_at }, null, 2) }]
       };
@@ -1299,13 +1310,16 @@ export function registerAllV221Tools(
       description: "Review task with Separation of Duties.",
       inputSchema: z.object({
         task_id: z.string().min(1),
-        expected_version: z.number().default(1),
+        expected_version: z.number().int().min(1),
         decision: z.enum(["completed", "rework"]),
         reason: z.string().optional()
       })
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
+      if (typeof args.expected_version !== "number" || !Number.isInteger(args.expected_version) || args.expected_version < 1) {
+        throw new Error("VALIDATION_ERROR: company_review_task requires a positive integer expected_version");
+      }
       const res = taskService.reviewTask({
         ctx,
         taskId: args.task_id,
@@ -1336,6 +1350,7 @@ export function registerAllV221Tools(
       inputSchema: z.object({
         task_id: z.string().min(1),
         milestone: z.enum(["operator_delivered", "external_invocation_confirmed", "delivery_failed"]),
+        expected_version: z.number().int().min(1).optional(),
         notes: z.string().optional()
       })
     },
@@ -1345,6 +1360,7 @@ export function registerAllV221Tools(
         taskId: args.task_id,
         milestone: args.milestone,
         actorPrincipalId: ctx.principalId,
+        expectedVersion: args.expected_version,
         notes: args.notes
       }, ctx);
 
@@ -1399,7 +1415,10 @@ export function registerAllV221Tools(
     {
       title: "List Inbox",
       description: "List messages in caller's inbox.",
-      inputSchema: z.object({ status: z.string().optional(), limit: z.number().default(50) })
+      inputSchema: z.object({
+        status: z.string().optional(),
+        limit: z.number().int().min(MIN_QUERY_LIMIT).max(MAX_QUERY_LIMIT).default(DEFAULT_QUERY_LIMIT)
+      })
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
