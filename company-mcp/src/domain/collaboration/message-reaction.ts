@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { noSecretText, redactPublicString } from "../sanitization.js";
 
 export const MessageReactionSchema = z.object({
   reaction_id: z.string().min(1),
   message_id: z.string().min(1),
   principal_id: z.string().min(1),
-  reaction_code: z.string().min(1).max(50),
+  reaction_code: noSecretText(z.string().min(1).max(50), "reaction_code"),
   internal_client_ip: z.string().nullable().default(null), // private network metadata
   created_at: IsoTimestampSchema
 });
@@ -20,5 +21,8 @@ export type PublicMessageReactionDTO = z.infer<typeof PublicMessageReactionDTOSc
 
 export function toPublicMessageReactionDTO(reaction: MessageReaction): PublicMessageReactionDTO {
   const { internal_client_ip, ...publicData } = reaction;
-  return PublicMessageReactionDTOSchema.parse(publicData);
+  return PublicMessageReactionDTOSchema.parse({
+    ...publicData,
+    reaction_code: redactPublicString(publicData.reaction_code)
+  });
 }

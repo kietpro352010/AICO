@@ -1,12 +1,13 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { noSecretText, redactPublicString, redactPublicStringArray } from "../sanitization.js";
 
 export const KnowledgeChunkFTSSchema = z.object({
   chunk_id: z.string().min(1),
   memory_id: z.string().min(1),
-  title: z.string().min(1).max(250),
-  chunk_content: z.string().min(1),
-  tags: z.array(z.string()).default([]),
+  title: noSecretText(z.string().min(1).max(250), "title"),
+  chunk_content: noSecretText(z.string().min(1), "chunk_content"),
+  tags: z.array(noSecretText(z.string(), "tags[]")).default([]),
   embedding_vector_ref: z.string().nullable().default(null),
   created_at: IsoTimestampSchema
 });
@@ -21,5 +22,10 @@ export type PublicKnowledgeChunkFTSDTO = z.infer<typeof PublicKnowledgeChunkFTSD
 
 export function toPublicKnowledgeChunkFTSDTO(chunk: KnowledgeChunkFTS): PublicKnowledgeChunkFTSDTO {
   const { embedding_vector_ref, ...publicData } = chunk;
-  return PublicKnowledgeChunkFTSDTOSchema.parse(publicData);
+  return PublicKnowledgeChunkFTSDTOSchema.parse({
+    ...publicData,
+    title: redactPublicString(publicData.title),
+    chunk_content: redactPublicString(publicData.chunk_content),
+    tags: redactPublicStringArray(publicData.tags)
+  });
 }

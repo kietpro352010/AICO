@@ -73,10 +73,19 @@ export class MessagingService {
     const sensitivity = params.sensitivity || "internal";
     const artifactIds = params.artifactIds || params.artifact_ids || [];
 
-    // Pre-flight Secret Scanner
-    const scan = SecretScanner.scan(bodyMarkdown);
-    if (scan.hasSecret) {
-      throw new Error(`SECRET_LEAK_PREVENTED: Message contains sensitive credential pattern: ${scan.patternMatched}`);
+    // Pre-flight Secret Scanner (subject + bodyMarkdown)
+    const subjectScan = SecretScanner.scan(subject);
+    if (subjectScan.hasSecret) {
+      throw new Error(
+        `SECRET_LEAK_PREVENTED: Message subject contains sensitive credential pattern (${subjectScan.secretId ?? subjectScan.patternMatched}): ${subjectScan.patternMatched}`
+      );
+    }
+
+    const bodyScan = SecretScanner.scan(bodyMarkdown);
+    if (bodyScan.hasSecret) {
+      throw new Error(
+        `SECRET_LEAK_PREVENTED: Message contains sensitive credential pattern (${bodyScan.secretId ?? bodyScan.patternMatched}): ${bodyScan.patternMatched}`
+      );
     }
 
     const messageId = "msg_" + crypto.randomBytes(12).toString("hex");
@@ -167,6 +176,15 @@ export class MessagingService {
   }
 
   public ackMessage(messageId: string, recipientId: string, note?: string): MessageAckOutput {
+    if (note) {
+      const noteScan = SecretScanner.scan(note);
+      if (noteScan.hasSecret) {
+        throw new Error(
+          `SECRET_LEAK_PREVENTED: Message acknowledgment note contains sensitive credential pattern (${noteScan.secretId ?? noteScan.patternMatched}): ${noteScan.patternMatched}`
+        );
+      }
+    }
+
     const nowIso = new Date().toISOString();
     return this.connManager.withWriteTransaction((db) => {
       const rec = db.prepare("SELECT * FROM message_recipients WHERE message_id = ? AND to_principal_id = ?").get(messageId, recipientId) as any;

@@ -6,13 +6,14 @@ import {
   TaskDispatchStatusSchema,
   IsoTimestampSchema
 } from "../common.js";
+import { noSecretText, redactPublicString, redactPublicStringArray } from "../sanitization.js";
 
 export const ProjectTaskV3Schema = z.object({
   task_id: z.string().min(1),
   project_id: z.string().min(1),
   parent_task_id: z.string().nullable().default(null),
-  title: z.string().min(1).max(300),
-  objective: z.string().min(1),
+  title: noSecretText(z.string().min(1).max(300), "title"),
+  objective: noSecretText(z.string().min(1), "objective"),
   risk_class: RiskClassSchema.default("medium"),
   priority: PrioritySchema.default("medium"),
   execution_status: TaskExecutionStatusSchema.default("draft"),
@@ -22,7 +23,7 @@ export const ProjectTaskV3Schema = z.object({
   version: z.number().int().positive().default(1),
   token_budget: z.number().int().positive().default(100000),
   token_used: z.number().int().nonnegative().default(0),
-  acceptance_criteria: z.array(z.string()).default([]),
+  acceptance_criteria: z.array(noSecretText(z.string(), "acceptance_criteria[]")).default([]),
   internal_evaluation_notes: z.string().nullable().default(null), // private QA/eval notes
   created_at: IsoTimestampSchema,
   updated_at: IsoTimestampSchema
@@ -38,5 +39,10 @@ export type PublicProjectTaskV3DTO = z.infer<typeof PublicProjectTaskV3DTOSchema
 
 export function toPublicProjectTaskV3DTO(task: ProjectTaskV3): PublicProjectTaskV3DTO {
   const { internal_evaluation_notes, ...publicData } = task;
-  return PublicProjectTaskV3DTOSchema.parse(publicData);
+  return PublicProjectTaskV3DTOSchema.parse({
+    ...publicData,
+    title: redactPublicString(publicData.title),
+    objective: redactPublicString(publicData.objective),
+    acceptance_criteria: redactPublicStringArray(publicData.acceptance_criteria)
+  });
 }

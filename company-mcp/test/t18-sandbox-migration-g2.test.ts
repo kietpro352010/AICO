@@ -20,6 +20,48 @@ import {
 import { migrationV040 } from "../src/db/migrations/v040-agent-columns.js";
 import { migrationV050Schema } from "../src/db/migrations/v050-target-schema.js";
 import { migrationV050V3Foundation } from "../src/db/migrations/v050-v3-foundation.js";
+import {
+  V3_ENTITY_STORAGE_MAPPINGS,
+  booleanToSqlInt,
+  sqlIntToBoolean,
+  parseJsonStringArray,
+  parseJsonPlainObject,
+  toChatRoomDbRow,
+  fromChatRoomDbRow,
+  toChatMessageDbRow,
+  fromChatMessageDbRow,
+  toRoomAuditLogDbRow,
+  fromRoomAuditLogDbRow,
+  toOutboxEventDbRow,
+  fromOutboxEventDbRow,
+  toEventSubscriptionDbRow,
+  fromEventSubscriptionDbRow,
+  toDeadLetterQueueDbRow,
+  fromDeadLetterQueueDbRow,
+  toProjectTaskV3DbRow,
+  fromProjectTaskV3DbRow,
+  toAgentCapabilityDbRow,
+  fromAgentCapabilityDbRow,
+  insertChatRoom,
+  getChatRoomById,
+  insertChatMessage,
+  getChatMessageById,
+  insertRoomAuditLog,
+  getRoomAuditLogById
+} from "../src/db/v3-storage-mappers.js";
+import {
+  AgentCapability,
+  ChatMessage,
+  ChatRoom,
+  DeadLetterQueue,
+  EventSubscription,
+  OutboxEvent,
+  ProjectTaskV3,
+  RoomAuditLog,
+  toPublicChatMessageDTO,
+  toPublicRoomAuditLogDTO
+} from "../src/domain/index.js";
+import { SecretScanner } from "../src/security/secret-scanner.js";
 
 const EXPECTED_24_ENTITIES_TABLES = [
   "chat_rooms",
@@ -276,6 +318,42 @@ function createMockCanonicalFs(spec: MockCanonicalFsSpec): CanonicalPathFs {
   }
 
   return fsObj;
+}
+
+interface SqlitePragmaColumnInfo {
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+}
+
+function getTableColumnsMap(db: DatabaseSync, tableName: string): Map<string, SqlitePragmaColumnInfo> {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as unknown as SqlitePragmaColumnInfo[];
+  return new Map(rows.map((r) => [r.name, r]));
+}
+
+function assertInternalStorageColumnParity(db: DatabaseSync): void {
+  const chatMsgCols = getTableColumnsMap(db, "chat_messages");
+  for (const colName of ["metadata_json", "internal_metadata_json"]) {
+    const col = chatMsgCols.get(colName);
+    assert.ok(col, `chat_messages.${colName} must exist`);
+    assert.equal(col.type, "TEXT", `chat_messages.${colName} must be TEXT`);
+    assert.equal(col.notnull, 1, `chat_messages.${colName} must be NOT NULL`);
+    assert.equal(col.dflt_value, "'{}'", `chat_messages.${colName} default must be '{}'`);
+  }
+  assert.ok(chatMsgCols.has("mentions_json"), "chat_messages.mentions_json must exist");
+  assert.ok(chatMsgCols.has("raw_token_trace"), "chat_messages.raw_token_trace must exist");
+  assert.ok(chatMsgCols.has("is_edited"), "chat_messages.is_edited must exist");
+
+  const auditCols = getTableColumnsMap(db, "room_audit_logs");
+  for (const colName of ["details_json", "internal_details_json"]) {
+    const col = auditCols.get(colName);
+    assert.ok(col, `room_audit_logs.${colName} must exist`);
+    assert.equal(col.type, "TEXT", `room_audit_logs.${colName} must be TEXT`);
+    assert.equal(col.notnull, 1, `room_audit_logs.${colName} must be NOT NULL`);
+    assert.equal(col.dflt_value, "'{}'", `room_audit_logs.${colName} default must be '{}'`);
+  }
+  assert.ok(auditCols.has("security_context_snapshot"), "room_audit_logs.security_context_snapshot must exist");
 }
 
 test("T18: V3-G2 Sandbox Database Migration v0.5.0 Suite", async (suite) => {
@@ -1251,6 +1329,595 @@ test("T18: V3-G2 Sandbox Database Migration v0.5.0 Suite", async (suite) => {
       }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  // Scenario 18: Schema Column Parity, Declarative Storage Mapping Contract & Bidirectional Mappers
+  await suite.test("18. Schema column parity, declarative 24-entity storage mappings, bidirectional row mappers & fail-closed validation", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aico-schema-parity-"));
+    const sandboxDbPath = path.join(tempDir, "schema_parity_sandbox.db");
+
+    try {
+      const conn = new ConnectionManager(sandboxDbPath);
+      const runner = new MigrationRunner(conn);
+      runner.runMigrations([migrationV050V3Foundation]);
+
+      // 18.1 Verify SQLite PRAGMA table_info parity for chat_messages, room_audit_logs, and all 24 domain entities
+      conn.withReadTransaction((db) => {
+        assertInternalStorageColumnParity(db);
+
+        const mappingKeys = Object.keys(V3_ENTITY_STORAGE_MAPPINGS);
+        assert.equal(mappingKeys.length, 24, "V3_ENTITY_STORAGE_MAPPINGS must cover all 24 V3 domain entities");
+
+        const expectedEntities = [
+          "ChatRoom",
+          "ChatMember",
+          "ChatMessage",
+          "MessageAttachment",
+          "MessageReaction",
+          "RoomInvite",
+          "RoomAuditLog",
+          "OutboxEvent",
+          "EventSubscription",
+          "DeadLetterQueue",
+          "DeliveryAttempt",
+          "AgentLease",
+          "AgentHeartbeat",
+          "AgentCapability",
+          "AgentQuotaAllocation",
+          "AgentExecutionLock",
+          "ProjectTaskV3",
+          "TaskTransitionLog",
+          "TaskApprovalBinding",
+          "ReviewAssignment",
+          "ArtifactAttestation",
+          "MemoryRecordV3",
+          "KnowledgeChunkFTS",
+          "ContextSnapshot"
+        ];
+        assert.deepEqual(
+          new Set(mappingKeys),
+          new Set(expectedEntities),
+          "V3_ENTITY_STORAGE_MAPPINGS keys must match all 24 canonical entities"
+        );
+
+        for (const entityKey of expectedEntities) {
+          const mapping = V3_ENTITY_STORAGE_MAPPINGS[entityKey as keyof typeof V3_ENTITY_STORAGE_MAPPINGS];
+          const tableColumnMaps = new Map<string, Map<string, SqlitePragmaColumnInfo>>();
+
+          for (const tableName of mapping.tables) {
+            const cols = getTableColumnsMap(db, tableName);
+            assert.ok(cols.size > 0, `Table '${tableName}' for entity '${entityKey}' must exist in migrated SQLite DB`);
+            assert.ok(
+              cols.has(mapping.primaryKey),
+              `Table '${tableName}' for entity '${entityKey}' must contain primaryKey '${mapping.primaryKey}'`
+            );
+            tableColumnMaps.set(tableName, cols);
+          }
+
+          for (const jsonCol of mapping.jsonColumns) {
+            const targetTable = mapping.tables[0];
+            assert.ok(
+              tableColumnMaps.get(targetTable)!.has(jsonCol.dbColumn),
+              `${entityKey}.${jsonCol.domainField} -> ${targetTable}.${jsonCol.dbColumn} must exist in SQLite`
+            );
+          }
+
+          for (const boolCol of mapping.booleanColumns) {
+            const targetTable = mapping.tables[0];
+            assert.ok(
+              tableColumnMaps.get(targetTable)!.has(boolCol.dbColumn),
+              `${entityKey}.${boolCol.domainField} -> ${targetTable}.${boolCol.dbColumn} must exist in SQLite`
+            );
+          }
+
+          for (const internalCol of mapping.internalColumns) {
+            const targetTable = ("dbTable" in internalCol && internalCol.dbTable) ? internalCol.dbTable : mapping.tables[0];
+            assert.ok(
+              tableColumnMaps.get(targetTable)!.has(internalCol.dbColumn),
+              `${entityKey} internal column ${targetTable}.${internalCol.dbColumn} must exist in SQLite`
+            );
+          }
+        }
+
+        // Verify KnowledgeChunkFTS 1-to-2 split contract across knowledge_chunks_meta and knowledge_chunks_fts
+        const kcMapping = V3_ENTITY_STORAGE_MAPPINGS.KnowledgeChunkFTS;
+        assert.equal(kcMapping.storageModel, "split_meta_and_fts5");
+        assert.deepEqual([...kcMapping.tables], ["knowledge_chunks_meta", "knowledge_chunks_fts"]);
+        for (const splitCol of kcMapping.splitColumns) {
+          const cols = getTableColumnsMap(db, splitCol.dbTable);
+          assert.ok(
+            cols.has(splitCol.dbColumn),
+            `KnowledgeChunkFTS split column ${splitCol.dbTable}.${splitCol.dbColumn} must exist in SQLite`
+          );
+        }
+        const tagsSplit = kcMapping.splitColumns.find((c) => c.domainField === "tags");
+        assert.equal(tagsSplit?.dbTable, "knowledge_chunks_fts");
+        assert.equal(tagsSplit?.serialization, "fts5_text");
+      });
+
+      // 18.2 Bidirectional row mappers across all 8 typed row-mapped entities
+      const ts = "2026-11-11T07:30:00Z";
+
+      for (const archivedFlag of [true, false]) {
+        const room: ChatRoom = {
+          room_id: `room-${archivedFlag ? "arch" : "open"}`,
+          slug: `room-slug-${archivedFlag ? "arch" : "open"}`,
+          name: "Engineering Sync",
+          room_type: "PROJECT_ROOM",
+          project_id: archivedFlag ? "proj-1" : null,
+          task_id: archivedFlag ? "task-1" : null,
+          created_by: "flash-01",
+          is_archived: archivedFlag,
+          internal_notes: archivedFlag ? "private archive note" : null,
+          created_at: ts,
+          updated_at: ts
+        };
+        const roomRow = toChatRoomDbRow(room);
+        assert.equal(roomRow.is_archived, archivedFlag ? 1 : 0);
+        assert.deepEqual(fromChatRoomDbRow(roomRow), room);
+      }
+
+      for (const editedFlag of [true, false]) {
+        const msg: ChatMessage = {
+          message_id: `msg-${editedFlag ? "ed" : "orig"}`,
+          room_id: "room-1",
+          sender_id: "flash-02",
+          sender_type: "agent",
+          message_type: "REVIEW_FEEDBACK",
+          content: "Schema parity check passed.",
+          reply_to_id: editedFlag ? "msg-0" : null,
+          mentions: editedFlag ? ["flash-01", "codex-01"] : [],
+          metadata: editedFlag ? { thread_title: "Parity", tags: ["v3", "g2"] } : {},
+          internal_metadata: editedFlag ? { trace_id: "tr-123", nested: { ok: true } } : {},
+          raw_token_trace: editedFlag ? "trace_secret_payload" : null,
+          is_edited: editedFlag,
+          created_at: ts,
+          updated_at: ts
+        };
+        const msgRow = toChatMessageDbRow(msg);
+        assert.equal(msgRow.is_edited, editedFlag ? 1 : 0);
+        assert.equal(typeof msgRow.mentions_json, "string");
+        assert.equal(typeof msgRow.metadata_json, "string");
+        assert.equal(typeof msgRow.internal_metadata_json, "string");
+        assert.deepEqual(fromChatMessageDbRow(msgRow), msg);
+      }
+
+      const auditLog: RoomAuditLog = {
+        audit_id: "audit-1",
+        room_id: "room-1",
+        action: "role_updated",
+        actor_id: "flash-01",
+        details: { target: "codex-01", previous_role: "observer", new_role: "member" },
+        internal_details: { ip: "127.0.0.1", token_fingerprint: "sha256:abcd" },
+        security_context_snapshot: '{"session":"internal"}',
+        created_at: ts
+      };
+      const auditRow = toRoomAuditLogDbRow(auditLog);
+      assert.equal(auditRow.details_json, JSON.stringify(auditLog.details));
+      assert.equal(auditRow.internal_details_json, JSON.stringify(auditLog.internal_details));
+      assert.deepEqual(fromRoomAuditLogDbRow(auditRow), auditLog);
+
+      const outboxEvent: OutboxEvent = {
+        event_id: "evt-1",
+        aggregate_type: "task",
+        aggregate_id: "task-99",
+        event_type: "task.completed",
+        payload: { status: "completed", nested: { score: 100 } },
+        status: "published",
+        retry_count: 1,
+        max_retries: 5,
+        last_error: null,
+        internal_routing_key: "rk.internal.tasks.99",
+        scheduled_for: ts,
+        processed_at: ts,
+        created_at: ts
+      };
+      const outboxRow = toOutboxEventDbRow(outboxEvent);
+      assert.equal(outboxRow.payload_json, JSON.stringify(outboxEvent.payload));
+      assert.deepEqual(fromOutboxEventDbRow(outboxRow), outboxEvent);
+
+      for (const activeFlag of [true, false]) {
+        const sub: EventSubscription = {
+          subscription_id: `sub-${activeFlag ? "on" : "off"}`,
+          subscriber_id: "worker-01",
+          event_pattern: "task.*",
+          endpoint: "https://internal.example.local/hooks/events",
+          is_active: activeFlag,
+          auth_secret_hash: activeFlag ? "hash-abc123" : null,
+          created_at: ts,
+          updated_at: ts
+        };
+        const subRow = toEventSubscriptionDbRow(sub);
+        assert.equal(subRow.is_active, activeFlag ? 1 : 0);
+        assert.deepEqual(fromEventSubscriptionDbRow(subRow), sub);
+      }
+
+      for (const resolvedFlag of [true, false]) {
+        const dlq: DeadLetterQueue = {
+          dlq_id: `dlq-${resolvedFlag ? "res" : "open"}`,
+          original_event_id: "evt-fail-1",
+          event_type: "task.failed",
+          payload: { attempt: 5, reason: "timeout" },
+          failure_reason: "Downstream timeout after 5 attempts",
+          stack_trace: "Error: timeout\n  at dispatch()",
+          resolved: resolvedFlag,
+          resolved_by: resolvedFlag ? "flash-02" : null,
+          resolved_at: resolvedFlag ? ts : null,
+          failed_at: ts
+        };
+        const dlqRow = toDeadLetterQueueDbRow(dlq);
+        assert.equal(dlqRow.resolved, resolvedFlag ? 1 : 0);
+        assert.equal(dlqRow.payload_json, JSON.stringify(dlq.payload));
+        assert.deepEqual(fromDeadLetterQueueDbRow(dlqRow), dlq);
+      }
+
+      const task: ProjectTaskV3 = {
+        task_id: "task-v3-1",
+        project_id: "proj-v3",
+        parent_task_id: "task-v3-0",
+        title: "Verify storage mappers",
+        objective: "Ensure lossless round-trip mapping",
+        risk_class: "high",
+        priority: "high",
+        execution_status: "in_progress",
+        dispatch_status: "external_running",
+        assigned_agent_id: "codex-01",
+        reviewer_agent_id: "flash-02",
+        version: 2,
+        token_budget: 50000,
+        token_used: 1200,
+        acceptance_criteria: ["All 24 mappings verified", "Zero silent coercion"],
+        internal_evaluation_notes: "QA trace: strict Zod schema intact",
+        created_at: ts,
+        updated_at: ts
+      };
+      const taskRow = toProjectTaskV3DbRow(task);
+      assert.equal(taskRow.acceptance_criteria_json, JSON.stringify(task.acceptance_criteria));
+      assert.deepEqual(fromProjectTaskV3DbRow(taskRow), task);
+
+      for (const enabledFlag of [true, false]) {
+        const cap: AgentCapability = {
+          capability_id: `cap-${enabledFlag ? "on" : "off"}`,
+          agent_id: "flash-02",
+          capability_name: "qa-regression-testing",
+          version: "1.2.0",
+          is_enabled: enabledFlag,
+          proficiency: enabledFlag ? "specialist" : "supporting",
+          internal_evaluation_score: enabledFlag ? 0.98 : null,
+          granted_at: ts
+        };
+        const capRow = toAgentCapabilityDbRow(cap);
+        assert.equal(capRow.is_enabled, enabledFlag ? 1 : 0);
+        assert.deepEqual(fromAgentCapabilityDbRow(capRow), cap);
+      }
+
+      // 18.3 Fail-closed primitive & row parser validation
+      assert.equal(booleanToSqlInt(true), 1);
+      assert.equal(booleanToSqlInt(false), 0);
+      assert.throws(() => booleanToSqlInt(1 as unknown as boolean), TypeError);
+
+      assert.equal(sqlIntToBoolean(0, "test_flag"), false);
+      assert.equal(sqlIntToBoolean(1, "test_flag"), true);
+      assert.equal(sqlIntToBoolean(false, "test_flag"), false);
+      assert.equal(sqlIntToBoolean(true, "test_flag"), true);
+      for (const badBool of [2, -1, "1", null, undefined]) {
+        assert.throws(
+          () => sqlIntToBoolean(badBool as unknown as number, "test_flag"),
+          /Invalid SQL boolean value/
+        );
+      }
+
+      assert.deepEqual(parseJsonStringArray('["a","b"]', "arr"), ["a", "b"]);
+      assert.throws(() => parseJsonStringArray('["unclosed', "arr"), /Invalid JSON/);
+      assert.throws(() => parseJsonStringArray('{"a":1}', "arr"), /Invalid JSON array/);
+      assert.throws(() => parseJsonStringArray('null', "arr"), /Invalid JSON array/);
+      assert.throws(() => parseJsonStringArray('["ok", 42]', "arr"), /Invalid JSON string array item/);
+      assert.throws(() => parseJsonStringArray(null as unknown as string, "arr"), /Invalid JSON string/);
+
+      assert.deepEqual(parseJsonPlainObject('{"k":1}', "obj"), { k: 1 });
+      assert.throws(() => parseJsonPlainObject("{bad", "obj"), /Invalid JSON/);
+      assert.throws(() => parseJsonPlainObject("[]", "obj"), /Invalid JSON object/);
+      assert.throws(() => parseJsonPlainObject("null", "obj"), /Invalid JSON object/);
+      assert.throws(() => parseJsonPlainObject('"primitive"', "obj"), /Invalid JSON object/);
+      assert.throws(() => parseJsonPlainObject(123 as unknown as string, "obj"), /Invalid JSON string/);
+
+      const validMsgRow = toChatMessageDbRow({
+        message_id: "msg-valid-base",
+        room_id: "room-1",
+        sender_id: "flash-02",
+        sender_type: "agent",
+        message_type: "TEXT",
+        content: "Clean baseline content",
+        reply_to_id: null,
+        mentions: [],
+        metadata: {},
+        internal_metadata: {},
+        raw_token_trace: null,
+        is_edited: false,
+        created_at: ts,
+        updated_at: ts
+      });
+
+      for (const [patch, label] of [
+        [{ mentions_json: "{not-json" }, "malformed mentions_json"],
+        [{ mentions_json: '{"not":"array"}' }, "non-array mentions_json"],
+        [{ mentions_json: '[123]' }, "wrong element type in mentions_json"],
+        [{ metadata_json: "[]" }, "non-object array in metadata_json"],
+        [{ internal_metadata_json: "[]" }, "non-object array in internal_metadata_json"],
+        [{ internal_metadata_json: "{broken" }, "malformed internal_metadata_json"],
+        [{ is_edited: 2 }, "invalid SQL boolean is_edited=2"],
+        [{ created_at: "not-a-timestamp" }, "invalid created_at timestamp"],
+        [{ sender_type: "alien" }, "invalid sender_type enum"],
+        [{ message_type: "BOGUS" }, "invalid message_type enum"]
+      ] as const) {
+        assert.throws(
+          () => fromChatMessageDbRow({ ...validMsgRow, ...patch }),
+          `fromChatMessageDbRow must fail closed on ${label}`
+        );
+      }
+
+      const validAuditRow = toRoomAuditLogDbRow(auditLog);
+      for (const [patch, label] of [
+        [{ details_json: "{bad" }, "malformed details_json"],
+        [{ details_json: "[]" }, "non-object array in details_json"],
+        [{ internal_details_json: "{bad" }, "malformed internal_details_json"],
+        [{ internal_details_json: "[]" }, "non-object array in internal_details_json"],
+        [{ action: "unknown_action" }, "invalid RoomAuditLog action enum"],
+        [{ created_at: "invalid-date" }, "invalid RoomAuditLog created_at timestamp"]
+      ] as const) {
+        assert.throws(
+          () => fromRoomAuditLogDbRow({ ...validAuditRow, ...patch }),
+          `fromRoomAuditLogDbRow must fail closed on ${label}`
+        );
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  // Scenario 19: End-to-End SQLite Sandbox DB Round-Trip Persistence & Public DTO Projection
+  await suite.test("19. End-to-end SQLite sandbox round-trip preserves internal fields while public DTO projections strip & redact secrets (including after rollback/remigrate)", () => {
+    const ctx = createSandboxTestContext("aico-v3-roundtrip-");
+
+    try {
+      const conn = new ConnectionManager(ctx.dbPath);
+      const runner = new MigrationRunner(conn);
+      runner.runMigrations([migrationV050V3Foundation]);
+
+      const ts = "2026-11-11T07:35:00Z";
+      const secretOpenAi = "sk-proj-secret1234567890abcdef";
+      const secretAllowlistedOpenAi = "sk-proj-allowlisted1234567890abcdef";
+      const secretAuditAllowlisted = "sk-proj-auditsecret1234567890abcdef";
+      const secretLegacyAgent = "aico_flash-02_0123456789abcdef0123456789abcdef0123456789abcdef";
+      const secretJwt =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+      const secretGithub = "ghp_1234567890abcdefghij1234567890abcd";
+      const secretAnthropic = "sk-ant-api03-secretvalue1234567890abcdef";
+      const secretGoogle = "AIzaSyDaGmWKa4JsXZ-HjGw7ISLn_3namBGt2EX";
+      const secretSession = "aico_session_0123456789abcdef0123456789";
+      const secretHmacEnv = "AICO_AUDIT_HMAC_KEY=super_secret_hmac_key_value_123456";
+
+      const room: ChatRoom = {
+        room_id: "room-roundtrip-1",
+        slug: "v3-roundtrip-room",
+        name: "V3 Roundtrip Verification Room",
+        room_type: "PROJECT_ROOM",
+        project_id: "proj-v3",
+        task_id: "task-v3-g2",
+        created_by: "flash-02",
+        is_archived: false,
+        internal_notes: "Private room orchestration notes",
+        created_at: ts,
+        updated_at: ts
+      };
+
+      const message: ChatMessage = {
+        message_id: "msg-roundtrip-1",
+        room_id: room.room_id,
+        sender_id: "flash-02",
+        sender_type: "agent",
+        message_type: "DIRECTIVE",
+        content: "Execute sandbox round-trip verification.",
+        reply_to_id: null,
+        mentions: ["flash-01", "codex-01"],
+        metadata: {
+          thread_title: "Gate V3-G2 Round-Trip",
+          topic: `Sanitized allowlisted topic with token ${secretAllowlistedOpenAi}`,
+          priority_label: "high",
+          ui_display_mode: "standard",
+          tags: ["v3", "sqlite-roundtrip"],
+          non_allowlisted_headers: { authorization: `Bearer ${secretJwt}` },
+          non_allowlisted_token: secretGithub,
+          non_allowlisted_nested: { anthropic_key: secretAnthropic }
+        },
+        internal_metadata: {
+          trace: {
+            api_key: secretOpenAi,
+            agent_token: secretLegacyAgent
+          },
+          span_id: "span-roundtrip-01"
+        },
+        raw_token_trace: `raw-auth-header=Bearer ${secretJwt}`,
+        is_edited: true,
+        created_at: ts,
+        updated_at: ts
+      };
+
+      const auditLog: RoomAuditLog = {
+        audit_id: "audit-roundtrip-1",
+        room_id: room.room_id,
+        action: "member_added",
+        actor_id: "flash-01",
+        details: {
+          target: "codex-01",
+          target_principal_id: "codex-01",
+          new_role: "member",
+          reason: `Provisioned after stripping ${secretAuditAllowlisted}`,
+          summary: "Added implementation engineer",
+          non_allowlisted_ip: "10.10.0.5",
+          non_allowlisted_cloud: { gcp_key: secretGoogle }
+        },
+        internal_details: {
+          signer: "flash-01",
+          hmac_assignment: secretHmacEnv,
+          nested_approval: { quorum: 2 }
+        },
+        security_context_snapshot: JSON.stringify({
+          session_token: secretSession,
+          mfa: true
+        }),
+        created_at: ts
+      };
+
+      conn.withWriteTransaction((db) => {
+        insertChatRoom(db, room);
+        insertChatMessage(db, message);
+        insertRoomAuditLog(db, auditLog);
+      });
+
+      conn.withReadTransaction((db) => {
+        // Verify ChatRoom persistence & null lookup
+        assert.deepEqual(getChatRoomById(db, room.room_id), room);
+        assert.equal(getChatRoomById(db, "non-existent-room"), null);
+
+        // Verify raw SQLite storage columns persisted verbatim for ChatMessage
+        const rawMsgCols = db
+          .prepare(
+            "SELECT internal_metadata_json, raw_token_trace, metadata_json, mentions_json, is_edited FROM chat_messages WHERE message_id = ?"
+          )
+          .get(message.message_id) as {
+          internal_metadata_json: string;
+          raw_token_trace: string | null;
+          metadata_json: string;
+          mentions_json: string;
+          is_edited: number;
+        };
+        assert.equal(rawMsgCols.internal_metadata_json, JSON.stringify(message.internal_metadata));
+        assert.deepEqual(JSON.parse(rawMsgCols.internal_metadata_json), message.internal_metadata);
+        assert.equal(rawMsgCols.raw_token_trace, message.raw_token_trace);
+        assert.equal(rawMsgCols.metadata_json, JSON.stringify(message.metadata));
+        assert.equal(rawMsgCols.mentions_json, JSON.stringify(message.mentions));
+        assert.equal(rawMsgCols.is_edited, 1);
+
+        // Verify raw SQLite storage columns persisted verbatim for RoomAuditLog
+        const rawAuditCols = db
+          .prepare(
+            "SELECT internal_details_json, security_context_snapshot, details_json FROM room_audit_logs WHERE audit_id = ?"
+          )
+          .get(auditLog.audit_id) as {
+          internal_details_json: string;
+          security_context_snapshot: string | null;
+          details_json: string;
+        };
+        assert.equal(rawAuditCols.internal_details_json, JSON.stringify(auditLog.internal_details));
+        assert.deepEqual(JSON.parse(rawAuditCols.internal_details_json), auditLog.internal_details);
+        assert.equal(rawAuditCols.security_context_snapshot, auditLog.security_context_snapshot);
+        assert.equal(rawAuditCols.details_json, JSON.stringify(auditLog.details));
+
+        // Verify hydrated domain objects match originals losslessly
+        const hydratedMessage = getChatMessageById(db, message.message_id);
+        const hydratedAuditLog = getRoomAuditLogById(db, auditLog.audit_id);
+        assert.ok(hydratedMessage !== null);
+        assert.ok(hydratedAuditLog !== null);
+        assert.deepEqual(hydratedMessage, message);
+        assert.deepEqual(hydratedAuditLog, auditLog);
+        assert.equal(getChatMessageById(db, "non-existent-msg"), null);
+        assert.equal(getRoomAuditLogById(db, "non-existent-audit"), null);
+
+        // Project through public DTO boundaries
+        const msgDto = toPublicChatMessageDTO(hydratedMessage);
+        const auditDto = toPublicRoomAuditLogDTO(hydratedAuditLog);
+
+        assert.equal("internal_metadata" in msgDto, false, "internal_metadata must be absent from PublicChatMessageDTO");
+        assert.equal("raw_token_trace" in msgDto, false, "raw_token_trace must be absent from PublicChatMessageDTO");
+        assert.equal("internal_details" in auditDto, false, "internal_details must be absent from PublicRoomAuditLogDTO");
+        assert.equal(
+          "security_context_snapshot" in auditDto,
+          false,
+          "security_context_snapshot must be absent from PublicRoomAuditLogDTO"
+        );
+
+        // Un-allowlisted metadata & details keys must be stripped
+        assert.equal("non_allowlisted_headers" in msgDto.metadata, false);
+        assert.equal("non_allowlisted_token" in msgDto.metadata, false);
+        assert.equal("non_allowlisted_nested" in msgDto.metadata, false);
+        assert.equal("non_allowlisted_ip" in auditDto.details, false);
+        assert.equal("non_allowlisted_cloud" in auditDto.details, false);
+
+        // Allowlisted keys remain intact with embedded secrets redacted
+        assert.equal(msgDto.metadata.thread_title, "Gate V3-G2 Round-Trip");
+        assert.equal(msgDto.metadata.priority_label, "high");
+        assert.equal(msgDto.metadata.ui_display_mode, "standard");
+        assert.deepEqual(msgDto.metadata.tags, ["v3", "sqlite-roundtrip"]);
+        assert.equal(msgDto.metadata.topic, "Sanitized allowlisted topic with token [REDACTED_SECRET]");
+
+        assert.equal(auditDto.details.target, "codex-01");
+        assert.equal(auditDto.details.target_principal_id, "codex-01");
+        assert.equal(auditDto.details.new_role, "member");
+        assert.equal(auditDto.details.summary, "Added implementation engineer");
+        assert.equal(auditDto.details.reason, "Provisioned after stripping [REDACTED_SECRET]");
+
+        // Zero secret leakage in serialized DTO JSON
+        const serializedMsgDto = JSON.stringify(msgDto);
+        const serializedAuditDto = JSON.stringify(auditDto);
+        for (const forbiddenSecret of [
+          secretOpenAi,
+          secretAllowlistedOpenAi,
+          secretAuditAllowlisted,
+          secretLegacyAgent,
+          secretJwt,
+          secretGithub,
+          secretAnthropic,
+          secretGoogle,
+          secretSession,
+          "super_secret_hmac_key_value_123456"
+        ]) {
+          assert.equal(
+            serializedMsgDto.includes(forbiddenSecret),
+            false,
+            `PublicChatMessageDTO JSON must not leak secret substring ${forbiddenSecret.slice(0, 12)}`
+          );
+          assert.equal(
+            serializedAuditDto.includes(forbiddenSecret),
+            false,
+            `PublicRoomAuditLogDTO JSON must not leak secret substring ${forbiddenSecret.slice(0, 12)}`
+          );
+        }
+        assert.equal(SecretScanner.scan(serializedMsgDto).hasSecret, false);
+        assert.equal(SecretScanner.scan(serializedAuditDto).hasSecret, false);
+      });
+
+      // Verify rollback and re-migration cleanly recreate internal_metadata_json & internal_details_json
+      const rollbackResult = runner.rollbackMigration(migrationV050V3Foundation);
+      assert.equal(rollbackResult.rolledBack, "20261110_003_v050_v3_foundation");
+
+      conn.withReadTransaction((db) => {
+        const remaining = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('chat_messages', 'room_audit_logs')")
+          .all();
+        assert.equal(remaining.length, 0, "chat_messages and room_audit_logs must be dropped on rollback");
+      });
+
+      const remigrateResult = runner.runMigrations([migrationV050V3Foundation]);
+      assert.deepEqual(remigrateResult.applied, ["20261110_003_v050_v3_foundation"]);
+
+      conn.withReadTransaction((db) => {
+        assertInternalStorageColumnParity(db);
+      });
+
+      // Confirm fresh inserts & round-trip work identically after re-migration
+      conn.withWriteTransaction((db) => {
+        insertChatRoom(db, room);
+        insertChatMessage(db, message);
+        insertRoomAuditLog(db, auditLog);
+      });
+      conn.withReadTransaction((db) => {
+        assert.deepEqual(getChatMessageById(db, message.message_id), message);
+        assert.deepEqual(getRoomAuditLogById(db, auditLog.audit_id), auditLog);
+      });
+    } finally {
+      ctx.cleanup();
     }
   });
 });

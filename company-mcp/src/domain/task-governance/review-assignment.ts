@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { noSecretText, redactPublicString } from "../sanitization.js";
 
 export const ReviewStatusSchema = z.enum([
   "assigned",
@@ -20,7 +21,7 @@ export const ReviewAssignmentSchema = z.object({
   assigned_by: z.string().min(1),
   review_status: ReviewStatusSchema.default("assigned"),
   verdict: ReviewVerdictSchema.nullable().default(null),
-  public_feedback: z.string().nullable().default(null),
+  public_feedback: noSecretText(z.string(), "public_feedback").nullable().default(null),
   internal_reviewer_notes: z.string().nullable().default(null),
   created_at: IsoTimestampSchema,
   completed_at: IsoTimestampSchema.nullable().default(null)
@@ -36,5 +37,8 @@ export type PublicReviewAssignmentDTO = z.infer<typeof PublicReviewAssignmentDTO
 
 export function toPublicReviewAssignmentDTO(review: ReviewAssignment): PublicReviewAssignmentDTO {
   const { internal_reviewer_notes, ...publicData } = review;
-  return PublicReviewAssignmentDTOSchema.parse(publicData);
+  return PublicReviewAssignmentDTOSchema.parse({
+    ...publicData,
+    public_feedback: redactPublicString(publicData.public_feedback)
+  });
 }

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   reply_to_id TEXT REFERENCES chat_messages(message_id) ON DELETE SET NULL,
   mentions_json TEXT NOT NULL DEFAULT '[]',
   metadata_json TEXT NOT NULL DEFAULT '{}',
+  internal_metadata_json TEXT NOT NULL DEFAULT '{}',
   raw_token_trace TEXT,
   is_edited INTEGER NOT NULL DEFAULT 0 CHECK(is_edited IN (0, 1)),
   created_at TEXT NOT NULL,
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS room_audit_logs (
   action TEXT NOT NULL CHECK(action IN ('room_created','member_added','member_removed','role_updated','room_archived','room_restored')),
   actor_id TEXT NOT NULL,
   details_json TEXT NOT NULL DEFAULT '{}',
+  internal_details_json TEXT NOT NULL DEFAULT '{}',
   security_context_snapshot TEXT,
   created_at TEXT NOT NULL
 );

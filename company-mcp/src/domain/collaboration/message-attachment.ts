@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { noSecretText, redactPublicString } from "../sanitization.js";
 
 export const MessageAttachmentSchema = z.object({
   attachment_id: z.string().min(1),
   message_id: z.string().min(1),
-  file_name: z.string().min(1),
-  file_path: z.string().min(1),
+  file_name: noSecretText(z.string().min(1), "file_name"),
+  file_path: noSecretText(z.string().min(1), "file_path"),
   file_size_bytes: z.number().int().nonnegative(),
   mime_type: z.string().min(1),
   sha256_hash: z.string().length(64, "sha256_hash must be exactly 64 hex characters"),
@@ -23,5 +24,9 @@ export type PublicMessageAttachmentDTO = z.infer<typeof PublicMessageAttachmentD
 
 export function toPublicMessageAttachmentDTO(attachment: MessageAttachment): PublicMessageAttachmentDTO {
   const { storage_driver_token, ...publicData } = attachment;
-  return PublicMessageAttachmentDTOSchema.parse(publicData);
+  return PublicMessageAttachmentDTOSchema.parse({
+    ...publicData,
+    file_name: redactPublicString(publicData.file_name),
+    file_path: redactPublicString(publicData.file_path)
+  });
 }

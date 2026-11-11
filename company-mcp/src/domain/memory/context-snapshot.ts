@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { noSecretText, redactPublicString } from "../sanitization.js";
 
 export const ContextSnapshotSchema = z.object({
   snapshot_id: z.string().min(1),
   task_id: z.string().nullable().default(null),
   agent_id: z.string().min(1),
-  summary: z.string().min(1).max(500),
+  summary: noSecretText(z.string().min(1).max(500), "summary"),
   token_count: z.number().int().nonnegative().default(0),
   snapshot_data: z.string().min(1),
   encryption_iv: z.string().nullable().default(null),
@@ -23,5 +24,8 @@ export type PublicContextSnapshotDTO = z.infer<typeof PublicContextSnapshotDTOSc
 
 export function toPublicContextSnapshotDTO(snapshot: ContextSnapshot): PublicContextSnapshotDTO {
   const { snapshot_data, encryption_iv, ...publicData } = snapshot;
-  return PublicContextSnapshotDTOSchema.parse(publicData);
+  return PublicContextSnapshotDTOSchema.parse({
+    ...publicData,
+    summary: redactPublicString(publicData.summary)
+  });
 }

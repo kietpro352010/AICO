@@ -1,10 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
+import { AICO_SECRET_CATALOG, SecretScanner } from "../src/security/secret-scanner.js";
+import { AgentIdentityService } from "../src/agent-identity-service.js";
+import { ConnectionManager } from "../src/db/connection-manager.js";
+import { MigrationRunner } from "../src/db/migration-runner.js";
+import { migrationV040 } from "../src/db/migrations/v040-agent-columns.js";
+import { migrationV050Schema } from "../src/db/migrations/v050-target-schema.js";
+import { MessagingService } from "../src/services/messaging-service.js";
+import { createSandboxTestContext } from "./helpers/test-context.js";
 
 // Domain Model Index
 import {
+  assertNoSecretInPublicText,
+  assertNoSecretInValue,
+  noSecretText,
   projectPublicAllowlistedRecord,
+  redactPublicString,
+  redactPublicStringArray,
 
   // Collaboration
   ChatRoomSchema,
@@ -1347,5 +1360,1335 @@ test("T17 Regression: P1 Blocker #2 — Public DTO Metadata & Nested Sensitive D
     ]);
     assert.equal((sanitizedCyclic.dag as unknown[])[0], (sanitizedCyclic.dag as unknown[])[1]);
     assert.notEqual(sanitizedCyclic.self, cyclic);
+  });
+});
+
+test("T17 P2 Suite A: Complete AICO Secret Scanning Catalog Coverage & Guardrails", async (suite) => {
+  await suite.test("Catalog integrity: every AICO_SECRET_CATALOG entry has unique id, non-empty category/description, and matches SecretScanner.getCatalog()", () => {
+    const catalog = SecretScanner.getCatalog();
+    assert.equal(catalog, AICO_SECRET_CATALOG);
+    assert.equal(catalog.length, 20);
+
+    const seenIds = new Set<string>();
+    for (const entry of catalog) {
+      assert.equal(entry.id.trim().length > 0, true);
+      assert.equal(entry.category.trim().length > 0, true);
+      assert.equal(entry.description.trim().length > 0, true);
+      assert.equal(entry.pattern instanceof RegExp, true);
+      assert.equal(seenIds.has(entry.id), false, `Duplicate catalog id: ${entry.id}`);
+      seenIds.add(entry.id);
+    }
+  });
+
+  await suite.test("Catalog coverage: detects and idempotently redacts realistic synthetic samples for every catalog entry", () => {
+    const syntheticJwt =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+      "eyJzdWIiOiJhZ2VudC10ZXN0Iiwicm9sZSI6InFhIn0." +
+      "syntheticSig0123456789abcdef";
+
+    interface CatalogSampleCase {
+      secretId: string;
+      category: string;
+      sample: string;
+      expectedRedacted?: string;
+      forbiddenRemaining?: string[];
+    }
+
+    const cases: CatalogSampleCase[] = [
+      {
+        secretId: "aico_canonical_token",
+        category: "aico_token",
+        sample: `aico_live_${"a1b2c3d4".repeat(8)}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "aico_canonical_token",
+        category: "aico_token",
+        sample: `aico_test_${"deadbeef".repeat(4)}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "aico_canonical_token",
+        category: "aico_token",
+        sample: `aico_agent_${"01234567".repeat(4)}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "aico_canonical_token",
+        category: "aico_token",
+        sample: `aico_session_${"cafebabe".repeat(4)}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "aico_legacy_agent_token",
+        category: "aico_token",
+        sample: `aico_flash-02_${"ab12cd34".repeat(6)}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "aico_legacy_agent_token",
+        category: "aico_token",
+        sample: `aico_codex-01_${"ef567890".repeat(6)}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "http_bearer_credential",
+        category: "http_auth",
+        sample: `Bearer ${syntheticJwt}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "http_basic_auth_header",
+        category: "http_auth",
+        sample: "Authorization: Basic YWRtaW46cGFzc3dvcmQ=",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "http_basic_auth_token",
+        category: "http_auth",
+        sample: "Basic dXNlcjpzZWNyZXQ=",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "jwt_compact_token",
+        category: "jwt",
+        sample: syntheticJwt,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "anthropic_api_key",
+        category: "provider_api_key",
+        sample: "sk-ant-api03-syntheticKey1234567890abcdef",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "openai_api_key",
+        category: "provider_api_key",
+        sample: "sk-syntheticOpenAiKey1234567890abcd",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "openai_api_key",
+        category: "provider_api_key",
+        sample: "sk-proj-syntheticProjectKey1234567890",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "openai_api_key",
+        category: "provider_api_key",
+        sample: "sk-svcacct-syntheticServiceAcct123456",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "github_fine_grained_pat",
+        category: "vcs_token",
+        sample: "github_pat_11AAAAAA00000000000000_syntheticTestTokenValue123456",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "github_oauth_pat",
+        category: "vcs_token",
+        sample: "ghp_syntheticClassicPat1234567890",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "github_oauth_pat",
+        category: "vcs_token",
+        sample: "gho_syntheticOAuthToken1234567890",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "github_oauth_pat",
+        category: "vcs_token",
+        sample: "ghu_syntheticUserToken12345678901",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "github_oauth_pat",
+        category: "vcs_token",
+        sample: "ghs_syntheticServerToken123456789",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "github_oauth_pat",
+        category: "vcs_token",
+        sample: "ghr_syntheticRefreshToken12345678",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "google_gemini_api_key",
+        category: "provider_api_key",
+        sample: "AIzaSyDummyGeminiKey_0123456789abcdef01",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "aws_access_key_id",
+        category: "cloud_credential",
+        sample: "AKIAIOSFODNN7EXAMPLE",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "aws_access_key_id",
+        category: "cloud_credential",
+        sample: "ASIAIOSFODNN7EXAMPLE",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "slack_api_token",
+        category: "saas_webhook_or_token",
+        sample: "xoxb-000000000000-000000000000-syntheticBotToken",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "slack_api_token",
+        category: "saas_webhook_or_token",
+        sample: "xoxp-000000000000-000000000000-syntheticUserToken",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "slack_api_token",
+        category: "saas_webhook_or_token",
+        sample: "xoxa-000000000000-000000000000-syntheticAppToken",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "slack_api_token",
+        category: "saas_webhook_or_token",
+        sample: "xoxr-000000000000-000000000000-syntheticRefreshTok",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "slack_api_token",
+        category: "saas_webhook_or_token",
+        sample: "xoxs-000000000000-000000000000-syntheticSessionTok",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "slack_incoming_webhook",
+        category: "saas_webhook_or_token",
+        sample: "https://hooks.slack.com/services/T000000000/B000000000/syntheticWebhookSecret12",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "webhook_signing_secret",
+        category: "saas_webhook_or_token",
+        sample: "whsec_syntheticSigningSecret1234567890",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "pem_private_key_block",
+        category: "private_key",
+        sample:
+          "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA_FAKE_PEM_BODY\n-----END RSA PRIVATE KEY-----",
+        expectedRedacted: "[REDACTED_SECRET]",
+        forbiddenRemaining: ["MIIEpAIBAAKCAQEA_FAKE_PEM_BODY"]
+      },
+      {
+        secretId: "pgp_private_key_block",
+        category: "private_key",
+        sample:
+          "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFsyntheticPgpBody0123456789\n-----END PGP PRIVATE KEY BLOCK-----",
+        expectedRedacted: "[REDACTED_SECRET]",
+        forbiddenRemaining: ["lQOYBFsyntheticPgpBody0123456789"]
+      },
+      {
+        secretId: "private_key_header",
+        category: "private_key",
+        sample: "-----BEGIN EC PRIVATE KEY-----",
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      ...(
+        [
+          "https",
+          "amqp",
+          "amqps",
+          "postgres",
+          "postgresql",
+          "redis",
+          "rediss",
+          "mysql",
+          "mongodb+srv",
+          "wss"
+        ] as const
+      ).map(
+        (scheme): CatalogSampleCase => ({
+          secretId: "credentialed_service_url",
+          category: "credentialed_url",
+          sample: `${scheme}://svc_user:synthetic_pass_99@internal.broker.local:5432/v3/queue?tls=1`,
+          expectedRedacted: "[REDACTED_SECRET]internal.broker.local:5432/v3/queue?tls=1",
+          forbiddenRemaining: ["svc_user", "synthetic_pass_99"]
+        })
+      ),
+      ...(
+        [
+          "AICO_AUDIT_HMAC_KEY",
+          "AICO_STDIO_TOKEN",
+          "AICO_WEBHOOK_SECRET",
+          "AWS_SECRET_ACCESS_KEY",
+          "OPENAI_API_KEY",
+          "ANTHROPIC_API_KEY",
+          "GEMINI_API_KEY"
+        ] as const
+      ).map(
+        (envVar): CatalogSampleCase => ({
+          secretId: "env_secret_assignment",
+          category: "env_secret",
+          sample: `${envVar}=synthetic_env_secret_value_0123`,
+          expectedRedacted: `${envVar}=[REDACTED_SECRET]`,
+          forbiddenRemaining: ["synthetic_env_secret_value_0123"]
+        })
+      ),
+      {
+        secretId: "env_secret_assignment",
+        category: "env_secret",
+        sample: "AWS_SECRET_ACCESS_KEY=dGVzdC1zZWNyZXQtdmFsdWU==",
+        expectedRedacted: "AWS_SECRET_ACCESS_KEY=[REDACTED_SECRET]",
+        forbiddenRemaining: ["dGVzdC1zZWNyZXQtdmFsdWU", "=="]
+      }
+    ];
+
+    const coveredIds = new Set<string>();
+    for (const tc of cases) {
+      coveredIds.add(tc.secretId);
+      const scanResult = SecretScanner.scan(tc.sample);
+      assert.equal(scanResult.hasSecret, true, `Expected scan match for ${tc.secretId}: ${tc.sample}`);
+      assert.equal(scanResult.secretId, tc.secretId);
+      assert.equal(scanResult.category, tc.category);
+
+      const redacted = SecretScanner.redact(tc.sample);
+      if (tc.expectedRedacted !== undefined) {
+        assert.equal(redacted, tc.expectedRedacted, `Unexpected redaction for ${tc.secretId}`);
+      }
+      if (tc.forbiddenRemaining) {
+        for (const forbidden of tc.forbiddenRemaining) {
+          assert.equal(redacted.includes(forbidden), false);
+        }
+      }
+
+      // Idempotency & clean post-redaction scan
+      assert.equal(SecretScanner.redact(redacted), redacted, `Redaction must be idempotent for ${tc.secretId}`);
+      assert.equal(SecretScanner.scan(redacted).hasSecret, false, `Redacted string must pass scan for ${tc.secretId}`);
+    }
+
+    // Confirm every single catalog entry id in AICO_SECRET_CATALOG was exercised
+    for (const entry of AICO_SECRET_CATALOG) {
+      assert.equal(coveredIds.has(entry.id), true, `Missing catalog test case for ${entry.id}`);
+    }
+  });
+
+  await suite.test("Live AgentIdentityService compatibility: generated aico_<agentId>_<48hex> token matches aico_legacy_agent_token", () => {
+    const ctx = createSandboxTestContext("aico-t17-agent-id-");
+    try {
+      const connManager = new ConnectionManager(ctx.dbPath);
+      const runner = new MigrationRunner(connManager);
+      runner.runMigrations([migrationV040, migrationV050Schema]);
+
+      const generated = connManager.withWriteTransaction((db) => {
+        const identityService = new AgentIdentityService(db);
+        return identityService.generateToken("flash-02", ["workspace:read"], 24);
+      });
+
+      assert.match(generated.rawToken, /^aico_flash-02_[a-f0-9]{48}$/);
+      const scan = SecretScanner.scan(generated.rawToken);
+      assert.equal(scan.hasSecret, true);
+      assert.equal(scan.secretId, "aico_legacy_agent_token");
+      assert.equal(scan.category, "aico_token");
+      assert.equal(SecretScanner.redact(`token=${generated.rawToken}`), "token=[REDACTED_SECRET]");
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  await suite.test("False-positive guards: non-secret technical identifiers and prose remain untouched", () => {
+    const safeInputs = [
+      VALID_SHA256,
+      "Basic authentication is required",
+      "aico_v030_pre_v221",
+      "task_v3_001",
+      "room_exec_01",
+      "aico_agent_heartbeat_service",
+      "aico_session_state_checkpoint",
+      "aico_test_domain_models_suite",
+      "bearer https://docs.aico.local/security/overview",
+      "bearer authentication_middleware_spec",
+      "Deploy migration v0.5.0 with bearer semantics at https://docs.aico.local/security/overview"
+    ];
+
+    for (const safe of safeInputs) {
+      const scan = SecretScanner.scan(safe);
+      assert.equal(scan.hasSecret, false, `False positive on safe input: ${safe}`);
+      assert.equal(SecretScanner.redact(safe), safe);
+    }
+  });
+
+  await suite.test("ReDoS boundedness: 32KB+ adversarial unclosed PEM/PGP headers complete quickly", () => {
+    const adversarialInputs = [
+      "-----BEGIN RSA PRIVATE KEY-----\n" + "A".repeat(40_000) + "\nunclosed",
+      "-----BEGIN PGP PRIVATE KEY BLOCK-----\n" + "B".repeat(40_000) + "\nunclosed"
+    ];
+
+    for (const input of adversarialInputs) {
+      const start = performance.now();
+      const scan = SecretScanner.scan(input);
+      const redacted = SecretScanner.redact(input);
+      const elapsedMs = performance.now() - start;
+
+      assert.equal(elapsedMs < 500, true, `Expected bounded scan/redact (<500ms), took ${elapsedMs}ms`);
+      assert.equal(scan.hasSecret, true);
+      assert.equal(scan.secretId, "private_key_header");
+      assert.equal(redacted.startsWith("[REDACTED_SECRET]\n"), true);
+    }
+
+    const cleanLarge = "clean_log_line_0123456789abcdef\n".repeat(1_500);
+    const cleanStart = performance.now();
+    assert.equal(SecretScanner.scan(cleanLarge).hasSecret, false);
+    assert.equal(SecretScanner.redact(cleanLarge), cleanLarge);
+    assert.equal(performance.now() - cleanStart < 500, true);
+  });
+});
+
+test("T17 P2 Suite B: Public Text Entry Guards, Schema Rejection, MessagingService & DTO Defense-in-Depth", async (suite) => {
+  const ENTRY_SECRET = "sk-proj-syntheticEntryGuard1234567890";
+  const SHORT_ENTRY_SECRET = "AKIAIOSFODNN7EXAMPLE"; // 20 chars: fits max(20)/max(50) fields
+
+  function assertZodSecretRejection(parseFn: () => unknown, label: string): void {
+    let caught: unknown;
+    try {
+      parseFn();
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught instanceof ZodError, `${label}: expected ZodError`);
+    assert.equal(
+      caught.issues.length,
+      1,
+      `${label}: expected exactly 1 Zod issue, got ${caught.issues.map((i) => i.message).join("; ")}`
+    );
+    assert.equal(
+      caught.issues[0].message.includes("SECRET_LEAK_PREVENTED"),
+      true,
+      `${label}: expected SECRET_LEAK_PREVENTED issue, got ${caught.issues[0].message}`
+    );
+  }
+
+  const baseChatMessage = {
+    message_id: "msg_b_001",
+    room_id: "room_exec_01",
+    sender_id: "flash-02",
+    sender_type: "agent" as const,
+    message_type: "TEXT" as const,
+    content: "Clean message content",
+    reply_to_id: null,
+    mentions: ["flash-01"],
+    metadata: {},
+    internal_metadata: {},
+    raw_token_trace: null,
+    is_edited: false,
+    created_at: VALID_ISO,
+    updated_at: VALID_ISO
+  };
+
+  const baseAuditLog = {
+    audit_id: "ral_b_001",
+    room_id: "room_exec_01",
+    action: "member_added" as const,
+    actor_id: "chatgpt-01",
+    details: {},
+    internal_details: {},
+    security_context_snapshot: null,
+    created_at: VALID_ISO
+  };
+
+  await suite.test("Schema-entry rejection: ZodError with SECRET_LEAK_PREVENTED across all V3 public-text fields", () => {
+    const cases: Array<{ label: string; parse: () => unknown }> = [
+      {
+        label: "ChatRoomSchema.slug",
+        parse: () =>
+          ChatRoomSchema.parse({
+            room_id: "room_b_00",
+            slug: "aico_live_supersecret987654321",
+            name: "Clean Room Name",
+            room_type: "PROJECT_ROOM",
+            created_by: "chatgpt-01",
+            created_at: VALID_ISO,
+            updated_at: VALID_ISO
+          })
+      },
+      {
+        label: "ChatRoomSchema.name",
+        parse: () =>
+          ChatRoomSchema.parse({
+            room_id: "room_b_01",
+            slug: "room-b-01",
+            name: `Room ${ENTRY_SECRET}`,
+            room_type: "PROJECT_ROOM",
+            created_by: "chatgpt-01",
+            created_at: VALID_ISO,
+            updated_at: VALID_ISO
+          })
+      },
+      {
+        label: "ChatMessageSchema.content",
+        parse: () =>
+          ChatMessageSchema.parse({
+            ...baseChatMessage,
+            content: `Leaked ${ENTRY_SECRET}`
+          })
+      },
+      {
+        label: "ChatMessageSchema.mentions",
+        parse: () =>
+          ChatMessageSchema.parse({
+            ...baseChatMessage,
+            mentions: ["flash-01", ENTRY_SECRET]
+          })
+      },
+      {
+        label: "MessageAttachmentSchema.file_name",
+        parse: () =>
+          MessageAttachmentSchema.parse({
+            attachment_id: "att_b_01",
+            message_id: "msg_b_001",
+            file_name: `${ENTRY_SECRET}.txt`,
+            file_path: "artifacts/clean.txt",
+            file_size_bytes: 128,
+            mime_type: "text/plain",
+            sha256_hash: VALID_SHA256,
+            uploaded_at: VALID_ISO
+          })
+      },
+      {
+        label: "MessageAttachmentSchema.file_path",
+        parse: () =>
+          MessageAttachmentSchema.parse({
+            attachment_id: "att_b_02",
+            message_id: "msg_b_001",
+            file_name: "clean.txt",
+            file_path: `artifacts/${ENTRY_SECRET}/clean.txt`,
+            file_size_bytes: 128,
+            mime_type: "text/plain",
+            sha256_hash: VALID_SHA256,
+            uploaded_at: VALID_ISO
+          })
+      },
+      {
+        label: "MessageReactionSchema.reaction_code",
+        parse: () =>
+          MessageReactionSchema.parse({
+            reaction_id: "rxn_b_01",
+            message_id: "msg_b_001",
+            principal_id: "flash-02",
+            reaction_code: SHORT_ENTRY_SECRET,
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "ProjectTaskV3Schema.title",
+        parse: () =>
+          ProjectTaskV3Schema.parse({
+            task_id: "task_b_01",
+            project_id: "proj_aico_v3",
+            title: `Task ${ENTRY_SECRET}`,
+            objective: "Clean objective",
+            created_at: VALID_ISO,
+            updated_at: VALID_ISO
+          })
+      },
+      {
+        label: "ProjectTaskV3Schema.objective",
+        parse: () =>
+          ProjectTaskV3Schema.parse({
+            task_id: "task_b_02",
+            project_id: "proj_aico_v3",
+            title: "Clean title",
+            objective: `Use ${ENTRY_SECRET}`,
+            created_at: VALID_ISO,
+            updated_at: VALID_ISO
+          })
+      },
+      {
+        label: "ProjectTaskV3Schema.acceptance_criteria",
+        parse: () =>
+          ProjectTaskV3Schema.parse({
+            task_id: "task_b_03",
+            project_id: "proj_aico_v3",
+            title: "Clean title",
+            objective: "Clean objective",
+            acceptance_criteria: ["Clean criterion", `Check ${ENTRY_SECRET}`],
+            created_at: VALID_ISO,
+            updated_at: VALID_ISO
+          })
+      },
+      {
+        label: "TaskTransitionLogSchema.reason",
+        parse: () =>
+          TaskTransitionLogSchema.parse({
+            transition_id: "tr_b_01",
+            task_id: "task_b_01",
+            transition_seq: 1,
+            from_execution_status: "draft",
+            to_execution_status: "queued",
+            from_dispatch_status: "not_dispatched",
+            to_dispatch_status: "handoff_ready",
+            transition_code: "TR-01",
+            triggered_by: "chatgpt-01",
+            reason: `Approved with ${ENTRY_SECRET}`,
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "TaskApprovalBindingSchema.decision_reason",
+        parse: () =>
+          TaskApprovalBindingSchema.parse({
+            binding_id: "appr_b_01",
+            task_id: "task_b_01",
+            approval_tier: "founder",
+            required_role: "FOUNDER",
+            canonical_payload_hash: VALID_SHA256,
+            signature_nonce: "nonce_01",
+            decision_reason: `Note ${ENTRY_SECRET}`,
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "ReviewAssignmentSchema.public_feedback",
+        parse: () =>
+          ReviewAssignmentSchema.parse({
+            review_id: "rev_b_01",
+            task_id: "task_b_01",
+            reviewer_agent_id: "flash-01",
+            assigned_by: "chatgpt-01",
+            public_feedback: `Feedback ${ENTRY_SECRET}`,
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "MemoryRecordV3Schema.key",
+        parse: () =>
+          MemoryRecordV3Schema.parse({
+            memory_id: "mem_b_01",
+            key: `mem_${ENTRY_SECRET}`,
+            content: "Clean content",
+            created_at: VALID_ISO,
+            updated_at: VALID_ISO
+          })
+      },
+      {
+        label: "MemoryRecordV3Schema.content",
+        parse: () =>
+          MemoryRecordV3Schema.parse({
+            memory_id: "mem_b_02",
+            key: "clean_key",
+            content: `Secret ${ENTRY_SECRET}`,
+            created_at: VALID_ISO,
+            updated_at: VALID_ISO
+          })
+      },
+      {
+        label: "KnowledgeChunkFTSSchema.title",
+        parse: () =>
+          KnowledgeChunkFTSSchema.parse({
+            chunk_id: "chk_b_01",
+            memory_id: "mem_b_01",
+            title: `Chunk ${ENTRY_SECRET}`,
+            chunk_content: "Clean chunk content",
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "KnowledgeChunkFTSSchema.chunk_content",
+        parse: () =>
+          KnowledgeChunkFTSSchema.parse({
+            chunk_id: "chk_b_02",
+            memory_id: "mem_b_01",
+            title: "Clean title",
+            chunk_content: `Chunk body ${ENTRY_SECRET}`,
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "KnowledgeChunkFTSSchema.tags",
+        parse: () =>
+          KnowledgeChunkFTSSchema.parse({
+            chunk_id: "chk_b_03",
+            memory_id: "mem_b_01",
+            title: "Clean title",
+            chunk_content: "Clean chunk content",
+            tags: ["safe", ENTRY_SECRET],
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "ContextSnapshotSchema.summary",
+        parse: () =>
+          ContextSnapshotSchema.parse({
+            snapshot_id: "snap_b_01",
+            agent_id: "flash-02",
+            summary: `Summary ${ENTRY_SECRET}`,
+            snapshot_data: "{}",
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "AgentExecutionLockSchema.resource_uri",
+        parse: () =>
+          AgentExecutionLockSchema.parse({
+            lock_id: "lock_b_00",
+            resource_uri: `repo://${ENTRY_SECRET}`,
+            holder_agent_id: "flash-02",
+            lock_nonce: "nonce_lock_00",
+            purpose: "Clean lock purpose",
+            acquired_at: VALID_ISO,
+            expires_at: VALID_ISO
+          })
+      },
+      {
+        label: "AgentExecutionLockSchema.purpose",
+        parse: () =>
+          AgentExecutionLockSchema.parse({
+            lock_id: "lock_b_01",
+            resource_uri: "repo_main",
+            holder_agent_id: "flash-02",
+            lock_nonce: "nonce_lock_01",
+            purpose: `Lock for ${ENTRY_SECRET}`,
+            acquired_at: VALID_ISO,
+            expires_at: VALID_ISO
+          })
+      },
+      {
+        label: "ArtifactAttestationSchema.artifact_path",
+        parse: () =>
+          ArtifactAttestationSchema.parse({
+            attestation_id: "att_b_01",
+            task_id: "task_b_01",
+            artifact_path: `docs/${ENTRY_SECRET}/report.md`,
+            artifact_sha256: VALID_SHA256,
+            byte_size: 256,
+            attested_by_agent_id: "flash-02",
+            attestation_type: "report",
+            verification_signature: "sig_01",
+            created_at: VALID_ISO
+          })
+      },
+      {
+        label: "PublicChatMessageDTOSchema.metadata.thread_title",
+        parse: () =>
+          PublicChatMessageDTOSchema.parse({
+            ...baseChatMessage,
+            metadata: { thread_title: `Thread ${ENTRY_SECRET}` }
+          })
+      },
+      {
+        label: "PublicChatMessageDTOSchema.metadata.topic",
+        parse: () =>
+          PublicChatMessageDTOSchema.parse({
+            ...baseChatMessage,
+            metadata: { topic: ENTRY_SECRET }
+          })
+      },
+      {
+        label: "PublicChatMessageDTOSchema.metadata.related_task_id",
+        parse: () =>
+          PublicChatMessageDTOSchema.parse({
+            ...baseChatMessage,
+            metadata: { related_task_id: ENTRY_SECRET }
+          })
+      },
+      {
+        label: "PublicChatMessageDTOSchema.metadata.tags",
+        parse: () =>
+          PublicChatMessageDTOSchema.parse({
+            ...baseChatMessage,
+            metadata: { tags: ["clean", ENTRY_SECRET] }
+          })
+      },
+      {
+        label: "PublicChatMessageDTOSchema.metadata.reply_preview",
+        parse: () =>
+          PublicChatMessageDTOSchema.parse({
+            ...baseChatMessage,
+            metadata: { reply_preview: `Preview ${ENTRY_SECRET}` }
+          })
+      },
+      {
+        label: "PublicChatMessageDTOSchema.metadata.format_version",
+        parse: () =>
+          PublicChatMessageDTOSchema.parse({
+            ...baseChatMessage,
+            metadata: { format_version: SHORT_ENTRY_SECRET }
+          })
+      },
+      {
+        label: "PublicRoomAuditLogDTOSchema.details.target",
+        parse: () =>
+          PublicRoomAuditLogDTOSchema.parse({
+            ...baseAuditLog,
+            details: { target: ENTRY_SECRET }
+          })
+      },
+      {
+        label: "PublicRoomAuditLogDTOSchema.details.target_principal_id",
+        parse: () =>
+          PublicRoomAuditLogDTOSchema.parse({
+            ...baseAuditLog,
+            details: { target_principal_id: ENTRY_SECRET }
+          })
+      },
+      {
+        label: "PublicRoomAuditLogDTOSchema.details.previous_role",
+        parse: () =>
+          PublicRoomAuditLogDTOSchema.parse({
+            ...baseAuditLog,
+            details: { previous_role: SHORT_ENTRY_SECRET }
+          })
+      },
+      {
+        label: "PublicRoomAuditLogDTOSchema.details.new_role",
+        parse: () =>
+          PublicRoomAuditLogDTOSchema.parse({
+            ...baseAuditLog,
+            details: { new_role: SHORT_ENTRY_SECRET }
+          })
+      },
+      {
+        label: "PublicRoomAuditLogDTOSchema.details.reason",
+        parse: () =>
+          PublicRoomAuditLogDTOSchema.parse({
+            ...baseAuditLog,
+            details: { reason: `Reason ${ENTRY_SECRET}` }
+          })
+      },
+      {
+        label: "PublicRoomAuditLogDTOSchema.details.summary",
+        parse: () =>
+          PublicRoomAuditLogDTOSchema.parse({
+            ...baseAuditLog,
+            details: { summary: `Summary ${ENTRY_SECRET}` }
+          })
+      }
+    ];
+
+    for (const tc of cases) {
+      assertZodSecretRejection(tc.parse, tc.label);
+    }
+  });
+
+  await suite.test("Helper entry guards: noSecretText, assertNoSecretInPublicText & assertNoSecretInValue handle nested values, cycles & dangerous keys", () => {
+    const directSchema = noSecretText(z.string(), "custom_public_note");
+    assert.equal(directSchema.parse("safe note"), "safe note");
+    assertZodSecretRejection(() => directSchema.parse(`leak ${ENTRY_SECRET}`), "noSecretText");
+
+    assert.doesNotThrow(() => assertNoSecretInPublicText("clean summary text", "summary"));
+    assert.throws(
+      () => assertNoSecretInPublicText(`leak ${ENTRY_SECRET}`, "summary"),
+      /SECRET_LEAK_PREVENTED: summary/
+    );
+
+    // Nested object/array secret rejection with exact nested field path
+    assert.throws(
+      () =>
+        assertNoSecretInValue(
+          {
+            outer: {
+              items: ["safe", { token: "ghp_syntheticClassicPat1234567890" }]
+            }
+          },
+          "payload"
+        ),
+      /SECRET_LEAK_PREVENTED: payload\.outer\.items\[1\]\.token/
+    );
+
+    // Safely ignores own dangerous keys (__proto__, constructor, prototype), special objects, and cycles
+    const safeWithDangerous = JSON.parse(
+      `{"__proto__":{"leaked":"${ENTRY_SECRET}"},"constructor":{"leaked":"${ENTRY_SECRET}"},"prototype":{"leaked":"${ENTRY_SECRET}"},"ok":"clean"}`
+    ) as Record<string, unknown>;
+    const cyclicSafe: Record<string, unknown> = {
+      ...safeWithDangerous,
+      date: new Date(VALID_ISO),
+      regex: /safe/i,
+      bytes: new Uint8Array([1, 2, 3])
+    };
+    Object.defineProperty(cyclicSafe, "__proto__", {
+      value: { leaked: ENTRY_SECRET },
+      enumerable: true
+    });
+    cyclicSafe.self = cyclicSafe;
+    const cyclicArray: unknown[] = ["safe"];
+    cyclicArray.push(cyclicArray);
+    cyclicSafe.arr = cyclicArray;
+
+    assert.doesNotThrow(() => assertNoSecretInValue(cyclicSafe, "cyclic_root"));
+  });
+
+  await suite.test("MessagingService.sendMessage(): rejects secrets in subject or bodyMarkdown with zero rows inserted, allows clean messages", () => {
+    const ctx = createSandboxTestContext("aico-t17-messaging-");
+    try {
+      const connManager = new ConnectionManager(ctx.dbPath);
+      const runner = new MigrationRunner(connManager);
+      runner.runMigrations([migrationV040, migrationV050Schema]);
+
+      const messagingService = new MessagingService(connManager);
+      const countMessages = () =>
+        connManager.withReadTransaction((db) => {
+          const row = db.prepare("SELECT COUNT(*) AS cnt FROM messages").get() as { cnt: number };
+          return row.cnt;
+        });
+
+      assert.equal(countMessages(), 0);
+
+      // Secret in subject
+      assert.throws(
+        () =>
+          messagingService.sendMessage({
+            fromPrincipalId: "flash-02",
+            toPrincipalId: "flash-01",
+            subject: `Credential aico_flash-02_${"ab12cd34".repeat(6)}`,
+            bodyMarkdown: "Clean markdown body"
+          }),
+        /SECRET_LEAK_PREVENTED/
+      );
+      assert.equal(countMessages(), 0);
+
+      // Secret in bodyMarkdown
+      assert.throws(
+        () =>
+          messagingService.sendMessage({
+            fromPrincipalId: "flash-02",
+            toPrincipalId: "flash-01",
+            subject: "Clean subject",
+            bodyMarkdown: "DB url postgres://svc_user:secret_pass_123@db.internal:5432/aico"
+          }),
+        /SECRET_LEAK_PREVENTED/
+      );
+      assert.equal(countMessages(), 0);
+
+      // Clean message succeeds and persists 1 row
+      const sent = messagingService.sendMessage({
+        fromPrincipalId: "flash-02",
+        toPrincipalId: "flash-01",
+        subject: "Phase 2 Security Verification Complete",
+        bodyMarkdown: `Verified digest ${VALID_SHA256} with zero leaked credentials.`
+      });
+      assert.ok(sent.message_id.startsWith("msg_"));
+      assert.equal(sent.delivery_status, "stored_in_inbox");
+      assert.equal(countMessages(), 1);
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  await suite.test("MessagingService.ackMessage(): rejects secret in ack_note without acknowledging, allows clean ack_note", () => {
+    const ctx = createSandboxTestContext("aico-t17-msg-ack-");
+    try {
+      const connManager = new ConnectionManager(ctx.dbPath);
+      const runner = new MigrationRunner(connManager);
+      runner.runMigrations([migrationV040, migrationV050Schema]);
+
+      const messagingService = new MessagingService(connManager);
+      const msg = messagingService.sendMessage({
+        fromPrincipalId: "flash-01",
+        toPrincipalId: "flash-02",
+        subject: "Clean handoff for ack test",
+        bodyMarkdown: "Please acknowledge cleanly."
+      });
+
+      const getRecipientRow = () =>
+        connManager.withReadTransaction((db) =>
+          db
+            .prepare(
+              "SELECT delivery_status, ack_note, acknowledged_at FROM message_recipients WHERE message_id = ? AND to_principal_id = ?"
+            )
+            .get(msg.message_id, "flash-02") as {
+            delivery_status: string;
+            ack_note: string | null;
+            acknowledged_at: string | null;
+          }
+        );
+
+      assert.throws(
+        () =>
+          messagingService.ackMessage(
+            msg.message_id,
+            "flash-02",
+            "ack sk-proj-secret1234567890abcdef"
+          ),
+        /SECRET_LEAK_PREVENTED/
+      );
+
+      const afterRejected = getRecipientRow();
+      assert.equal(afterRejected.delivery_status, "stored_in_inbox");
+      assert.equal(afterRejected.ack_note, null);
+      assert.equal(afterRejected.acknowledged_at, null);
+
+      const ackResult = messagingService.ackMessage(
+        msg.message_id,
+        "flash-02",
+        "Verified and acknowledged cleanly"
+      );
+      assert.equal(ackResult.success, true);
+      assert.equal(ackResult.delivery_status, "acknowledged");
+
+      const afterClean = getRecipientRow();
+      assert.equal(afterClean.delivery_status, "acknowledged");
+      assert.equal(afterClean.ack_note, "Verified and acknowledged cleanly");
+      assert.ok(afterClean.acknowledged_at);
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  await suite.test("Defense-in-depth DTO scrubbing: unparsed legacy/raw plain JS objects with secrets are scrubbed to [REDACTED_SECRET]", () => {
+    const rawSecret = "sk-ant-api03-syntheticLegacyRowKey123456789";
+
+    const roomDto = toPublicChatRoomDTO({
+      room_id: "room_raw_01",
+      slug: "room-raw-01",
+      name: `Room ${rawSecret}`,
+      room_type: "PROJECT_ROOM",
+      project_id: null,
+      task_id: null,
+      created_by: "chatgpt-01",
+      is_archived: false,
+      internal_notes: "private notes",
+      created_at: VALID_ISO,
+      updated_at: VALID_ISO
+    });
+    assert.equal(roomDto.name, "Room [REDACTED_SECRET]");
+    assert.equal("internal_notes" in roomDto, false);
+
+    const msgDto = toPublicChatMessageDTO({
+      ...baseChatMessage,
+      content: `Content ${rawSecret}`,
+      mentions: ["flash-01", `mention:${rawSecret}`],
+      metadata: { topic: `Topic ${rawSecret}` },
+      internal_metadata: { leak: rawSecret },
+      raw_token_trace: rawSecret
+    });
+    assert.equal(msgDto.content, "Content [REDACTED_SECRET]");
+    assert.deepEqual(msgDto.mentions, ["flash-01", "mention:[REDACTED_SECRET]"]);
+    assert.equal(msgDto.metadata.topic, "Topic [REDACTED_SECRET]");
+    assert.equal("internal_metadata" in msgDto, false);
+    assert.equal("raw_token_trace" in msgDto, false);
+
+    const attDto = toPublicMessageAttachmentDTO({
+      attachment_id: "att_raw_01",
+      message_id: "msg_raw_01",
+      file_name: `${rawSecret}.log`,
+      file_path: `logs/${rawSecret}.log`,
+      file_size_bytes: 64,
+      mime_type: "text/plain",
+      sha256_hash: VALID_SHA256,
+      storage_driver_token: "secret-driver-token",
+      uploaded_at: VALID_ISO
+    });
+    assert.equal(attDto.file_name, "[REDACTED_SECRET].log");
+    assert.equal(attDto.file_path, "logs/[REDACTED_SECRET].log");
+    assert.equal("storage_driver_token" in attDto, false);
+
+    const rxnDto = toPublicMessageReactionDTO({
+      reaction_id: "rxn_raw_01",
+      message_id: "msg_raw_01",
+      principal_id: "flash-02",
+      reaction_code: SHORT_ENTRY_SECRET,
+      internal_client_ip: "10.0.0.1",
+      created_at: VALID_ISO
+    });
+    assert.equal(rxnDto.reaction_code, "[REDACTED_SECRET]");
+    assert.equal("internal_client_ip" in rxnDto, false);
+
+    const lockDto = toPublicAgentExecutionLockDTO({
+      lock_id: "lock_raw_01",
+      resource_uri: `repo://${rawSecret}`,
+      holder_agent_id: "flash-02",
+      lock_nonce: "secret_nonce",
+      purpose: `Lock ${rawSecret}`,
+      acquired_at: VALID_ISO,
+      expires_at: VALID_ISO
+    });
+    assert.equal(lockDto.resource_uri, "repo://[REDACTED_SECRET]");
+    assert.equal(lockDto.purpose, "Lock [REDACTED_SECRET]");
+    assert.equal("lock_nonce" in lockDto, false);
+
+    const attestDto = toPublicArtifactAttestationDTO({
+      attestation_id: "att_raw_01",
+      task_id: "task_raw_01",
+      artifact_path: `docs/${rawSecret}/audit.md`,
+      artifact_sha256: VALID_SHA256,
+      byte_size: 512,
+      attested_by_agent_id: "flash-02",
+      attestation_type: "report",
+      verification_signature: "sig_secret_raw",
+      internal_audit_trail: "internal trail",
+      created_at: VALID_ISO
+    });
+    assert.equal(attestDto.artifact_path, "docs/[REDACTED_SECRET]/audit.md");
+    assert.equal("verification_signature" in attestDto, false);
+    assert.equal("internal_audit_trail" in attestDto, false);
+
+    const rawSlugSecret = "aico_live_supersecret987654321";
+    let slugError: unknown;
+    try {
+      toPublicChatRoomDTO({
+        room_id: "room_raw_slug",
+        slug: rawSlugSecret,
+        name: "Clean Room",
+        room_type: "PROJECT_ROOM",
+        project_id: null,
+        task_id: null,
+        created_by: "chatgpt-01",
+        is_archived: false,
+        internal_notes: null,
+        created_at: VALID_ISO,
+        updated_at: VALID_ISO
+      });
+    } catch (err) {
+      slugError = err;
+    }
+    assert.ok(slugError instanceof ZodError);
+    assert.equal(JSON.stringify(slugError.issues).includes(rawSlugSecret), false);
+
+    const taskDto = toPublicProjectTaskV3DTO({
+      task_id: "task_raw_01",
+      project_id: "proj_aico_v3",
+      parent_task_id: null,
+      title: `Title ${rawSecret}`,
+      objective: `Obj ${rawSecret}`,
+      risk_class: "high",
+      priority: "high",
+      execution_status: "in_progress",
+      dispatch_status: "handoff_ready",
+      assigned_agent_id: "flash-02",
+      reviewer_agent_id: "flash-01",
+      version: 1,
+      token_budget: 100000,
+      token_used: 100,
+      acceptance_criteria: ["Clean criterion", `Check ${rawSecret}`],
+      internal_evaluation_notes: "private notes",
+      created_at: VALID_ISO,
+      updated_at: VALID_ISO
+    });
+    assert.equal(taskDto.title, "Title [REDACTED_SECRET]");
+    assert.equal(taskDto.objective, "Obj [REDACTED_SECRET]");
+    assert.deepEqual(taskDto.acceptance_criteria, ["Clean criterion", "Check [REDACTED_SECRET]"]);
+    assert.equal("internal_evaluation_notes" in taskDto, false);
+
+    const transDto = toPublicTaskTransitionLogDTO({
+      transition_id: "tr_raw_01",
+      task_id: "task_raw_01",
+      transition_seq: 1,
+      from_execution_status: "draft",
+      to_execution_status: "queued",
+      from_dispatch_status: "not_dispatched",
+      to_dispatch_status: "handoff_ready",
+      transition_code: "TR-01",
+      triggered_by: "chatgpt-01",
+      reason: `Reason ${rawSecret}`,
+      internal_diagnostic_payload: "diag",
+      created_at: VALID_ISO
+    });
+    assert.equal(transDto.reason, "Reason [REDACTED_SECRET]");
+    assert.equal("internal_diagnostic_payload" in transDto, false);
+
+    const apprDto = toPublicTaskApprovalBindingDTO({
+      binding_id: "appr_raw_01",
+      task_id: "task_raw_01",
+      approval_tier: "founder",
+      required_role: "FOUNDER",
+      status: "approved",
+      approver_principal_id: "founder-01",
+      canonical_payload_hash: VALID_SHA256,
+      signature_nonce: "sig_nonce",
+      decision_reason: `Approved ${rawSecret}`,
+      decided_at: VALID_ISO,
+      created_at: VALID_ISO
+    });
+    assert.equal(apprDto.decision_reason, "Approved [REDACTED_SECRET]");
+    assert.equal("canonical_payload_hash" in apprDto, false);
+    assert.equal("signature_nonce" in apprDto, false);
+
+    const revDto = toPublicReviewAssignmentDTO({
+      review_id: "rev_raw_01",
+      task_id: "task_raw_01",
+      reviewer_agent_id: "flash-01",
+      assigned_by: "chatgpt-01",
+      review_status: "approved",
+      verdict: "pass",
+      public_feedback: `Review ${rawSecret}`,
+      internal_reviewer_notes: "private reviewer note",
+      created_at: VALID_ISO,
+      completed_at: VALID_ISO
+    });
+    assert.equal(revDto.public_feedback, "Review [REDACTED_SECRET]");
+    assert.equal("internal_reviewer_notes" in revDto, false);
+
+    const memDto = toPublicMemoryRecordV3DTO({
+      memory_id: "mem_raw_01",
+      owner_agent_id: "flash-02",
+      scope: "COMPANY",
+      category: "FACT",
+      key: `key_${rawSecret}`,
+      content: `Val ${rawSecret}`,
+      raw_context_bytes: "bytes",
+      access_count: 1,
+      confidence_score: 1,
+      created_at: VALID_ISO,
+      updated_at: VALID_ISO
+    });
+    assert.equal(memDto.key, "key_[REDACTED_SECRET]");
+    assert.equal(memDto.content, "Val [REDACTED_SECRET]");
+    assert.equal("raw_context_bytes" in memDto, false);
+
+    const chunkDto = toPublicKnowledgeChunkFTSDTO({
+      chunk_id: "chk_raw_01",
+      memory_id: "mem_raw_01",
+      title: `Title ${rawSecret}`,
+      chunk_content: `Chunk ${rawSecret}`,
+      tags: ["safe", `tag:${rawSecret}`],
+      embedding_vector_ref: "vec_ref",
+      created_at: VALID_ISO
+    });
+    assert.equal(chunkDto.title, "Title [REDACTED_SECRET]");
+    assert.equal(chunkDto.chunk_content, "Chunk [REDACTED_SECRET]");
+    assert.deepEqual(chunkDto.tags, ["safe", "tag:[REDACTED_SECRET]"]);
+    assert.equal("embedding_vector_ref" in chunkDto, false);
+
+    const snapDto = toPublicContextSnapshotDTO({
+      snapshot_id: "snap_raw_01",
+      task_id: "task_raw_01",
+      agent_id: "flash-02",
+      summary: `Snap ${rawSecret}`,
+      token_count: 100,
+      snapshot_data: "{}",
+      encryption_iv: "iv",
+      created_at: VALID_ISO
+    });
+    assert.equal(snapDto.summary, "Snap [REDACTED_SECRET]");
+    assert.equal("snapshot_data" in snapDto, false);
+    assert.equal("encryption_iv" in snapDto, false);
+
+    // Non-string/non-array type-confused inputs pass through redactPublicString/Array so strict schemas fail closed
+    assert.deepEqual(redactPublicString({ bad: rawSecret } as unknown as string), { bad: rawSecret });
+    assert.deepEqual(redactPublicStringArray("not-an-array" as unknown as string[]), "not-an-array");
+    assert.throws(
+      () =>
+        toPublicChatRoomDTO({
+          room_id: "room_bad",
+          slug: "room-bad",
+          name: { bad: rawSecret } as unknown as string,
+          room_type: "PROJECT_ROOM",
+          project_id: null,
+          task_id: null,
+          created_by: "chatgpt-01",
+          is_archived: false,
+          internal_notes: null,
+          created_at: VALID_ISO,
+          updated_at: VALID_ISO
+        }),
+      ZodError
+    );
+
+    const auditDto = toPublicRoomAuditLogDTO({
+      ...baseAuditLog,
+      details: {
+        summary: `Audit ${rawSecret}`,
+        reason: `Reason ${rawSecret}`,
+        extra_secret: rawSecret
+      },
+      internal_details: { leak: rawSecret },
+      security_context_snapshot: rawSecret
+    });
+    assert.equal(auditDto.details.summary, "Audit [REDACTED_SECRET]");
+    assert.equal(auditDto.details.reason, "Reason [REDACTED_SECRET]");
+    assert.equal("extra_secret" in auditDto.details, false);
+    assert.equal("internal_details" in auditDto, false);
+    assert.equal("security_context_snapshot" in auditDto, false);
+
+    const outboxDto = toPublicOutboxEventDTO({
+      event_id: "evt_raw_01",
+      aggregate_type: "PROJECT_TASK",
+      aggregate_id: "task_raw_01",
+      event_type: "TASK_UPDATED",
+      payload: { secret: rawSecret },
+      status: "failed",
+      retry_count: 1,
+      max_retries: 5,
+      last_error: `Err ${rawSecret}`,
+      internal_routing_key: rawSecret,
+      scheduled_for: VALID_ISO,
+      processed_at: null,
+      created_at: VALID_ISO
+    });
+    assert.equal(outboxDto.last_error, "Err [REDACTED_SECRET]");
+    assert.equal("payload" in outboxDto, false);
+    assert.equal("internal_routing_key" in outboxDto, false);
+
+    const subDto = toPublicEventSubscriptionDTO({
+      subscription_id: "sub_raw_01",
+      subscriber_id: "worker-01",
+      event_pattern: "TASK_*",
+      endpoint: `https://user:pass_secret@hook.internal/events?k=${rawSecret}`,
+      is_active: true,
+      auth_secret_hash: VALID_SHA256,
+      created_at: VALID_ISO,
+      updated_at: VALID_ISO
+    });
+    assert.equal(subDto.endpoint, "[REDACTED_SECRET]hook.internal/events?k=[REDACTED_SECRET]");
+    assert.equal("auth_secret_hash" in subDto, false);
+
+    const dlqDto = toPublicDeadLetterQueueDTO({
+      dlq_id: "dlq_raw_01",
+      original_event_id: "evt_raw_01",
+      event_type: "TASK_UPDATED",
+      payload: { secret: rawSecret },
+      failure_reason: `Fail ${rawSecret}`,
+      stack_trace: rawSecret,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      failed_at: VALID_ISO
+    });
+    assert.equal(dlqDto.failure_reason, "Fail [REDACTED_SECRET]");
+    assert.equal("payload" in dlqDto, false);
+    assert.equal("stack_trace" in dlqDto, false);
+
+    const attemptDto = toPublicDeliveryAttemptDTO({
+      attempt_id: "att_raw_01",
+      outbox_event_id: "evt_raw_01",
+      attempt_number: 1,
+      status: "failed",
+      response_code: 500,
+      error_message: `Attempt ${rawSecret}`,
+      internal_worker_id: "worker-01",
+      latency_ms: 120,
+      attempted_at: VALID_ISO
+    });
+    assert.equal(attemptDto.error_message, "Attempt [REDACTED_SECRET]");
+    assert.equal("internal_worker_id" in attemptDto, false);
+
+    const allDtos = [
+      roomDto,
+      msgDto,
+      attDto,
+      rxnDto,
+      auditDto,
+      outboxDto,
+      subDto,
+      dlqDto,
+      attemptDto,
+      lockDto,
+      attestDto,
+      taskDto,
+      transDto,
+      apprDto,
+      revDto,
+      memDto,
+      chunkDto,
+      snapDto
+    ];
+    for (const dto of allDtos) {
+      const serialized = JSON.stringify(dto);
+      assert.equal(serialized.includes(rawSecret), false);
+      assert.equal(serialized.includes(SHORT_ENTRY_SECRET), false);
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
-import { projectPublicAllowlistedRecord } from "../sanitization.js";
+import { noSecretText, projectPublicAllowlistedRecord } from "../sanitization.js";
 
 export const PUBLIC_ROOM_AUDIT_DETAILS_KEYS = [
   "target",
@@ -13,12 +13,12 @@ export const PUBLIC_ROOM_AUDIT_DETAILS_KEYS = [
 
 export const PublicRoomAuditDetailsSchema = z
   .object({
-    target: z.string().max(200).optional(),
-    target_principal_id: z.string().max(120).optional(),
-    previous_role: z.string().max(50).optional(),
-    new_role: z.string().max(50).optional(),
-    reason: z.string().max(300).optional(),
-    summary: z.string().max(300).optional()
+    target: noSecretText(z.string().max(200), "details.target").optional(),
+    target_principal_id: noSecretText(z.string().max(120), "details.target_principal_id").optional(),
+    previous_role: noSecretText(z.string().max(50), "details.previous_role").optional(),
+    new_role: noSecretText(z.string().max(50), "details.new_role").optional(),
+    reason: noSecretText(z.string().max(300), "details.reason").optional(),
+    summary: noSecretText(z.string().max(300), "details.summary").optional()
   })
   .strict();
 

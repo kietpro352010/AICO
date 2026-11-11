@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { ChatRoomTypeSchema, IsoTimestampSchema } from "../common.js";
+import { noSecretText, redactPublicString } from "../sanitization.js";
 
 export const ChatRoomSchema = z.object({
   room_id: z.string().min(1, "room_id is required"),
-  slug: z.string().min(1).regex(/^[a-z0-9-_]+$/, "slug must be lowercase alphanumeric with hyphens/underscores"),
-  name: z.string().min(1, "name is required").max(200),
+  slug: noSecretText(
+    z.string().min(1).regex(/^[a-z0-9-_]+$/, "slug must be lowercase alphanumeric with hyphens/underscores"),
+    "slug"
+  ),
+  name: noSecretText(z.string().min(1, "name is required").max(200), "name"),
   room_type: ChatRoomTypeSchema,
   project_id: z.string().nullable().default(null),
   task_id: z.string().nullable().default(null),
@@ -25,5 +29,9 @@ export type PublicChatRoomDTO = z.infer<typeof PublicChatRoomDTOSchema>;
 
 export function toPublicChatRoomDTO(room: ChatRoom): PublicChatRoomDTO {
   const { internal_notes, ...publicData } = room;
-  return PublicChatRoomDTOSchema.parse(publicData);
+  return PublicChatRoomDTOSchema.parse({
+    ...publicData,
+    slug: redactPublicString(publicData.slug),
+    name: redactPublicString(publicData.name)
+  });
 }

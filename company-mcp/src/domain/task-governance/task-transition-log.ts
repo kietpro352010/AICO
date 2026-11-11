@@ -4,6 +4,7 @@ import {
   TaskDispatchStatusSchema,
   IsoTimestampSchema
 } from "../common.js";
+import { noSecretText, redactPublicString } from "../sanitization.js";
 
 export const TaskTransitionLogSchema = z.object({
   transition_id: z.string().min(1),
@@ -15,7 +16,7 @@ export const TaskTransitionLogSchema = z.object({
   to_dispatch_status: TaskDispatchStatusSchema,
   transition_code: z.string().min(1),
   triggered_by: z.string().min(1),
-  reason: z.string().min(1),
+  reason: noSecretText(z.string().min(1), "reason"),
   internal_diagnostic_payload: z.string().nullable().default(null),
   created_at: IsoTimestampSchema
 });
@@ -30,5 +31,8 @@ export type PublicTaskTransitionLogDTO = z.infer<typeof PublicTaskTransitionLogD
 
 export function toPublicTaskTransitionLogDTO(log: TaskTransitionLog): PublicTaskTransitionLogDTO {
   const { internal_diagnostic_payload, ...publicData } = log;
-  return PublicTaskTransitionLogDTOSchema.parse(publicData);
+  return PublicTaskTransitionLogDTOSchema.parse({
+    ...publicData,
+    reason: redactPublicString(publicData.reason)
+  });
 }
