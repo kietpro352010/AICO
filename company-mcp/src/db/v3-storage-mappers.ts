@@ -1,21 +1,53 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, SQLInputValue } from "node:sqlite";
 import {
   AgentCapability,
   AgentCapabilitySchema,
+  AgentExecutionLock,
+  AgentExecutionLockSchema,
+  AgentHeartbeat,
+  AgentHeartbeatSchema,
+  AgentLease,
+  AgentLeaseSchema,
+  AgentQuotaAllocation,
+  AgentQuotaAllocationSchema,
+  ArtifactAttestation,
+  ArtifactAttestationSchema,
+  ChatMember,
+  ChatMemberSchema,
   ChatMessage,
   ChatMessageSchema,
   ChatRoom,
   ChatRoomSchema,
+  ContextSnapshot,
+  ContextSnapshotSchema,
   DeadLetterQueue,
   DeadLetterQueueSchema,
+  DeliveryAttempt,
+  DeliveryAttemptSchema,
   EventSubscription,
   EventSubscriptionSchema,
+  KnowledgeChunkFTS,
+  KnowledgeChunkFTSSchema,
+  MemoryRecordV3,
+  MemoryRecordV3Schema,
+  MessageAttachment,
+  MessageAttachmentSchema,
+  MessageReaction,
+  MessageReactionSchema,
   OutboxEvent,
   OutboxEventSchema,
   ProjectTaskV3,
   ProjectTaskV3Schema,
+  ReviewAssignment,
+  ReviewAssignmentSchema,
   RoomAuditLog,
-  RoomAuditLogSchema
+  RoomAuditLogSchema,
+  RoomInvite,
+  RoomInviteSchema,
+  TaskApprovalBinding,
+  TaskApprovalBindingSchema,
+  TaskTransitionLog,
+  TaskTransitionLogSchema
 } from "../domain/index.js";
 
 export interface JsonColumnMapping {
@@ -345,11 +377,16 @@ export const V3_ENTITY_STORAGE_MAPPINGS = {
         dbColumn: "chunk_content",
         serialization: "direct"
       },
-      { domainField: "tags", dbTable: "knowledge_chunks_fts", dbColumn: "tags", serialization: "fts5_text" },
+      {
+        domainField: "tags",
+        dbTable: "knowledge_chunks_fts",
+        dbColumn: "tags",
+        serialization: "fts5_text"
+      },
       { domainField: "created_at", dbTable: "knowledge_chunks_fts", dbColumn: "created_at", serialization: "direct" }
     ],
     notes:
-      "1-to-2 split across knowledge_chunks_meta (relational FK to memory_records_v3 + internal embedding_vector_ref) and knowledge_chunks_fts (FTS5 full-text virtual table indexing title, chunk_content, and serialized tags)."
+      "1-to-2 split across knowledge_chunks_meta (relational FK to memory_records_v3 + internal embedding_vector_ref) and knowledge_chunks_fts (FTS5 full-text virtual table indexing title, chunk_content, and JSON-encoded tags for lossless round-trip)."
   },
   ContextSnapshot: {
     entity: "ContextSnapshot",
@@ -436,9 +473,10 @@ export function parseJsonPlainObject(rawJson: string, fieldName: string): Record
 }
 
 // ============================================================================
-// Typed SQLite Row Contracts & Bidirectional Mappers
+// Typed SQLite Row Contracts & Bidirectional Mappers (All 24 Entities)
 // ============================================================================
 
+// 1. ChatRoom
 export interface ChatRoomDbRow {
   room_id: string;
   slug: string;
@@ -486,6 +524,27 @@ export function fromChatRoomDbRow(row: ChatRoomDbRow): ChatRoom {
   });
 }
 
+// 2. ChatMember
+export interface ChatMemberDbRow {
+  membership_id: string;
+  room_id: string;
+  principal_id: string;
+  principal_type: string;
+  role: string;
+  last_read_message_id: string | null;
+  internal_cursor: string | null;
+  joined_at: string;
+}
+
+export function toChatMemberDbRow(member: ChatMember): ChatMemberDbRow {
+  return ChatMemberSchema.parse(member);
+}
+
+export function fromChatMemberDbRow(row: ChatMemberDbRow): ChatMember {
+  return ChatMemberSchema.parse(row);
+}
+
+// 3. ChatMessage
 export interface ChatMessageDbRow {
   message_id: string;
   room_id: string;
@@ -545,6 +604,66 @@ export function fromChatMessageDbRow(row: ChatMessageDbRow): ChatMessage {
   });
 }
 
+// 4. MessageAttachment
+export interface MessageAttachmentDbRow {
+  attachment_id: string;
+  message_id: string;
+  file_name: string;
+  file_path: string;
+  file_size_bytes: number;
+  mime_type: string;
+  sha256_hash: string;
+  storage_driver_token: string | null;
+  uploaded_at: string;
+}
+
+export function toMessageAttachmentDbRow(attachment: MessageAttachment): MessageAttachmentDbRow {
+  return MessageAttachmentSchema.parse(attachment);
+}
+
+export function fromMessageAttachmentDbRow(row: MessageAttachmentDbRow): MessageAttachment {
+  return MessageAttachmentSchema.parse(row);
+}
+
+// 5. MessageReaction
+export interface MessageReactionDbRow {
+  reaction_id: string;
+  message_id: string;
+  principal_id: string;
+  reaction_code: string;
+  internal_client_ip: string | null;
+  created_at: string;
+}
+
+export function toMessageReactionDbRow(reaction: MessageReaction): MessageReactionDbRow {
+  return MessageReactionSchema.parse(reaction);
+}
+
+export function fromMessageReactionDbRow(row: MessageReactionDbRow): MessageReaction {
+  return MessageReactionSchema.parse(row);
+}
+
+// 6. RoomInvite
+export interface RoomInviteDbRow {
+  invite_id: string;
+  room_id: string;
+  inviter_id: string;
+  invitee_id: string;
+  status: string;
+  invite_token_hash: string | null;
+  expires_at: string;
+  created_at: string;
+}
+
+export function toRoomInviteDbRow(invite: RoomInvite): RoomInviteDbRow {
+  return RoomInviteSchema.parse(invite);
+}
+
+export function fromRoomInviteDbRow(row: RoomInviteDbRow): RoomInvite {
+  return RoomInviteSchema.parse(row);
+}
+
+// 7. RoomAuditLog
 export interface RoomAuditLogDbRow {
   audit_id: string;
   room_id: string;
@@ -586,6 +705,7 @@ export function fromRoomAuditLogDbRow(row: RoomAuditLogDbRow): RoomAuditLog {
   });
 }
 
+// 8. OutboxEvent
 export interface OutboxEventDbRow {
   event_id: string;
   aggregate_type: string;
@@ -639,6 +759,7 @@ export function fromOutboxEventDbRow(row: OutboxEventDbRow): OutboxEvent {
   });
 }
 
+// 9. EventSubscription
 export interface EventSubscriptionDbRow {
   subscription_id: string;
   subscriber_id: string;
@@ -677,6 +798,7 @@ export function fromEventSubscriptionDbRow(row: EventSubscriptionDbRow): EventSu
   });
 }
 
+// 10. DeadLetterQueue
 export interface DeadLetterQueueDbRow {
   dlq_id: string;
   original_event_id: string;
@@ -721,6 +843,151 @@ export function fromDeadLetterQueueDbRow(row: DeadLetterQueueDbRow): DeadLetterQ
   });
 }
 
+// 11. DeliveryAttempt
+export interface DeliveryAttemptDbRow {
+  attempt_id: string;
+  outbox_event_id: string;
+  attempt_number: number;
+  status: string;
+  response_code: number | null;
+  error_message: string | null;
+  internal_worker_id: string | null;
+  latency_ms: number;
+  attempted_at: string;
+}
+
+export function toDeliveryAttemptDbRow(attempt: DeliveryAttempt): DeliveryAttemptDbRow {
+  return DeliveryAttemptSchema.parse(attempt);
+}
+
+export function fromDeliveryAttemptDbRow(row: DeliveryAttemptDbRow): DeliveryAttempt {
+  return DeliveryAttemptSchema.parse(row);
+}
+
+// 12. AgentLease
+export interface AgentLeaseDbRow {
+  lease_id: string;
+  task_id: string;
+  agent_id: string;
+  lease_nonce: string;
+  status: string;
+  heartbeat_at: string;
+  expires_at: string;
+  acquired_at: string;
+}
+
+export function toAgentLeaseDbRow(lease: AgentLease): AgentLeaseDbRow {
+  return AgentLeaseSchema.parse(lease);
+}
+
+export function fromAgentLeaseDbRow(row: AgentLeaseDbRow): AgentLease {
+  return AgentLeaseSchema.parse(row);
+}
+
+// 13. AgentHeartbeat
+export interface AgentHeartbeatDbRow {
+  heartbeat_id: string;
+  agent_id: string;
+  status: string;
+  current_task_id: string | null;
+  memory_usage_mb: number;
+  cpu_percent: number;
+  host_process_pid: number | null;
+  recorded_at: string;
+}
+
+export function toAgentHeartbeatDbRow(heartbeat: AgentHeartbeat): AgentHeartbeatDbRow {
+  return AgentHeartbeatSchema.parse(heartbeat);
+}
+
+export function fromAgentHeartbeatDbRow(row: AgentHeartbeatDbRow): AgentHeartbeat {
+  return AgentHeartbeatSchema.parse(row);
+}
+
+// 14. AgentCapability
+export interface AgentCapabilityDbRow {
+  capability_id: string;
+  agent_id: string;
+  capability_name: string;
+  version: string;
+  is_enabled: number;
+  proficiency: string;
+  internal_evaluation_score: number | null;
+  granted_at: string;
+}
+
+export function toAgentCapabilityDbRow(capability: AgentCapability): AgentCapabilityDbRow {
+  const valid = AgentCapabilitySchema.parse(capability);
+  return {
+    capability_id: valid.capability_id,
+    agent_id: valid.agent_id,
+    capability_name: valid.capability_name,
+    version: valid.version,
+    is_enabled: booleanToSqlInt(valid.is_enabled),
+    proficiency: valid.proficiency,
+    internal_evaluation_score: valid.internal_evaluation_score,
+    granted_at: valid.granted_at
+  };
+}
+
+export function fromAgentCapabilityDbRow(row: AgentCapabilityDbRow): AgentCapability {
+  return AgentCapabilitySchema.parse({
+    capability_id: row.capability_id,
+    agent_id: row.agent_id,
+    capability_name: row.capability_name,
+    version: row.version,
+    is_enabled: sqlIntToBoolean(row.is_enabled, "agent_capabilities.is_enabled"),
+    proficiency: row.proficiency,
+    internal_evaluation_score: row.internal_evaluation_score,
+    granted_at: row.granted_at
+  });
+}
+
+// 15. AgentQuotaAllocation
+export interface AgentQuotaAllocationDbRow {
+  allocation_id: string;
+  agent_id: string;
+  quota_pool_id: string;
+  allocated_tokens: number;
+  used_tokens: number;
+  daily_limit: number;
+  billing_account_ref: string | null;
+  reset_at: string;
+  updated_at: string;
+}
+
+export function toAgentQuotaAllocationDbRow(
+  allocation: AgentQuotaAllocation
+): AgentQuotaAllocationDbRow {
+  return AgentQuotaAllocationSchema.parse(allocation);
+}
+
+export function fromAgentQuotaAllocationDbRow(
+  row: AgentQuotaAllocationDbRow
+): AgentQuotaAllocation {
+  return AgentQuotaAllocationSchema.parse(row);
+}
+
+// 16. AgentExecutionLock
+export interface AgentExecutionLockDbRow {
+  lock_id: string;
+  resource_uri: string;
+  holder_agent_id: string;
+  lock_nonce: string;
+  purpose: string;
+  acquired_at: string;
+  expires_at: string;
+}
+
+export function toAgentExecutionLockDbRow(lock: AgentExecutionLock): AgentExecutionLockDbRow {
+  return AgentExecutionLockSchema.parse(lock);
+}
+
+export function fromAgentExecutionLockDbRow(row: AgentExecutionLockDbRow): AgentExecutionLock {
+  return AgentExecutionLockSchema.parse(row);
+}
+
+// 17. ProjectTaskV3
 export interface ProjectTaskV3DbRow {
   task_id: string;
   project_id: string;
@@ -792,154 +1059,1258 @@ export function fromProjectTaskV3DbRow(row: ProjectTaskV3DbRow): ProjectTaskV3 {
   });
 }
 
-export interface AgentCapabilityDbRow {
-  capability_id: string;
-  agent_id: string;
-  capability_name: string;
-  version: string;
-  is_enabled: number;
-  proficiency: string;
-  internal_evaluation_score: number | null;
-  granted_at: string;
+// 18. TaskTransitionLog
+export interface TaskTransitionLogDbRow {
+  transition_id: string;
+  task_id: string;
+  transition_seq: number;
+  from_execution_status: string;
+  to_execution_status: string;
+  from_dispatch_status: string;
+  to_dispatch_status: string;
+  transition_code: string;
+  triggered_by: string;
+  reason: string;
+  internal_diagnostic_payload: string | null;
+  created_at: string;
 }
 
-export function toAgentCapabilityDbRow(capability: AgentCapability): AgentCapabilityDbRow {
-  const valid = AgentCapabilitySchema.parse(capability);
+export function toTaskTransitionLogDbRow(log: TaskTransitionLog): TaskTransitionLogDbRow {
+  return TaskTransitionLogSchema.parse(log);
+}
+
+export function fromTaskTransitionLogDbRow(row: TaskTransitionLogDbRow): TaskTransitionLog {
+  return TaskTransitionLogSchema.parse(row);
+}
+
+// 19. TaskApprovalBinding
+export interface TaskApprovalBindingDbRow {
+  binding_id: string;
+  task_id: string;
+  approval_tier: string;
+  required_role: string;
+  status: string;
+  approver_principal_id: string | null;
+  canonical_payload_hash: string;
+  signature_nonce: string;
+  decision_reason: string | null;
+  decided_at: string | null;
+  created_at: string;
+}
+
+export function toTaskApprovalBindingDbRow(
+  binding: TaskApprovalBinding
+): TaskApprovalBindingDbRow {
+  return TaskApprovalBindingSchema.parse(binding);
+}
+
+export function fromTaskApprovalBindingDbRow(
+  row: TaskApprovalBindingDbRow
+): TaskApprovalBinding {
+  return TaskApprovalBindingSchema.parse(row);
+}
+
+// 20. ReviewAssignment
+export interface ReviewAssignmentDbRow {
+  review_id: string;
+  task_id: string;
+  reviewer_agent_id: string;
+  assigned_by: string;
+  review_status: string;
+  verdict: string | null;
+  public_feedback: string | null;
+  internal_reviewer_notes: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export function toReviewAssignmentDbRow(review: ReviewAssignment): ReviewAssignmentDbRow {
+  return ReviewAssignmentSchema.parse(review);
+}
+
+export function fromReviewAssignmentDbRow(row: ReviewAssignmentDbRow): ReviewAssignment {
+  return ReviewAssignmentSchema.parse(row);
+}
+
+// 21. ArtifactAttestation
+export interface ArtifactAttestationDbRow {
+  attestation_id: string;
+  task_id: string;
+  artifact_path: string;
+  artifact_sha256: string;
+  byte_size: number;
+  attested_by_agent_id: string;
+  attestation_type: string;
+  verification_signature: string;
+  internal_audit_trail: string | null;
+  created_at: string;
+}
+
+export function toArtifactAttestationDbRow(
+  attestation: ArtifactAttestation
+): ArtifactAttestationDbRow {
+  return ArtifactAttestationSchema.parse(attestation);
+}
+
+export function fromArtifactAttestationDbRow(
+  row: ArtifactAttestationDbRow
+): ArtifactAttestation {
+  return ArtifactAttestationSchema.parse(row);
+}
+
+// 22. MemoryRecordV3
+export interface MemoryRecordV3DbRow {
+  memory_id: string;
+  owner_agent_id: string | null;
+  scope: string;
+  category: string;
+  key: string;
+  content: string;
+  raw_context_bytes: string | null;
+  access_count: number;
+  confidence_score: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export function toMemoryRecordV3DbRow(memory: MemoryRecordV3): MemoryRecordV3DbRow {
+  return MemoryRecordV3Schema.parse(memory);
+}
+
+export function fromMemoryRecordV3DbRow(row: MemoryRecordV3DbRow): MemoryRecordV3 {
+  return MemoryRecordV3Schema.parse(row);
+}
+
+// 23. KnowledgeChunkFTS (1-to-2 split across knowledge_chunks_meta + knowledge_chunks_fts)
+export interface KnowledgeChunkMetaDbRow {
+  chunk_id: string;
+  memory_id: string;
+  embedding_vector_ref: string | null;
+  created_at: string;
+}
+
+export interface KnowledgeChunkFtsDbRow {
+  chunk_id: string;
+  memory_id: string;
+  title: string;
+  chunk_content: string;
+  tags: string;
+  created_at: string;
+}
+
+export interface KnowledgeChunkFTSDbRow {
+  meta: KnowledgeChunkMetaDbRow;
+  fts: KnowledgeChunkFtsDbRow;
+}
+
+export function toKnowledgeChunkFTSDbRow(chunk: KnowledgeChunkFTS): KnowledgeChunkFTSDbRow {
+  const valid = KnowledgeChunkFTSSchema.parse(chunk);
   return {
-    capability_id: valid.capability_id,
-    agent_id: valid.agent_id,
-    capability_name: valid.capability_name,
-    version: valid.version,
-    is_enabled: booleanToSqlInt(valid.is_enabled),
-    proficiency: valid.proficiency,
-    internal_evaluation_score: valid.internal_evaluation_score,
-    granted_at: valid.granted_at
+    meta: {
+      chunk_id: valid.chunk_id,
+      memory_id: valid.memory_id,
+      embedding_vector_ref: valid.embedding_vector_ref,
+      created_at: valid.created_at
+    },
+    fts: {
+      chunk_id: valid.chunk_id,
+      memory_id: valid.memory_id,
+      title: valid.title,
+      chunk_content: valid.chunk_content,
+      tags: JSON.stringify(valid.tags),
+      created_at: valid.created_at
+    }
   };
 }
 
-export function fromAgentCapabilityDbRow(row: AgentCapabilityDbRow): AgentCapability {
-  return AgentCapabilitySchema.parse({
-    capability_id: row.capability_id,
-    agent_id: row.agent_id,
-    capability_name: row.capability_name,
-    version: row.version,
-    is_enabled: sqlIntToBoolean(row.is_enabled, "agent_capabilities.is_enabled"),
-    proficiency: row.proficiency,
-    internal_evaluation_score: row.internal_evaluation_score,
-    granted_at: row.granted_at
+export function fromKnowledgeChunkFTSDbRow(row: KnowledgeChunkFTSDbRow): KnowledgeChunkFTS {
+  if (row.meta.chunk_id !== row.fts.chunk_id) {
+    throw new Error(
+      `KnowledgeChunkFTS integrity violation: chunk_id mismatch ('${row.meta.chunk_id}' vs '${row.fts.chunk_id}')`
+    );
+  }
+  if (row.meta.memory_id !== row.fts.memory_id) {
+    throw new Error(
+      `KnowledgeChunkFTS integrity violation for '${row.meta.chunk_id}': memory_id mismatch ('${row.meta.memory_id}' vs '${row.fts.memory_id}')`
+    );
+  }
+  if (row.meta.created_at !== row.fts.created_at) {
+    throw new Error(
+      `KnowledgeChunkFTS integrity violation for '${row.meta.chunk_id}': created_at mismatch ('${row.meta.created_at}' vs '${row.fts.created_at}')`
+    );
+  }
+  return KnowledgeChunkFTSSchema.parse({
+    chunk_id: row.meta.chunk_id,
+    memory_id: row.meta.memory_id,
+    title: row.fts.title,
+    chunk_content: row.fts.chunk_content,
+    tags: parseJsonStringArray(row.fts.tags, "knowledge_chunks_fts.tags"),
+    embedding_vector_ref: row.meta.embedding_vector_ref,
+    created_at: row.meta.created_at
   });
 }
 
+// 24. ContextSnapshot
+export interface ContextSnapshotDbRow {
+  snapshot_id: string;
+  task_id: string | null;
+  agent_id: string;
+  summary: string;
+  token_count: number;
+  snapshot_data: string;
+  encryption_iv: string | null;
+  created_at: string;
+}
+
+export function toContextSnapshotDbRow(snapshot: ContextSnapshot): ContextSnapshotDbRow {
+  return ContextSnapshotSchema.parse(snapshot);
+}
+
+export function fromContextSnapshotDbRow(row: ContextSnapshotDbRow): ContextSnapshot {
+  return ContextSnapshotSchema.parse(row);
+}
+
 // ============================================================================
-// Synchronous node:sqlite (DatabaseSync) Persistence Helpers
+// DRY Single-Table SQL Persistence Helpers & Identifier Validation
+// ============================================================================
+
+const SQL_IDENT_REGEX = /^[a-z][a-z0-9_]*$/;
+let savepointSeq = 0;
+
+function assertValidSqlIdentifier(identifier: string, context: string): void {
+  if (!SQL_IDENT_REGEX.test(identifier)) {
+    throw new Error(`Invalid SQL identifier '${identifier}' in ${context}`);
+  }
+}
+
+interface TableSqlSpec<TRow extends object> {
+  readonly table: string;
+  readonly primaryKey: string;
+  readonly columns: readonly (keyof TRow & string)[];
+}
+
+function validateTableSqlSpec<TRow extends object>(spec: TableSqlSpec<TRow>): void {
+  assertValidSqlIdentifier(spec.table, "table name");
+  assertValidSqlIdentifier(spec.primaryKey, `primaryKey for '${spec.table}'`);
+  if (spec.columns.length === 0) {
+    throw new Error(`Empty column list for table '${spec.table}'`);
+  }
+  const seen = new Set<string>();
+  for (const col of spec.columns) {
+    assertValidSqlIdentifier(col, `column for '${spec.table}'`);
+    if (seen.has(col)) {
+      throw new Error(`Duplicate column '${col}' in table spec for '${spec.table}'`);
+    }
+    seen.add(col);
+  }
+  if (!seen.has(spec.primaryKey)) {
+    throw new Error(`Primary key '${spec.primaryKey}' missing from columns for '${spec.table}'`);
+  }
+}
+
+function insertSingleTableRowRaw<TRow extends object>(
+  db: DatabaseSync,
+  spec: TableSqlSpec<TRow>,
+  row: TRow
+): void {
+  const columnList = spec.columns.join(", ");
+  const placeholders = spec.columns.map(() => "?").join(", ");
+  const sql = `INSERT INTO ${spec.table} (${columnList}) VALUES (${placeholders})`;
+  const record = row as Record<string, unknown>;
+  const values: SQLInputValue[] = spec.columns.map((col) => {
+    const val = record[col];
+    if (val === undefined) {
+      throw new Error(`Missing SQL column value for '${spec.table}.${col}'`);
+    }
+    if (val !== null && typeof val !== "string" && typeof val !== "number") {
+      throw new Error(
+        `Unsupported SQL column value type for '${spec.table}.${col}': ${typeof val}`
+      );
+    }
+    return val;
+  });
+  db.prepare(sql).run(...values);
+}
+
+function getSingleTableRowsRawById<TRow extends object>(
+  db: DatabaseSync,
+  spec: TableSqlSpec<TRow>,
+  id: string
+): TRow[] {
+  const columnList = spec.columns.join(", ");
+  const sql = `SELECT ${columnList} FROM ${spec.table} WHERE ${spec.primaryKey} = ?`;
+  return db.prepare(sql).all(id) as TRow[];
+}
+
+function getSingleTableRowRawById<TRow extends object>(
+  db: DatabaseSync,
+  spec: TableSqlSpec<TRow>,
+  id: string
+): TRow | null {
+  const columnList = spec.columns.join(", ");
+  const sql = `SELECT ${columnList} FROM ${spec.table} WHERE ${spec.primaryKey} = ?`;
+  const row = db.prepare(sql).get(id) as TRow | undefined;
+  return row ?? null;
+}
+
+interface SingleTablePersistenceSpec<TEntity, TRow extends object> extends TableSqlSpec<TRow> {
+  readonly toDbRow: (entity: TEntity) => TRow;
+  readonly fromDbRow: (row: TRow) => TEntity;
+}
+
+function insertSingleTableRow<TEntity, TRow extends object>(
+  db: DatabaseSync,
+  spec: SingleTablePersistenceSpec<TEntity, TRow>,
+  entity: TEntity
+): void {
+  const row = spec.toDbRow(entity);
+  insertSingleTableRowRaw(db, spec, row);
+}
+
+function getSingleTableRowById<TEntity, TRow extends object>(
+  db: DatabaseSync,
+  spec: SingleTablePersistenceSpec<TEntity, TRow>,
+  id: string
+): TEntity | null {
+  const row = getSingleTableRowRawById(db, spec, id);
+  return row ? spec.fromDbRow(row) : null;
+}
+
+export interface EntityPersistenceAdapter<TEntity, TRow> {
+  readonly mapping: EntityStorageMapping;
+  readonly toDbRow: (entity: TEntity) => TRow;
+  readonly fromDbRow: (row: TRow) => TEntity;
+  readonly insert: (db: DatabaseSync, entity: TEntity) => void;
+  readonly getById: (db: DatabaseSync, id: string) => TEntity | null;
+}
+
+function createSingleTableAdapter<TEntity, TRow extends object>(
+  mapping: EntityStorageMapping,
+  spec: SingleTablePersistenceSpec<TEntity, TRow>
+): EntityPersistenceAdapter<TEntity, TRow> {
+  validateTableSqlSpec(spec);
+  if (mapping.tables.length !== 1 || mapping.tables[0] !== spec.table) {
+    throw new Error(
+      `Mapping table mismatch for '${mapping.entity}': expected '${mapping.tables.join(",")}', got '${spec.table}'`
+    );
+  }
+  if (mapping.primaryKey !== spec.primaryKey) {
+    throw new Error(
+      `Mapping primaryKey mismatch for '${mapping.entity}': expected '${mapping.primaryKey}', got '${spec.primaryKey}'`
+    );
+  }
+  return {
+    mapping,
+    toDbRow: spec.toDbRow,
+    fromDbRow: spec.fromDbRow,
+    insert: (db, entity) => insertSingleTableRow(db, spec, entity),
+    getById: (db, id) => getSingleTableRowById(db, spec, id)
+  };
+}
+
+// ============================================================================
+// Single-Table Adapters + KnowledgeChunkFTS Split-Table Adapter
+// ============================================================================
+
+const chatRoomAdapter = createSingleTableAdapter<ChatRoom, ChatRoomDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.ChatRoom,
+  {
+    table: "chat_rooms",
+    primaryKey: "room_id",
+    columns: [
+      "room_id",
+      "slug",
+      "name",
+      "room_type",
+      "project_id",
+      "task_id",
+      "created_by",
+      "is_archived",
+      "internal_notes",
+      "created_at",
+      "updated_at"
+    ],
+    toDbRow: toChatRoomDbRow,
+    fromDbRow: fromChatRoomDbRow
+  }
+);
+
+const chatMemberAdapter = createSingleTableAdapter<ChatMember, ChatMemberDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.ChatMember,
+  {
+    table: "chat_members",
+    primaryKey: "membership_id",
+    columns: [
+      "membership_id",
+      "room_id",
+      "principal_id",
+      "principal_type",
+      "role",
+      "last_read_message_id",
+      "internal_cursor",
+      "joined_at"
+    ],
+    toDbRow: toChatMemberDbRow,
+    fromDbRow: fromChatMemberDbRow
+  }
+);
+
+const chatMessageAdapter = createSingleTableAdapter<ChatMessage, ChatMessageDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.ChatMessage,
+  {
+    table: "chat_messages",
+    primaryKey: "message_id",
+    columns: [
+      "message_id",
+      "room_id",
+      "sender_id",
+      "sender_type",
+      "message_type",
+      "content",
+      "reply_to_id",
+      "mentions_json",
+      "metadata_json",
+      "internal_metadata_json",
+      "raw_token_trace",
+      "is_edited",
+      "created_at",
+      "updated_at"
+    ],
+    toDbRow: toChatMessageDbRow,
+    fromDbRow: fromChatMessageDbRow
+  }
+);
+
+const messageAttachmentAdapter = createSingleTableAdapter<
+  MessageAttachment,
+  MessageAttachmentDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.MessageAttachment, {
+  table: "message_attachments",
+  primaryKey: "attachment_id",
+  columns: [
+    "attachment_id",
+    "message_id",
+    "file_name",
+    "file_path",
+    "file_size_bytes",
+    "mime_type",
+    "sha256_hash",
+    "storage_driver_token",
+    "uploaded_at"
+  ],
+  toDbRow: toMessageAttachmentDbRow,
+  fromDbRow: fromMessageAttachmentDbRow
+});
+
+const messageReactionAdapter = createSingleTableAdapter<MessageReaction, MessageReactionDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.MessageReaction,
+  {
+    table: "message_reactions",
+    primaryKey: "reaction_id",
+    columns: [
+      "reaction_id",
+      "message_id",
+      "principal_id",
+      "reaction_code",
+      "internal_client_ip",
+      "created_at"
+    ],
+    toDbRow: toMessageReactionDbRow,
+    fromDbRow: fromMessageReactionDbRow
+  }
+);
+
+const roomInviteAdapter = createSingleTableAdapter<RoomInvite, RoomInviteDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.RoomInvite,
+  {
+    table: "room_invites",
+    primaryKey: "invite_id",
+    columns: [
+      "invite_id",
+      "room_id",
+      "inviter_id",
+      "invitee_id",
+      "status",
+      "invite_token_hash",
+      "expires_at",
+      "created_at"
+    ],
+    toDbRow: toRoomInviteDbRow,
+    fromDbRow: fromRoomInviteDbRow
+  }
+);
+
+const roomAuditLogAdapter = createSingleTableAdapter<RoomAuditLog, RoomAuditLogDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.RoomAuditLog,
+  {
+    table: "room_audit_logs",
+    primaryKey: "audit_id",
+    columns: [
+      "audit_id",
+      "room_id",
+      "action",
+      "actor_id",
+      "details_json",
+      "internal_details_json",
+      "security_context_snapshot",
+      "created_at"
+    ],
+    toDbRow: toRoomAuditLogDbRow,
+    fromDbRow: fromRoomAuditLogDbRow
+  }
+);
+
+const outboxEventAdapter = createSingleTableAdapter<OutboxEvent, OutboxEventDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.OutboxEvent,
+  {
+    table: "event_outbox",
+    primaryKey: "event_id",
+    columns: [
+      "event_id",
+      "aggregate_type",
+      "aggregate_id",
+      "event_type",
+      "payload_json",
+      "status",
+      "retry_count",
+      "max_retries",
+      "last_error",
+      "internal_routing_key",
+      "scheduled_for",
+      "processed_at",
+      "created_at"
+    ],
+    toDbRow: toOutboxEventDbRow,
+    fromDbRow: fromOutboxEventDbRow
+  }
+);
+
+const eventSubscriptionAdapter = createSingleTableAdapter<
+  EventSubscription,
+  EventSubscriptionDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.EventSubscription, {
+  table: "event_subscriptions",
+  primaryKey: "subscription_id",
+  columns: [
+    "subscription_id",
+    "subscriber_id",
+    "event_pattern",
+    "endpoint",
+    "is_active",
+    "auth_secret_hash",
+    "created_at",
+    "updated_at"
+  ],
+  toDbRow: toEventSubscriptionDbRow,
+  fromDbRow: fromEventSubscriptionDbRow
+});
+
+const deadLetterQueueAdapter = createSingleTableAdapter<DeadLetterQueue, DeadLetterQueueDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.DeadLetterQueue,
+  {
+    table: "dead_letter_queue",
+    primaryKey: "dlq_id",
+    columns: [
+      "dlq_id",
+      "original_event_id",
+      "event_type",
+      "payload_json",
+      "failure_reason",
+      "stack_trace",
+      "resolved",
+      "resolved_by",
+      "resolved_at",
+      "failed_at"
+    ],
+    toDbRow: toDeadLetterQueueDbRow,
+    fromDbRow: fromDeadLetterQueueDbRow
+  }
+);
+
+const deliveryAttemptAdapter = createSingleTableAdapter<DeliveryAttempt, DeliveryAttemptDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.DeliveryAttempt,
+  {
+    table: "delivery_attempts",
+    primaryKey: "attempt_id",
+    columns: [
+      "attempt_id",
+      "outbox_event_id",
+      "attempt_number",
+      "status",
+      "response_code",
+      "error_message",
+      "internal_worker_id",
+      "latency_ms",
+      "attempted_at"
+    ],
+    toDbRow: toDeliveryAttemptDbRow,
+    fromDbRow: fromDeliveryAttemptDbRow
+  }
+);
+
+const agentLeaseAdapter = createSingleTableAdapter<AgentLease, AgentLeaseDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.AgentLease,
+  {
+    table: "agent_leases",
+    primaryKey: "lease_id",
+    columns: [
+      "lease_id",
+      "task_id",
+      "agent_id",
+      "lease_nonce",
+      "status",
+      "heartbeat_at",
+      "expires_at",
+      "acquired_at"
+    ],
+    toDbRow: toAgentLeaseDbRow,
+    fromDbRow: fromAgentLeaseDbRow
+  }
+);
+
+const agentHeartbeatAdapter = createSingleTableAdapter<AgentHeartbeat, AgentHeartbeatDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.AgentHeartbeat,
+  {
+    table: "agent_heartbeats",
+    primaryKey: "heartbeat_id",
+    columns: [
+      "heartbeat_id",
+      "agent_id",
+      "status",
+      "current_task_id",
+      "memory_usage_mb",
+      "cpu_percent",
+      "host_process_pid",
+      "recorded_at"
+    ],
+    toDbRow: toAgentHeartbeatDbRow,
+    fromDbRow: fromAgentHeartbeatDbRow
+  }
+);
+
+const agentCapabilityAdapter = createSingleTableAdapter<AgentCapability, AgentCapabilityDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.AgentCapability,
+  {
+    table: "agent_capabilities",
+    primaryKey: "capability_id",
+    columns: [
+      "capability_id",
+      "agent_id",
+      "capability_name",
+      "version",
+      "is_enabled",
+      "proficiency",
+      "internal_evaluation_score",
+      "granted_at"
+    ],
+    toDbRow: toAgentCapabilityDbRow,
+    fromDbRow: fromAgentCapabilityDbRow
+  }
+);
+
+const agentQuotaAllocationAdapter = createSingleTableAdapter<
+  AgentQuotaAllocation,
+  AgentQuotaAllocationDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.AgentQuotaAllocation, {
+  table: "agent_quota_allocations",
+  primaryKey: "allocation_id",
+  columns: [
+    "allocation_id",
+    "agent_id",
+    "quota_pool_id",
+    "allocated_tokens",
+    "used_tokens",
+    "daily_limit",
+    "billing_account_ref",
+    "reset_at",
+    "updated_at"
+  ],
+  toDbRow: toAgentQuotaAllocationDbRow,
+  fromDbRow: fromAgentQuotaAllocationDbRow
+});
+
+const agentExecutionLockAdapter = createSingleTableAdapter<
+  AgentExecutionLock,
+  AgentExecutionLockDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.AgentExecutionLock, {
+  table: "agent_execution_locks",
+  primaryKey: "lock_id",
+  columns: [
+    "lock_id",
+    "resource_uri",
+    "holder_agent_id",
+    "lock_nonce",
+    "purpose",
+    "acquired_at",
+    "expires_at"
+  ],
+  toDbRow: toAgentExecutionLockDbRow,
+  fromDbRow: fromAgentExecutionLockDbRow
+});
+
+const projectTaskV3Adapter = createSingleTableAdapter<ProjectTaskV3, ProjectTaskV3DbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.ProjectTaskV3,
+  {
+    table: "project_tasks_v3",
+    primaryKey: "task_id",
+    columns: [
+      "task_id",
+      "project_id",
+      "parent_task_id",
+      "title",
+      "objective",
+      "risk_class",
+      "priority",
+      "execution_status",
+      "dispatch_status",
+      "assigned_agent_id",
+      "reviewer_agent_id",
+      "version",
+      "token_budget",
+      "token_used",
+      "acceptance_criteria_json",
+      "internal_evaluation_notes",
+      "created_at",
+      "updated_at"
+    ],
+    toDbRow: toProjectTaskV3DbRow,
+    fromDbRow: fromProjectTaskV3DbRow
+  }
+);
+
+const taskTransitionLogAdapter = createSingleTableAdapter<
+  TaskTransitionLog,
+  TaskTransitionLogDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.TaskTransitionLog, {
+  table: "task_transition_logs",
+  primaryKey: "transition_id",
+  columns: [
+    "transition_id",
+    "task_id",
+    "transition_seq",
+    "from_execution_status",
+    "to_execution_status",
+    "from_dispatch_status",
+    "to_dispatch_status",
+    "transition_code",
+    "triggered_by",
+    "reason",
+    "internal_diagnostic_payload",
+    "created_at"
+  ],
+  toDbRow: toTaskTransitionLogDbRow,
+  fromDbRow: fromTaskTransitionLogDbRow
+});
+
+const taskApprovalBindingAdapter = createSingleTableAdapter<
+  TaskApprovalBinding,
+  TaskApprovalBindingDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.TaskApprovalBinding, {
+  table: "task_approval_bindings",
+  primaryKey: "binding_id",
+  columns: [
+    "binding_id",
+    "task_id",
+    "approval_tier",
+    "required_role",
+    "status",
+    "approver_principal_id",
+    "canonical_payload_hash",
+    "signature_nonce",
+    "decision_reason",
+    "decided_at",
+    "created_at"
+  ],
+  toDbRow: toTaskApprovalBindingDbRow,
+  fromDbRow: fromTaskApprovalBindingDbRow
+});
+
+const reviewAssignmentAdapter = createSingleTableAdapter<
+  ReviewAssignment,
+  ReviewAssignmentDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.ReviewAssignment, {
+  table: "review_assignments",
+  primaryKey: "review_id",
+  columns: [
+    "review_id",
+    "task_id",
+    "reviewer_agent_id",
+    "assigned_by",
+    "review_status",
+    "verdict",
+    "public_feedback",
+    "internal_reviewer_notes",
+    "created_at",
+    "completed_at"
+  ],
+  toDbRow: toReviewAssignmentDbRow,
+  fromDbRow: fromReviewAssignmentDbRow
+});
+
+const artifactAttestationAdapter = createSingleTableAdapter<
+  ArtifactAttestation,
+  ArtifactAttestationDbRow
+>(V3_ENTITY_STORAGE_MAPPINGS.ArtifactAttestation, {
+  table: "artifact_attestations",
+  primaryKey: "attestation_id",
+  columns: [
+    "attestation_id",
+    "task_id",
+    "artifact_path",
+    "artifact_sha256",
+    "byte_size",
+    "attested_by_agent_id",
+    "attestation_type",
+    "verification_signature",
+    "internal_audit_trail",
+    "created_at"
+  ],
+  toDbRow: toArtifactAttestationDbRow,
+  fromDbRow: fromArtifactAttestationDbRow
+});
+
+const memoryRecordV3Adapter = createSingleTableAdapter<MemoryRecordV3, MemoryRecordV3DbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.MemoryRecordV3,
+  {
+    table: "memory_records_v3",
+    primaryKey: "memory_id",
+    columns: [
+      "memory_id",
+      "owner_agent_id",
+      "scope",
+      "category",
+      "key",
+      "content",
+      "raw_context_bytes",
+      "access_count",
+      "confidence_score",
+      "created_at",
+      "updated_at"
+    ],
+    toDbRow: toMemoryRecordV3DbRow,
+    fromDbRow: fromMemoryRecordV3DbRow
+  }
+);
+
+const KNOWLEDGE_CHUNKS_META_SPEC: TableSqlSpec<KnowledgeChunkMetaDbRow> = {
+  table: "knowledge_chunks_meta",
+  primaryKey: "chunk_id",
+  columns: ["chunk_id", "memory_id", "embedding_vector_ref", "created_at"]
+};
+
+const KNOWLEDGE_CHUNKS_FTS_SPEC: TableSqlSpec<KnowledgeChunkFtsDbRow> = {
+  table: "knowledge_chunks_fts",
+  primaryKey: "chunk_id",
+  columns: ["chunk_id", "memory_id", "title", "chunk_content", "tags", "created_at"]
+};
+
+validateTableSqlSpec(KNOWLEDGE_CHUNKS_META_SPEC);
+validateTableSqlSpec(KNOWLEDGE_CHUNKS_FTS_SPEC);
+
+const knowledgeChunkFTSAdapter: EntityPersistenceAdapter<KnowledgeChunkFTS, KnowledgeChunkFTSDbRow> = {
+  mapping: V3_ENTITY_STORAGE_MAPPINGS.KnowledgeChunkFTS,
+  toDbRow: toKnowledgeChunkFTSDbRow,
+  fromDbRow: fromKnowledgeChunkFTSDbRow,
+  insert: (db, chunk) => {
+    const row = toKnowledgeChunkFTSDbRow(chunk);
+    const savepoint = `sp_insert_knowledge_chunk_${++savepointSeq}`;
+    db.exec(`SAVEPOINT ${savepoint};`);
+    try {
+      insertSingleTableRowRaw(db, KNOWLEDGE_CHUNKS_META_SPEC, row.meta);
+      insertSingleTableRowRaw(db, KNOWLEDGE_CHUNKS_FTS_SPEC, row.fts);
+      db.exec(`RELEASE SAVEPOINT ${savepoint};`);
+    } catch (err) {
+      try {
+        db.exec(`ROLLBACK TO SAVEPOINT ${savepoint};`);
+        db.exec(`RELEASE SAVEPOINT ${savepoint};`);
+      } catch {
+        // Outer transaction already aborted or rolled back
+      }
+      throw err;
+    }
+  },
+  getById: (db, chunkId) => {
+    const metaRow = getSingleTableRowRawById(db, KNOWLEDGE_CHUNKS_META_SPEC, chunkId);
+    const ftsRows = getSingleTableRowsRawById(db, KNOWLEDGE_CHUNKS_FTS_SPEC, chunkId);
+
+    if (ftsRows.length > 1) {
+      throw new Error(
+        `KnowledgeChunkFTS integrity violation for '${chunkId}': expected at most 1 row in knowledge_chunks_fts, found ${ftsRows.length}`
+      );
+    }
+
+    const ftsRow = ftsRows[0];
+    if (!metaRow && !ftsRow) {
+      return null;
+    }
+    if (!metaRow) {
+      throw new Error(
+        `KnowledgeChunkFTS integrity violation for '${chunkId}': row exists in knowledge_chunks_fts without matching row in knowledge_chunks_meta`
+      );
+    }
+    if (!ftsRow) {
+      throw new Error(
+        `KnowledgeChunkFTS integrity violation for '${chunkId}': row exists in knowledge_chunks_meta without matching row in knowledge_chunks_fts`
+      );
+    }
+
+    return fromKnowledgeChunkFTSDbRow({ meta: metaRow, fts: ftsRow });
+  }
+};
+
+const contextSnapshotAdapter = createSingleTableAdapter<ContextSnapshot, ContextSnapshotDbRow>(
+  V3_ENTITY_STORAGE_MAPPINGS.ContextSnapshot,
+  {
+    table: "context_snapshots",
+    primaryKey: "snapshot_id",
+    columns: [
+      "snapshot_id",
+      "task_id",
+      "agent_id",
+      "summary",
+      "token_count",
+      "snapshot_data",
+      "encryption_iv",
+      "created_at"
+    ],
+    toDbRow: toContextSnapshotDbRow,
+    fromDbRow: fromContextSnapshotDbRow
+  }
+);
+
+// ============================================================================
+// Synchronous node:sqlite (DatabaseSync) Persistence Helpers (All 24 Entities)
 // ============================================================================
 
 export function insertChatRoom(db: DatabaseSync, room: ChatRoom): void {
-  const row = toChatRoomDbRow(room);
-  db.prepare(`
-    INSERT INTO chat_rooms (
-      room_id, slug, name, room_type, project_id, task_id,
-      created_by, is_archived, internal_notes, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    row.room_id,
-    row.slug,
-    row.name,
-    row.room_type,
-    row.project_id,
-    row.task_id,
-    row.created_by,
-    row.is_archived,
-    row.internal_notes,
-    row.created_at,
-    row.updated_at
-  );
+  chatRoomAdapter.insert(db, room);
 }
 
 export function getChatRoomById(db: DatabaseSync, roomId: string): ChatRoom | null {
-  const row = db
-    .prepare(`
-      SELECT
-        room_id, slug, name, room_type, project_id, task_id,
-        created_by, is_archived, internal_notes, created_at, updated_at
-      FROM chat_rooms
-      WHERE room_id = ?
-    `)
-    .get(roomId) as ChatRoomDbRow | undefined;
+  return chatRoomAdapter.getById(db, roomId);
+}
 
-  return row ? fromChatRoomDbRow(row) : null;
+export function insertChatMember(db: DatabaseSync, member: ChatMember): void {
+  chatMemberAdapter.insert(db, member);
+}
+
+export function getChatMemberById(db: DatabaseSync, membershipId: string): ChatMember | null {
+  return chatMemberAdapter.getById(db, membershipId);
 }
 
 export function insertChatMessage(db: DatabaseSync, message: ChatMessage): void {
-  const row = toChatMessageDbRow(message);
-  db.prepare(`
-    INSERT INTO chat_messages (
-      message_id, room_id, sender_id, sender_type, message_type, content, reply_to_id,
-      mentions_json, metadata_json, internal_metadata_json, raw_token_trace,
-      is_edited, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    row.message_id,
-    row.room_id,
-    row.sender_id,
-    row.sender_type,
-    row.message_type,
-    row.content,
-    row.reply_to_id,
-    row.mentions_json,
-    row.metadata_json,
-    row.internal_metadata_json,
-    row.raw_token_trace,
-    row.is_edited,
-    row.created_at,
-    row.updated_at
-  );
+  chatMessageAdapter.insert(db, message);
 }
 
 export function getChatMessageById(db: DatabaseSync, messageId: string): ChatMessage | null {
-  const row = db
-    .prepare(`
-      SELECT
-        message_id, room_id, sender_id, sender_type, message_type, content, reply_to_id,
-        mentions_json, metadata_json, internal_metadata_json, raw_token_trace,
-        is_edited, created_at, updated_at
-      FROM chat_messages
-      WHERE message_id = ?
-    `)
-    .get(messageId) as ChatMessageDbRow | undefined;
+  return chatMessageAdapter.getById(db, messageId);
+}
 
-  return row ? fromChatMessageDbRow(row) : null;
+export function insertMessageAttachment(db: DatabaseSync, attachment: MessageAttachment): void {
+  messageAttachmentAdapter.insert(db, attachment);
+}
+
+export function getMessageAttachmentById(
+  db: DatabaseSync,
+  attachmentId: string
+): MessageAttachment | null {
+  return messageAttachmentAdapter.getById(db, attachmentId);
+}
+
+export function insertMessageReaction(db: DatabaseSync, reaction: MessageReaction): void {
+  messageReactionAdapter.insert(db, reaction);
+}
+
+export function getMessageReactionById(
+  db: DatabaseSync,
+  reactionId: string
+): MessageReaction | null {
+  return messageReactionAdapter.getById(db, reactionId);
+}
+
+export function insertRoomInvite(db: DatabaseSync, invite: RoomInvite): void {
+  roomInviteAdapter.insert(db, invite);
+}
+
+export function getRoomInviteById(db: DatabaseSync, inviteId: string): RoomInvite | null {
+  return roomInviteAdapter.getById(db, inviteId);
 }
 
 export function insertRoomAuditLog(db: DatabaseSync, log: RoomAuditLog): void {
-  const row = toRoomAuditLogDbRow(log);
-  db.prepare(`
-    INSERT INTO room_audit_logs (
-      audit_id, room_id, action, actor_id, details_json,
-      internal_details_json, security_context_snapshot, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    row.audit_id,
-    row.room_id,
-    row.action,
-    row.actor_id,
-    row.details_json,
-    row.internal_details_json,
-    row.security_context_snapshot,
-    row.created_at
-  );
+  roomAuditLogAdapter.insert(db, log);
 }
 
 export function getRoomAuditLogById(db: DatabaseSync, auditId: string): RoomAuditLog | null {
-  const row = db
-    .prepare(`
-      SELECT
-        audit_id, room_id, action, actor_id, details_json,
-        internal_details_json, security_context_snapshot, created_at
-      FROM room_audit_logs
-      WHERE audit_id = ?
-    `)
-    .get(auditId) as RoomAuditLogDbRow | undefined;
-
-  return row ? fromRoomAuditLogDbRow(row) : null;
+  return roomAuditLogAdapter.getById(db, auditId);
 }
+
+export function insertOutboxEvent(db: DatabaseSync, event: OutboxEvent): void {
+  outboxEventAdapter.insert(db, event);
+}
+
+export function getOutboxEventById(db: DatabaseSync, eventId: string): OutboxEvent | null {
+  return outboxEventAdapter.getById(db, eventId);
+}
+
+export function insertEventSubscription(db: DatabaseSync, sub: EventSubscription): void {
+  eventSubscriptionAdapter.insert(db, sub);
+}
+
+export function getEventSubscriptionById(
+  db: DatabaseSync,
+  subscriptionId: string
+): EventSubscription | null {
+  return eventSubscriptionAdapter.getById(db, subscriptionId);
+}
+
+export function insertDeadLetterQueue(db: DatabaseSync, dlq: DeadLetterQueue): void {
+  deadLetterQueueAdapter.insert(db, dlq);
+}
+
+export function getDeadLetterQueueById(db: DatabaseSync, dlqId: string): DeadLetterQueue | null {
+  return deadLetterQueueAdapter.getById(db, dlqId);
+}
+
+export function insertDeliveryAttempt(db: DatabaseSync, attempt: DeliveryAttempt): void {
+  deliveryAttemptAdapter.insert(db, attempt);
+}
+
+export function getDeliveryAttemptById(
+  db: DatabaseSync,
+  attemptId: string
+): DeliveryAttempt | null {
+  return deliveryAttemptAdapter.getById(db, attemptId);
+}
+
+export function insertAgentLease(db: DatabaseSync, lease: AgentLease): void {
+  agentLeaseAdapter.insert(db, lease);
+}
+
+export function getAgentLeaseById(db: DatabaseSync, leaseId: string): AgentLease | null {
+  return agentLeaseAdapter.getById(db, leaseId);
+}
+
+export function insertAgentHeartbeat(db: DatabaseSync, heartbeat: AgentHeartbeat): void {
+  agentHeartbeatAdapter.insert(db, heartbeat);
+}
+
+export function getAgentHeartbeatById(
+  db: DatabaseSync,
+  heartbeatId: string
+): AgentHeartbeat | null {
+  return agentHeartbeatAdapter.getById(db, heartbeatId);
+}
+
+export function insertAgentCapability(db: DatabaseSync, capability: AgentCapability): void {
+  agentCapabilityAdapter.insert(db, capability);
+}
+
+export function getAgentCapabilityById(
+  db: DatabaseSync,
+  capabilityId: string
+): AgentCapability | null {
+  return agentCapabilityAdapter.getById(db, capabilityId);
+}
+
+export function insertAgentQuotaAllocation(
+  db: DatabaseSync,
+  allocation: AgentQuotaAllocation
+): void {
+  agentQuotaAllocationAdapter.insert(db, allocation);
+}
+
+export function getAgentQuotaAllocationById(
+  db: DatabaseSync,
+  allocationId: string
+): AgentQuotaAllocation | null {
+  return agentQuotaAllocationAdapter.getById(db, allocationId);
+}
+
+export function insertAgentExecutionLock(db: DatabaseSync, lock: AgentExecutionLock): void {
+  agentExecutionLockAdapter.insert(db, lock);
+}
+
+export function getAgentExecutionLockById(
+  db: DatabaseSync,
+  lockId: string
+): AgentExecutionLock | null {
+  return agentExecutionLockAdapter.getById(db, lockId);
+}
+
+export function insertProjectTaskV3(db: DatabaseSync, task: ProjectTaskV3): void {
+  projectTaskV3Adapter.insert(db, task);
+}
+
+export function getProjectTaskV3ById(db: DatabaseSync, taskId: string): ProjectTaskV3 | null {
+  return projectTaskV3Adapter.getById(db, taskId);
+}
+
+export function insertTaskTransitionLog(db: DatabaseSync, log: TaskTransitionLog): void {
+  taskTransitionLogAdapter.insert(db, log);
+}
+
+export function getTaskTransitionLogById(
+  db: DatabaseSync,
+  transitionId: string
+): TaskTransitionLog | null {
+  return taskTransitionLogAdapter.getById(db, transitionId);
+}
+
+export function insertTaskApprovalBinding(
+  db: DatabaseSync,
+  binding: TaskApprovalBinding
+): void {
+  taskApprovalBindingAdapter.insert(db, binding);
+}
+
+export function getTaskApprovalBindingById(
+  db: DatabaseSync,
+  bindingId: string
+): TaskApprovalBinding | null {
+  return taskApprovalBindingAdapter.getById(db, bindingId);
+}
+
+export function insertReviewAssignment(db: DatabaseSync, review: ReviewAssignment): void {
+  reviewAssignmentAdapter.insert(db, review);
+}
+
+export function getReviewAssignmentById(
+  db: DatabaseSync,
+  reviewId: string
+): ReviewAssignment | null {
+  return reviewAssignmentAdapter.getById(db, reviewId);
+}
+
+export function insertArtifactAttestation(
+  db: DatabaseSync,
+  attestation: ArtifactAttestation
+): void {
+  artifactAttestationAdapter.insert(db, attestation);
+}
+
+export function getArtifactAttestationById(
+  db: DatabaseSync,
+  attestationId: string
+): ArtifactAttestation | null {
+  return artifactAttestationAdapter.getById(db, attestationId);
+}
+
+export function insertMemoryRecordV3(db: DatabaseSync, memory: MemoryRecordV3): void {
+  memoryRecordV3Adapter.insert(db, memory);
+}
+
+export function getMemoryRecordV3ById(
+  db: DatabaseSync,
+  memoryId: string
+): MemoryRecordV3 | null {
+  return memoryRecordV3Adapter.getById(db, memoryId);
+}
+
+export function insertKnowledgeChunkFTS(db: DatabaseSync, chunk: KnowledgeChunkFTS): void {
+  knowledgeChunkFTSAdapter.insert(db, chunk);
+}
+
+export function getKnowledgeChunkFTSById(
+  db: DatabaseSync,
+  chunkId: string
+): KnowledgeChunkFTS | null {
+  return knowledgeChunkFTSAdapter.getById(db, chunkId);
+}
+
+export function insertContextSnapshot(db: DatabaseSync, snapshot: ContextSnapshot): void {
+  contextSnapshotAdapter.insert(db, snapshot);
+}
+
+export function getContextSnapshotById(
+  db: DatabaseSync,
+  snapshotId: string
+): ContextSnapshot | null {
+  return contextSnapshotAdapter.getById(db, snapshotId);
+}
+
+// ============================================================================
+// Complete Compile-Time & Runtime Registry (All 24 Entities)
+// ============================================================================
+
+export interface V3EntityTypeMap {
+  ChatRoom: ChatRoom;
+  ChatMember: ChatMember;
+  ChatMessage: ChatMessage;
+  MessageAttachment: MessageAttachment;
+  MessageReaction: MessageReaction;
+  RoomInvite: RoomInvite;
+  RoomAuditLog: RoomAuditLog;
+  OutboxEvent: OutboxEvent;
+  EventSubscription: EventSubscription;
+  DeadLetterQueue: DeadLetterQueue;
+  DeliveryAttempt: DeliveryAttempt;
+  AgentLease: AgentLease;
+  AgentHeartbeat: AgentHeartbeat;
+  AgentCapability: AgentCapability;
+  AgentQuotaAllocation: AgentQuotaAllocation;
+  AgentExecutionLock: AgentExecutionLock;
+  ProjectTaskV3: ProjectTaskV3;
+  TaskTransitionLog: TaskTransitionLog;
+  TaskApprovalBinding: TaskApprovalBinding;
+  ReviewAssignment: ReviewAssignment;
+  ArtifactAttestation: ArtifactAttestation;
+  MemoryRecordV3: MemoryRecordV3;
+  KnowledgeChunkFTS: KnowledgeChunkFTS;
+  ContextSnapshot: ContextSnapshot;
+}
+
+export interface V3DbRowTypeMap {
+  ChatRoom: ChatRoomDbRow;
+  ChatMember: ChatMemberDbRow;
+  ChatMessage: ChatMessageDbRow;
+  MessageAttachment: MessageAttachmentDbRow;
+  MessageReaction: MessageReactionDbRow;
+  RoomInvite: RoomInviteDbRow;
+  RoomAuditLog: RoomAuditLogDbRow;
+  OutboxEvent: OutboxEventDbRow;
+  EventSubscription: EventSubscriptionDbRow;
+  DeadLetterQueue: DeadLetterQueueDbRow;
+  DeliveryAttempt: DeliveryAttemptDbRow;
+  AgentLease: AgentLeaseDbRow;
+  AgentHeartbeat: AgentHeartbeatDbRow;
+  AgentCapability: AgentCapabilityDbRow;
+  AgentQuotaAllocation: AgentQuotaAllocationDbRow;
+  AgentExecutionLock: AgentExecutionLockDbRow;
+  ProjectTaskV3: ProjectTaskV3DbRow;
+  TaskTransitionLog: TaskTransitionLogDbRow;
+  TaskApprovalBinding: TaskApprovalBindingDbRow;
+  ReviewAssignment: ReviewAssignmentDbRow;
+  ArtifactAttestation: ArtifactAttestationDbRow;
+  MemoryRecordV3: MemoryRecordV3DbRow;
+  KnowledgeChunkFTS: KnowledgeChunkFTSDbRow;
+  ContextSnapshot: ContextSnapshotDbRow;
+}
+
+export const V3_ENTITY_PERSISTENCE_ADAPTERS = {
+  ChatRoom: chatRoomAdapter,
+  ChatMember: chatMemberAdapter,
+  ChatMessage: chatMessageAdapter,
+  MessageAttachment: messageAttachmentAdapter,
+  MessageReaction: messageReactionAdapter,
+  RoomInvite: roomInviteAdapter,
+  RoomAuditLog: roomAuditLogAdapter,
+  OutboxEvent: outboxEventAdapter,
+  EventSubscription: eventSubscriptionAdapter,
+  DeadLetterQueue: deadLetterQueueAdapter,
+  DeliveryAttempt: deliveryAttemptAdapter,
+  AgentLease: agentLeaseAdapter,
+  AgentHeartbeat: agentHeartbeatAdapter,
+  AgentCapability: agentCapabilityAdapter,
+  AgentQuotaAllocation: agentQuotaAllocationAdapter,
+  AgentExecutionLock: agentExecutionLockAdapter,
+  ProjectTaskV3: projectTaskV3Adapter,
+  TaskTransitionLog: taskTransitionLogAdapter,
+  TaskApprovalBinding: taskApprovalBindingAdapter,
+  ReviewAssignment: reviewAssignmentAdapter,
+  ArtifactAttestation: artifactAttestationAdapter,
+  MemoryRecordV3: memoryRecordV3Adapter,
+  KnowledgeChunkFTS: knowledgeChunkFTSAdapter,
+  ContextSnapshot: contextSnapshotAdapter
+} as const satisfies {
+  [K in V3MappedEntityName]: EntityPersistenceAdapter<V3EntityTypeMap[K], V3DbRowTypeMap[K]>;
+};

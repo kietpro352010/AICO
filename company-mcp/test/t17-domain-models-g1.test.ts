@@ -1364,19 +1364,41 @@ test("T17 Regression: P1 Blocker #2 — Public DTO Metadata & Nested Sensitive D
 });
 
 test("T17 P2 Suite A: Complete AICO Secret Scanning Catalog Coverage & Guardrails", async (suite) => {
-  await suite.test("Catalog integrity: every AICO_SECRET_CATALOG entry has unique id, non-empty category/description, and matches SecretScanner.getCatalog()", () => {
+  await suite.test("Catalog integrity: every AICO_SECRET_CATALOG entry has unique id, non-empty category/description, and SecretScanner.getCatalog() returns isolated frozen snapshots", () => {
     const catalog = SecretScanner.getCatalog();
-    assert.equal(catalog, AICO_SECRET_CATALOG);
+    const catalog2 = SecretScanner.getCatalog();
+
+    assert.notEqual(catalog, AICO_SECRET_CATALOG);
+    assert.notEqual(catalog2, catalog);
+    assert.equal(Object.isFrozen(catalog), true);
+    assert.equal(Object.isFrozen(AICO_SECRET_CATALOG), true);
     assert.equal(catalog.length, 20);
+    assert.equal(AICO_SECRET_CATALOG.length, 20);
 
     const seenIds = new Set<string>();
-    for (const entry of catalog) {
+    for (let i = 0; i < catalog.length; i++) {
+      const entry = catalog[i];
+      const staticEntry = AICO_SECRET_CATALOG[i];
+      const secondEntry = catalog2[i];
+
+      assert.equal(Object.isFrozen(entry), true);
+      assert.equal(Object.isFrozen(staticEntry), true);
       assert.equal(entry.id.trim().length > 0, true);
       assert.equal(entry.category.trim().length > 0, true);
       assert.equal(entry.description.trim().length > 0, true);
       assert.equal(entry.pattern instanceof RegExp, true);
       assert.equal(seenIds.has(entry.id), false, `Duplicate catalog id: ${entry.id}`);
       seenIds.add(entry.id);
+
+      assert.equal(entry.id, staticEntry.id);
+      assert.equal(entry.category, staticEntry.category);
+      assert.equal(entry.description, staticEntry.description);
+      assert.equal(entry.pattern.source, staticEntry.pattern.source);
+      assert.equal(entry.pattern.flags, staticEntry.pattern.flags);
+
+      assert.notEqual(entry, staticEntry);
+      assert.notEqual(entry.pattern, staticEntry.pattern);
+      assert.notEqual(secondEntry.pattern, entry.pattern);
     }
   });
 
@@ -1435,6 +1457,12 @@ test("T17 P2 Suite A: Complete AICO Secret Scanning Catalog Coverage & Guardrail
         secretId: "http_bearer_credential",
         category: "http_auth",
         sample: `Bearer ${syntheticJwt}`,
+        expectedRedacted: "[REDACTED_SECRET]"
+      },
+      {
+        secretId: "http_bearer_credential",
+        category: "http_auth",
+        sample: "Bearer AbCdEfGhIjKlMnOpQrStUvWx",
         expectedRedacted: "[REDACTED_SECRET]"
       },
       {
@@ -1711,6 +1739,8 @@ test("T17 P2 Suite A: Complete AICO Secret Scanning Catalog Coverage & Guardrail
       "aico_test_domain_models_suite",
       "bearer https://docs.aico.local/security/overview",
       "bearer authentication_middleware_spec",
+      "Bearer authentication_middleware_spec_example",
+      "Bearer UPPERCASE_PROSE_ONLY_IDENTIFIER_HERE",
       "Deploy migration v0.5.0 with bearer semantics at https://docs.aico.local/security/overview"
     ];
 
@@ -1739,11 +1769,95 @@ test("T17 P2 Suite A: Complete AICO Secret Scanning Catalog Coverage & Guardrail
       assert.equal(redacted.startsWith("[REDACTED_SECRET]\n"), true);
     }
 
-    const cleanLarge = "clean_log_line_0123456789abcdef\n".repeat(1_500);
-    const cleanStart = performance.now();
-    assert.equal(SecretScanner.scan(cleanLarge).hasSecret, false);
-    assert.equal(SecretScanner.redact(cleanLarge), cleanLarge);
-    assert.equal(performance.now() - cleanStart < 500, true);
+    const adversarialSafeInputs = [
+      "clean_log_line_0123456789abcdef\n".repeat(1_500),
+      "Bearer " + "a".repeat(40_000),
+      "Bearer " + "A".repeat(40_000),
+      "aico_test_".repeat(4_000) + "a"
+    ];
+    for (const safeAdversarial of adversarialSafeInputs) {
+      const start = performance.now();
+      assert.equal(SecretScanner.scan(safeAdversarial).hasSecret, false);
+      assert.equal(SecretScanner.redact(safeAdversarial), safeAdversarial);
+      const elapsedMs = performance.now() - start;
+      assert.equal(
+        elapsedMs < 500,
+        true,
+        `Expected linear bounded scan/redact (<500ms), took ${elapsedMs}ms`
+      );
+    }
+  });
+
+  await suite.test("Runtime mutability & isolation: frozen snapshots block tampering, RegExp mutations stay isolated, and cloned /g RegExps remain usable", () => {
+    const callerCatalog = SecretScanner.getCatalog();
+    const expectedSources = callerCatalog.map((entry) => ({
+      id: entry.id,
+      source: entry.pattern.source,
+      flags: entry.pattern.flags
+    }));
+
+    // 1. Callers can still run .test() and .replace() cleanly on cloned /g RegExp entries without lastIndex TypeError
+    const liveTokenSample = "aico_live_1234567890abcdef";
+    assert.equal(callerCatalog[0].pattern.test(liveTokenSample), true);
+    assert.equal(callerCatalog[0].pattern.lastIndex > 0, true);
+    callerCatalog[0].pattern.lastIndex = 0;
+    assert.equal(liveTokenSample.replace(callerCatalog[0].pattern, "[REDACTED_SECRET]"), "[REDACTED_SECRET]");
+    for (const entry of callerCatalog) {
+      assert.equal(entry.pattern.test("benign_clean_value"), false);
+    }
+
+    // 2. Attempting array or entry mutations throws TypeError on both AICO_SECRET_CATALOG and SecretScanner.getCatalog()
+    const mutatedSnapshot = SecretScanner.getCatalog();
+    for (const snap of [AICO_SECRET_CATALOG, mutatedSnapshot]) {
+      assert.throws(() => {
+        (snap as unknown as unknown[]).push({});
+      }, TypeError);
+      assert.throws(() => {
+        (snap as unknown as Record<number, unknown>)[0] = {};
+      }, TypeError);
+      assert.throws(() => {
+        (snap[0] as unknown as Record<string, unknown>).id = "x";
+      }, TypeError);
+      assert.throws(() => {
+        (snap[0] as unknown as Record<string, unknown>).pattern = /harmless/;
+      }, TypeError);
+
+      // 3. Mutating returned RegExp instances (lastIndex, deprecated compile(), extra properties)
+      for (const entry of snap) {
+        entry.pattern.lastIndex = 9999;
+        (entry.pattern as { compile?: (p: string, f?: string) => void }).compile?.(
+          "harmless_override_xyz",
+          "g"
+        );
+        (entry.pattern as unknown as Record<string, unknown>).tampered = true;
+      }
+    }
+
+    // 4. Verify zero impact on SecretScanner.scan(), SecretScanner.redact(), and subsequent getCatalog() calls
+    const liveScan = SecretScanner.scan(liveTokenSample);
+    assert.equal(liveScan.hasSecret, true);
+    assert.equal(liveScan.secretId, "aico_canonical_token");
+    assert.equal(liveScan.category, "aico_token");
+
+    const openaiScan = SecretScanner.scan("sk-proj-secret1234567890abcdef");
+    assert.equal(openaiScan.hasSecret, true);
+    assert.equal(openaiScan.secretId, "openai_api_key");
+
+    assert.equal(SecretScanner.scan("harmless_override_xyz").hasSecret, false);
+    assert.equal(
+      SecretScanner.redact("token=aico_live_1234567890abcdef key=sk-proj-secret1234567890abcdef"),
+      "token=[REDACTED_SECRET] key=[REDACTED_SECRET]"
+    );
+
+    const freshCatalog = SecretScanner.getCatalog();
+    assert.equal(freshCatalog.length, expectedSources.length);
+    for (let i = 0; i < freshCatalog.length; i++) {
+      assert.equal(freshCatalog[i].id, expectedSources[i].id);
+      assert.equal(freshCatalog[i].pattern.source, expectedSources[i].source);
+      assert.equal(freshCatalog[i].pattern.flags, expectedSources[i].flags);
+      assert.equal(freshCatalog[i].pattern.lastIndex, 0);
+      assert.equal("tampered" in freshCatalog[i].pattern, false);
+    }
   });
 });
 

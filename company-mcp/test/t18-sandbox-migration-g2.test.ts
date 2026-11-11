@@ -22,14 +22,26 @@ import { migrationV050Schema } from "../src/db/migrations/v050-target-schema.js"
 import { migrationV050V3Foundation } from "../src/db/migrations/v050-v3-foundation.js";
 import {
   V3_ENTITY_STORAGE_MAPPINGS,
+  V3_ENTITY_PERSISTENCE_ADAPTERS,
+  EntityPersistenceAdapter,
+  V3EntityTypeMap,
+  V3DbRowTypeMap,
   booleanToSqlInt,
   sqlIntToBoolean,
   parseJsonStringArray,
   parseJsonPlainObject,
   toChatRoomDbRow,
   fromChatRoomDbRow,
+  toChatMemberDbRow,
+  fromChatMemberDbRow,
   toChatMessageDbRow,
   fromChatMessageDbRow,
+  toMessageAttachmentDbRow,
+  fromMessageAttachmentDbRow,
+  toMessageReactionDbRow,
+  fromMessageReactionDbRow,
+  toRoomInviteDbRow,
+  fromRoomInviteDbRow,
   toRoomAuditLogDbRow,
   fromRoomAuditLogDbRow,
   toOutboxEventDbRow,
@@ -38,28 +50,132 @@ import {
   fromEventSubscriptionDbRow,
   toDeadLetterQueueDbRow,
   fromDeadLetterQueueDbRow,
-  toProjectTaskV3DbRow,
-  fromProjectTaskV3DbRow,
+  toDeliveryAttemptDbRow,
+  fromDeliveryAttemptDbRow,
+  toAgentLeaseDbRow,
+  fromAgentLeaseDbRow,
+  toAgentHeartbeatDbRow,
+  fromAgentHeartbeatDbRow,
   toAgentCapabilityDbRow,
   fromAgentCapabilityDbRow,
+  toAgentQuotaAllocationDbRow,
+  fromAgentQuotaAllocationDbRow,
+  toAgentExecutionLockDbRow,
+  fromAgentExecutionLockDbRow,
+  toProjectTaskV3DbRow,
+  fromProjectTaskV3DbRow,
+  toTaskTransitionLogDbRow,
+  fromTaskTransitionLogDbRow,
+  toTaskApprovalBindingDbRow,
+  fromTaskApprovalBindingDbRow,
+  toReviewAssignmentDbRow,
+  fromReviewAssignmentDbRow,
+  toArtifactAttestationDbRow,
+  fromArtifactAttestationDbRow,
+  toMemoryRecordV3DbRow,
+  fromMemoryRecordV3DbRow,
+  toKnowledgeChunkFTSDbRow,
+  fromKnowledgeChunkFTSDbRow,
+  toContextSnapshotDbRow,
+  fromContextSnapshotDbRow,
   insertChatRoom,
   getChatRoomById,
+  insertChatMember,
+  getChatMemberById,
   insertChatMessage,
   getChatMessageById,
+  insertMessageAttachment,
+  getMessageAttachmentById,
+  insertMessageReaction,
+  getMessageReactionById,
+  insertRoomInvite,
+  getRoomInviteById,
   insertRoomAuditLog,
-  getRoomAuditLogById
+  getRoomAuditLogById,
+  insertOutboxEvent,
+  getOutboxEventById,
+  insertEventSubscription,
+  getEventSubscriptionById,
+  insertDeadLetterQueue,
+  getDeadLetterQueueById,
+  insertDeliveryAttempt,
+  getDeliveryAttemptById,
+  insertAgentLease,
+  getAgentLeaseById,
+  insertAgentHeartbeat,
+  getAgentHeartbeatById,
+  insertAgentCapability,
+  getAgentCapabilityById,
+  insertAgentQuotaAllocation,
+  getAgentQuotaAllocationById,
+  insertAgentExecutionLock,
+  getAgentExecutionLockById,
+  insertProjectTaskV3,
+  getProjectTaskV3ById,
+  insertTaskTransitionLog,
+  getTaskTransitionLogById,
+  insertTaskApprovalBinding,
+  getTaskApprovalBindingById,
+  insertReviewAssignment,
+  getReviewAssignmentById,
+  insertArtifactAttestation,
+  getArtifactAttestationById,
+  insertMemoryRecordV3,
+  getMemoryRecordV3ById,
+  insertKnowledgeChunkFTS,
+  getKnowledgeChunkFTSById,
+  insertContextSnapshot,
+  getContextSnapshotById
 } from "../src/db/v3-storage-mappers.js";
 import {
   AgentCapability,
+  AgentExecutionLock,
+  AgentHeartbeat,
+  AgentLease,
+  AgentQuotaAllocation,
+  ArtifactAttestation,
+  ChatMember,
   ChatMessage,
   ChatRoom,
+  ContextSnapshot,
   DeadLetterQueue,
+  DeliveryAttempt,
   EventSubscription,
+  KnowledgeChunkFTS,
+  MemoryRecordV3,
+  MessageAttachment,
+  MessageReaction,
   OutboxEvent,
   ProjectTaskV3,
+  ReviewAssignment,
   RoomAuditLog,
+  RoomInvite,
+  TaskApprovalBinding,
+  TaskTransitionLog,
+  toPublicAgentCapabilityDTO,
+  toPublicAgentExecutionLockDTO,
+  toPublicAgentHeartbeatDTO,
+  toPublicAgentLeaseDTO,
+  toPublicAgentQuotaAllocationDTO,
+  toPublicArtifactAttestationDTO,
+  toPublicChatMemberDTO,
   toPublicChatMessageDTO,
-  toPublicRoomAuditLogDTO
+  toPublicChatRoomDTO,
+  toPublicContextSnapshotDTO,
+  toPublicDeadLetterQueueDTO,
+  toPublicDeliveryAttemptDTO,
+  toPublicEventSubscriptionDTO,
+  toPublicKnowledgeChunkFTSDTO,
+  toPublicMemoryRecordV3DTO,
+  toPublicMessageAttachmentDTO,
+  toPublicMessageReactionDTO,
+  toPublicOutboxEventDTO,
+  toPublicProjectTaskV3DTO,
+  toPublicReviewAssignmentDTO,
+  toPublicRoomAuditLogDTO,
+  toPublicRoomInviteDTO,
+  toPublicTaskApprovalBindingDTO,
+  toPublicTaskTransitionLogDTO
 } from "../src/domain/index.js";
 import { SecretScanner } from "../src/security/secret-scanner.js";
 
@@ -1915,6 +2031,1435 @@ test("T18: V3-G2 Sandbox Database Migration v0.5.0 Suite", async (suite) => {
       conn.withReadTransaction((db) => {
         assert.deepEqual(getChatMessageById(db, message.message_id), message);
         assert.deepEqual(getRoomAuditLogById(db, auditLog.audit_id), auditLog);
+      });
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  type V3EntityKey = keyof V3EntityTypeMap;
+
+  function getPersistenceAdapter<K extends V3EntityKey>(
+    entityName: K
+  ): EntityPersistenceAdapter<V3EntityTypeMap[K], V3DbRowTypeMap[K]> {
+    return V3_ENTITY_PERSISTENCE_ADAPTERS[entityName] as unknown as EntityPersistenceAdapter<
+      V3EntityTypeMap[K],
+      V3DbRowTypeMap[K]
+    >;
+  }
+
+  interface Entity24Runner {
+    entityName: V3EntityKey;
+    id: string;
+    verifyMapperRoundTrip: () => void;
+    insertPrimary: (db: DatabaseSync) => void;
+    verifySqliteAndDtoRoundTrip: (db: DatabaseSync) => void;
+  }
+
+  function createEntity24Spec<K extends V3EntityKey>(config: {
+    entityName: K;
+    id: string;
+    primary: V3EntityTypeMap[K];
+    alternate: V3EntityTypeMap[K];
+    toDbRow: (entity: V3EntityTypeMap[K]) => V3DbRowTypeMap[K];
+    fromDbRow: (row: V3DbRowTypeMap[K]) => V3EntityTypeMap[K];
+    insert: (db: DatabaseSync, entity: V3EntityTypeMap[K]) => void;
+    getById: (db: DatabaseSync, id: string) => V3EntityTypeMap[K] | null;
+    toPublicDto: (entity: V3EntityTypeMap[K]) => object;
+    omittedFields: readonly string[];
+    secretSentinels: readonly string[];
+    assertDbRow?: (row: V3DbRowTypeMap[K], variant: "primary" | "alternate") => void;
+    assertPublicDto?: (dto: Record<string, unknown>) => void;
+  }): Entity24Runner {
+    const adapter = getPersistenceAdapter(config.entityName);
+
+    return {
+      entityName: config.entityName,
+      id: config.id,
+      verifyMapperRoundTrip: () => {
+        assert.equal(
+          adapter.mapping,
+          V3_ENTITY_STORAGE_MAPPINGS[config.entityName],
+          `Adapter for ${config.entityName} must bind its canonical V3_ENTITY_STORAGE_MAPPINGS entry`
+        );
+
+        for (const [variant, entity] of [
+          ["primary", config.primary],
+          ["alternate", config.alternate]
+        ] as const) {
+          const namedRow = config.toDbRow(entity);
+          config.assertDbRow?.(namedRow, variant);
+          assert.deepEqual(
+            config.fromDbRow(namedRow),
+            entity,
+            `Named to/from DbRow round-trip failed for ${config.entityName} (${variant})`
+          );
+
+          const adapterRow = adapter.toDbRow(entity);
+          assert.deepEqual(adapterRow, namedRow, `Adapter toDbRow mismatch for ${config.entityName} (${variant})`);
+          assert.deepEqual(
+            adapter.fromDbRow(adapterRow),
+            entity,
+            `Adapter fromDbRow round-trip failed for ${config.entityName} (${variant})`
+          );
+        }
+      },
+      insertPrimary: (db) => {
+        config.insert(db, config.primary);
+      },
+      verifySqliteAndDtoRoundTrip: (db) => {
+        const hydrated = config.getById(db, config.id);
+        assert.ok(hydrated !== null, `getById returned null for inserted ${config.entityName} '${config.id}'`);
+        assert.deepEqual(
+          hydrated,
+          config.primary,
+          `Named SQLite round-trip mismatch for ${config.entityName}`
+        );
+
+        assert.equal(
+          config.getById(db, `non-existent-${config.entityName}-id`),
+          null,
+          `Named getById must return null for missing ${config.entityName}`
+        );
+
+        const adapterHydrated = adapter.getById(db, config.id);
+        assert.deepEqual(
+          adapterHydrated,
+          config.primary,
+          `V3_ENTITY_PERSISTENCE_ADAPTERS['${config.entityName}'].getById mismatch`
+        );
+
+        const dto = config.toPublicDto(hydrated) as Record<string, unknown>;
+        for (const omitted of config.omittedFields) {
+          assert.equal(
+            omitted in dto || Object.hasOwn(dto, omitted),
+            false,
+            `${config.entityName} public DTO must omit internal field '${omitted}'`
+          );
+        }
+
+        const serializedDto = JSON.stringify(dto);
+        for (const sentinel of config.secretSentinels) {
+          assert.equal(
+            serializedDto.includes(sentinel),
+            false,
+            `${config.entityName} public DTO JSON leaked secret sentinel '${sentinel.slice(0, 14)}'`
+          );
+        }
+        assert.equal(
+          SecretScanner.scan(serializedDto).hasSecret,
+          false,
+          `${config.entityName} public DTO JSON triggered SecretScanner`
+        );
+
+        config.assertPublicDto?.(dto);
+      }
+    };
+  }
+
+  function buildAll24EntityDataset(ts: string): {
+    parentRootTask: ProjectTaskV3;
+    knowledgeChunkPrimary: KnowledgeChunkFTS;
+    specs: Entity24Runner[];
+  } {
+    const parentRootTask: ProjectTaskV3 = {
+      task_id: "task-all24-parent-0",
+      project_id: "proj-all24",
+      parent_task_id: null,
+      title: "Root Governance Parent Task",
+      objective: "Anchor FK hierarchy for child ProjectTaskV3",
+      risk_class: "low",
+      priority: "medium",
+      execution_status: "in_progress",
+      dispatch_status: "operator_delivered",
+      assigned_agent_id: "flash-01",
+      reviewer_agent_id: "flash-02",
+      version: 1,
+      token_budget: 10000,
+      token_used: 0,
+      acceptance_criteria: [],
+      internal_evaluation_notes: null,
+      created_at: ts,
+      updated_at: ts
+    };
+
+    const projectTaskPrimary: ProjectTaskV3 = {
+      task_id: "task-all24-1",
+      project_id: "proj-all24",
+      parent_task_id: parentRootTask.task_id,
+      title: "All-24 Persistence Verification Task",
+      objective: "Verify lossless 24-entity DB round-trip and DTO stripping",
+      risk_class: "high",
+      priority: "critical",
+      execution_status: "in_progress",
+      dispatch_status: "external_running",
+      assigned_agent_id: "codex-01",
+      reviewer_agent_id: "flash-02",
+      version: 3,
+      token_budget: 80000,
+      token_used: 4200,
+      acceptance_criteria: ["24/24 round-trip", "Zero secret leakage"],
+      internal_evaluation_notes: "Internal eval sk-proj-taskeval1234567890abcdef",
+      created_at: ts,
+      updated_at: ts
+    };
+
+    const chatRoomPrimary: ChatRoom = {
+      room_id: "room-all24-1",
+      slug: "all24-verification-room",
+      name: "All-24 Verification Room",
+      room_type: "PROJECT_ROOM",
+      project_id: "proj-all24",
+      task_id: projectTaskPrimary.task_id,
+      created_by: "flash-02",
+      is_archived: true,
+      internal_notes: "Private room key sk-proj-roomnotes1234567890abcdef",
+      created_at: ts,
+      updated_at: ts
+    };
+
+    const outboxEventPrimary: OutboxEvent = {
+      event_id: "evt-all24-1",
+      aggregate_type: "task",
+      aggregate_id: projectTaskPrimary.task_id,
+      event_type: "task.all24.verified",
+      payload: { token: "sk-proj-outboxpayload1234567890abcdef", attempt: 1 },
+      status: "published",
+      retry_count: 1,
+      max_retries: 5,
+      last_error: null,
+      internal_routing_key: "rk.internal.ghp_1234567890outboxrk1234567890abcd",
+      scheduled_for: ts,
+      processed_at: ts,
+      created_at: ts
+    };
+
+    const memoryRecordPrimary: MemoryRecordV3 = {
+      memory_id: "mem-all24-1",
+      owner_agent_id: "flash-02",
+      scope: "PROJECT",
+      category: "ARCHITECTURAL_DECISION",
+      key: "v3.sqlite.split.persistence",
+      content: "KnowledgeChunkFTS persists atomically across meta and FTS5 tables.",
+      raw_context_bytes: "raw-context-sk-proj-memraw1234567890abcdef",
+      access_count: 5,
+      confidence_score: 0.95,
+      created_at: ts,
+      updated_at: ts
+    };
+
+    const chatMessagePrimary: ChatMessage = {
+      message_id: "msg-all24-1",
+      room_id: chatRoomPrimary.room_id,
+      sender_id: "flash-02",
+      sender_type: "agent",
+      message_type: "DIRECTIVE",
+      content: "Verify all 24 domain entities cleanly.",
+      reply_to_id: null,
+      mentions: ["flash-01", "codex-01"],
+      metadata: {
+        thread_title: "All-24 Gate",
+        topic: "Allowlisted topic sk-proj-msgmeta1234567890abcdef",
+        tags: ["v3", "all24"],
+        unallowlisted_secret: "sk-proj-msgunallowlisted1234567890abcd"
+      },
+      internal_metadata: {
+        secret_key: "sk-proj-msgintmeta1234567890abcdef",
+        span: "span-all24"
+      },
+      raw_token_trace: "trace=ghp_1234567890msgtrace1234567890abcd",
+      is_edited: true,
+      created_at: ts,
+      updated_at: ts
+    };
+
+    const knowledgeChunkPrimary: KnowledgeChunkFTS = {
+      chunk_id: "chunk-all24-1",
+      memory_id: memoryRecordPrimary.memory_id,
+      title: "FTS5 V3 Architecture Sentinelftsalpha",
+      chunk_content: "Atomic savepoint protocol with sentinelftsbeta searchability.",
+      tags: ["sentinelftsgamma", "space tag", "hyphen-tag", "comma,tag", 'quote"tag'],
+      embedding_vector_ref: "vec://private/sk-proj-kcvec1234567890abcdef",
+      created_at: ts
+    };
+
+    const shaA = "11223344".repeat(8);
+    const shaB = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const shaC = "55667788".repeat(8);
+
+    const specs: Entity24Runner[] = [
+      createEntity24Spec({
+        entityName: "ProjectTaskV3",
+        id: projectTaskPrimary.task_id,
+        primary: projectTaskPrimary,
+        alternate: {
+          ...projectTaskPrimary,
+          task_id: "task-all24-alt",
+          parent_task_id: null,
+          assigned_agent_id: null,
+          reviewer_agent_id: null,
+          acceptance_criteria: [],
+          internal_evaluation_notes: null
+        },
+        toDbRow: toProjectTaskV3DbRow,
+        fromDbRow: fromProjectTaskV3DbRow,
+        insert: insertProjectTaskV3,
+        getById: getProjectTaskV3ById,
+        toPublicDto: toPublicProjectTaskV3DTO,
+        omittedFields: ["internal_evaluation_notes"],
+        secretSentinels: ["sk-proj-taskeval1234567890abcdef"],
+        assertDbRow: (row) => {
+          assert.equal(typeof row.acceptance_criteria_json, "string");
+        }
+      }),
+      createEntity24Spec({
+        entityName: "ChatRoom",
+        id: chatRoomPrimary.room_id,
+        primary: chatRoomPrimary,
+        alternate: {
+          ...chatRoomPrimary,
+          room_id: "room-all24-alt",
+          slug: "all24-alt-slug",
+          project_id: null,
+          task_id: null,
+          is_archived: false,
+          internal_notes: null
+        },
+        toDbRow: toChatRoomDbRow,
+        fromDbRow: fromChatRoomDbRow,
+        insert: insertChatRoom,
+        getById: getChatRoomById,
+        toPublicDto: toPublicChatRoomDTO,
+        omittedFields: ["internal_notes"],
+        secretSentinels: ["sk-proj-roomnotes1234567890abcdef"],
+        assertDbRow: (row, variant) => {
+          assert.equal(row.is_archived, variant === "primary" ? 1 : 0);
+        }
+      }),
+      createEntity24Spec({
+        entityName: "OutboxEvent",
+        id: outboxEventPrimary.event_id,
+        primary: outboxEventPrimary,
+        alternate: {
+          ...outboxEventPrimary,
+          event_id: "evt-all24-alt",
+          payload: {},
+          last_error: "transient",
+          internal_routing_key: null,
+          processed_at: null
+        },
+        toDbRow: toOutboxEventDbRow,
+        fromDbRow: fromOutboxEventDbRow,
+        insert: insertOutboxEvent,
+        getById: getOutboxEventById,
+        toPublicDto: toPublicOutboxEventDTO,
+        omittedFields: ["payload", "internal_routing_key"],
+        secretSentinels: [
+          "sk-proj-outboxpayload1234567890abcdef",
+          "ghp_1234567890outboxrk1234567890abcd"
+        ],
+        assertDbRow: (row) => {
+          assert.equal(typeof row.payload_json, "string");
+        }
+      }),
+      createEntity24Spec({
+        entityName: "EventSubscription",
+        id: "sub-all24-1",
+        primary: {
+          subscription_id: "sub-all24-1",
+          subscriber_id: "worker-all24",
+          event_pattern: "task.*",
+          endpoint: "https://internal.example.local/events",
+          is_active: true,
+          auth_secret_hash: "sk-ant-api03-subsecret1234567890abcdef",
+          created_at: ts,
+          updated_at: ts
+        },
+        alternate: {
+          subscription_id: "sub-all24-alt",
+          subscriber_id: "worker-all24",
+          event_pattern: "room.*",
+          endpoint: "https://internal.example.local/rooms",
+          is_active: false,
+          auth_secret_hash: null,
+          created_at: ts,
+          updated_at: ts
+        },
+        toDbRow: toEventSubscriptionDbRow,
+        fromDbRow: fromEventSubscriptionDbRow,
+        insert: insertEventSubscription,
+        getById: getEventSubscriptionById,
+        toPublicDto: toPublicEventSubscriptionDTO,
+        omittedFields: ["auth_secret_hash"],
+        secretSentinels: ["sk-ant-api03-subsecret1234567890abcdef"],
+        assertDbRow: (row, variant) => {
+          assert.equal(row.is_active, variant === "primary" ? 1 : 0);
+        }
+      }),
+      createEntity24Spec({
+        entityName: "AgentCapability",
+        id: "cap-all24-1",
+        primary: {
+          capability_id: "cap-all24-1",
+          agent_id: "flash-02",
+          capability_name: "schema-parity-qa",
+          version: "2.0.0",
+          is_enabled: true,
+          proficiency: "specialist",
+          internal_evaluation_score: 0.9731,
+          granted_at: ts
+        },
+        alternate: {
+          capability_id: "cap-all24-alt",
+          agent_id: "flash-02",
+          capability_name: "schema-parity-qa",
+          version: "1.0.0",
+          is_enabled: false,
+          proficiency: "supporting",
+          internal_evaluation_score: null,
+          granted_at: ts
+        },
+        toDbRow: toAgentCapabilityDbRow,
+        fromDbRow: fromAgentCapabilityDbRow,
+        insert: insertAgentCapability,
+        getById: getAgentCapabilityById,
+        toPublicDto: toPublicAgentCapabilityDTO,
+        omittedFields: ["internal_evaluation_score"],
+        secretSentinels: ["0.9731"],
+        assertDbRow: (row, variant) => {
+          assert.equal(row.is_enabled, variant === "primary" ? 1 : 0);
+        }
+      }),
+      createEntity24Spec({
+        entityName: "AgentQuotaAllocation",
+        id: "alloc-all24-1",
+        primary: {
+          allocation_id: "alloc-all24-1",
+          agent_id: "codex-01",
+          quota_pool_id: "openai-go-shared",
+          allocated_tokens: 100000,
+          used_tokens: 2500,
+          daily_limit: 500000,
+          billing_account_ref: "acct-secret-billing-sk-proj-quota1234567890abcd",
+          reset_at: ts,
+          updated_at: ts
+        },
+        alternate: {
+          allocation_id: "alloc-all24-alt",
+          agent_id: "codex-01",
+          quota_pool_id: "openai-go-shared",
+          allocated_tokens: 0,
+          used_tokens: 0,
+          daily_limit: 1000,
+          billing_account_ref: null,
+          reset_at: ts,
+          updated_at: ts
+        },
+        toDbRow: toAgentQuotaAllocationDbRow,
+        fromDbRow: fromAgentQuotaAllocationDbRow,
+        insert: insertAgentQuotaAllocation,
+        getById: getAgentQuotaAllocationById,
+        toPublicDto: toPublicAgentQuotaAllocationDTO,
+        omittedFields: ["billing_account_ref"],
+        secretSentinels: ["sk-proj-quota1234567890abcd", "acct-secret-billing"]
+      }),
+      createEntity24Spec({
+        entityName: "AgentExecutionLock",
+        id: "lock-all24-1",
+        primary: {
+          lock_id: "lock-all24-1",
+          resource_uri: "repo://company-mcp/src/db",
+          holder_agent_id: "flash-02",
+          lock_nonce: "lock-aico_session_111122223333444455556666",
+          purpose: "Verify SQLite sandbox migration locks",
+          acquired_at: ts,
+          expires_at: "2026-11-11T15:30:00Z"
+        },
+        alternate: {
+          lock_id: "lock-all24-alt",
+          resource_uri: "repo://company-mcp/test",
+          holder_agent_id: "codex-01",
+          lock_nonce: "nonce-alt-0001",
+          purpose: "Test suite lock",
+          acquired_at: ts,
+          expires_at: "2026-11-11T15:30:00Z"
+        },
+        toDbRow: toAgentExecutionLockDbRow,
+        fromDbRow: fromAgentExecutionLockDbRow,
+        insert: insertAgentExecutionLock,
+        getById: getAgentExecutionLockById,
+        toPublicDto: toPublicAgentExecutionLockDTO,
+        omittedFields: ["lock_nonce"],
+        secretSentinels: ["aico_session_111122223333444455556666"]
+      }),
+      createEntity24Spec({
+        entityName: "MemoryRecordV3",
+        id: memoryRecordPrimary.memory_id,
+        primary: memoryRecordPrimary,
+        alternate: {
+          ...memoryRecordPrimary,
+          memory_id: "mem-all24-alt",
+          owner_agent_id: null,
+          raw_context_bytes: null,
+          access_count: 0,
+          confidence_score: 0.5
+        },
+        toDbRow: toMemoryRecordV3DbRow,
+        fromDbRow: fromMemoryRecordV3DbRow,
+        insert: insertMemoryRecordV3,
+        getById: getMemoryRecordV3ById,
+        toPublicDto: toPublicMemoryRecordV3DTO,
+        omittedFields: ["raw_context_bytes"],
+        secretSentinels: ["sk-proj-memraw1234567890abcdef"]
+      }),
+      createEntity24Spec({
+        entityName: "ChatMessage",
+        id: chatMessagePrimary.message_id,
+        primary: chatMessagePrimary,
+        alternate: {
+          ...chatMessagePrimary,
+          message_id: "msg-all24-alt",
+          reply_to_id: chatMessagePrimary.message_id,
+          mentions: [],
+          metadata: {},
+          internal_metadata: {},
+          raw_token_trace: null,
+          is_edited: false
+        },
+        toDbRow: toChatMessageDbRow,
+        fromDbRow: fromChatMessageDbRow,
+        insert: insertChatMessage,
+        getById: getChatMessageById,
+        toPublicDto: toPublicChatMessageDTO,
+        omittedFields: ["internal_metadata", "raw_token_trace"],
+        secretSentinels: [
+          "sk-proj-msgmeta1234567890abcdef",
+          "sk-proj-msgunallowlisted1234567890abcd",
+          "sk-proj-msgintmeta1234567890abcdef",
+          "ghp_1234567890msgtrace1234567890abcd"
+        ],
+        assertDbRow: (row, variant) => {
+          assert.equal(row.is_edited, variant === "primary" ? 1 : 0);
+        },
+        assertPublicDto: (dto) => {
+          const metadata = dto.metadata as Record<string, unknown>;
+          assert.equal("unallowlisted_secret" in metadata, false);
+          assert.equal(metadata.topic, "Allowlisted topic [REDACTED_SECRET]");
+        }
+      }),
+      createEntity24Spec({
+        entityName: "ChatMember",
+        id: "member-all24-1",
+        primary: {
+          membership_id: "member-all24-1",
+          room_id: chatRoomPrimary.room_id,
+          principal_id: "flash-02",
+          principal_type: "agent",
+          role: "moderator",
+          last_read_message_id: chatMessagePrimary.message_id,
+          internal_cursor: "cursor-sk-proj-memcursor1234567890abcdef",
+          joined_at: ts
+        },
+        alternate: {
+          membership_id: "member-all24-alt",
+          room_id: chatRoomPrimary.room_id,
+          principal_id: "founder",
+          principal_type: "human",
+          role: "owner",
+          last_read_message_id: null,
+          internal_cursor: null,
+          joined_at: ts
+        },
+        toDbRow: toChatMemberDbRow,
+        fromDbRow: fromChatMemberDbRow,
+        insert: insertChatMember,
+        getById: getChatMemberById,
+        toPublicDto: toPublicChatMemberDTO,
+        omittedFields: ["internal_cursor"],
+        secretSentinels: ["sk-proj-memcursor1234567890abcdef"]
+      }),
+      createEntity24Spec({
+        entityName: "MessageAttachment",
+        id: "att-all24-1",
+        primary: {
+          attachment_id: "att-all24-1",
+          message_id: chatMessagePrimary.message_id,
+          file_name: "qa-report.json",
+          file_path: "reports/qa-report.json",
+          file_size_bytes: 2048,
+          mime_type: "application/json",
+          sha256_hash: shaA,
+          storage_driver_token: "drv-sk-proj-attachdrv1234567890abcdef",
+          uploaded_at: ts
+        },
+        alternate: {
+          attachment_id: "att-all24-alt",
+          message_id: chatMessagePrimary.message_id,
+          file_name: "empty.txt",
+          file_path: "tmp/empty.txt",
+          file_size_bytes: 0,
+          mime_type: "text/plain",
+          sha256_hash: shaA,
+          storage_driver_token: null,
+          uploaded_at: ts
+        },
+        toDbRow: toMessageAttachmentDbRow,
+        fromDbRow: fromMessageAttachmentDbRow,
+        insert: insertMessageAttachment,
+        getById: getMessageAttachmentById,
+        toPublicDto: toPublicMessageAttachmentDTO,
+        omittedFields: ["storage_driver_token"],
+        secretSentinels: ["sk-proj-attachdrv1234567890abcdef"]
+      }),
+      createEntity24Spec({
+        entityName: "MessageReaction",
+        id: "react-all24-1",
+        primary: {
+          reaction_id: "react-all24-1",
+          message_id: chatMessagePrimary.message_id,
+          principal_id: "flash-01",
+          reaction_code: "approved_check",
+          internal_client_ip: "198.51.100.77",
+          created_at: ts
+        },
+        alternate: {
+          reaction_id: "react-all24-alt",
+          message_id: chatMessagePrimary.message_id,
+          principal_id: "codex-01",
+          reaction_code: "thumbs_up",
+          internal_client_ip: null,
+          created_at: ts
+        },
+        toDbRow: toMessageReactionDbRow,
+        fromDbRow: fromMessageReactionDbRow,
+        insert: insertMessageReaction,
+        getById: getMessageReactionById,
+        toPublicDto: toPublicMessageReactionDTO,
+        omittedFields: ["internal_client_ip"],
+        secretSentinels: ["198.51.100.77"]
+      }),
+      createEntity24Spec({
+        entityName: "RoomInvite",
+        id: "inv-all24-1",
+        primary: {
+          invite_id: "inv-all24-1",
+          room_id: chatRoomPrimary.room_id,
+          inviter_id: "flash-01",
+          invitee_id: "codex-01",
+          status: "accepted",
+          invite_token_hash: "inv-sk-proj-invtoken1234567890abcdef",
+          expires_at: "2026-11-12T14:30:00Z",
+          created_at: ts
+        },
+        alternate: {
+          invite_id: "inv-all24-alt",
+          room_id: chatRoomPrimary.room_id,
+          inviter_id: "flash-01",
+          invitee_id: "flash-02",
+          status: "pending",
+          invite_token_hash: null,
+          expires_at: "2026-11-12T14:30:00Z",
+          created_at: ts
+        },
+        toDbRow: toRoomInviteDbRow,
+        fromDbRow: fromRoomInviteDbRow,
+        insert: insertRoomInvite,
+        getById: getRoomInviteById,
+        toPublicDto: toPublicRoomInviteDTO,
+        omittedFields: ["invite_token_hash"],
+        secretSentinels: ["sk-proj-invtoken1234567890abcdef"]
+      }),
+      createEntity24Spec({
+        entityName: "RoomAuditLog",
+        id: "audit-all24-1",
+        primary: {
+          audit_id: "audit-all24-1",
+          room_id: chatRoomPrimary.room_id,
+          action: "member_added",
+          actor_id: "flash-01",
+          details: {
+            target: "codex-01",
+            reason: "Clean after sk-proj-auditreason1234567890abcd",
+            unallowlisted: "ghp_1234567890auditunallow1234567890ab"
+          },
+          internal_details: {
+            hmac: "AICO_AUDIT_HMAC_KEY=audit_secret_val_9988776655"
+          },
+          security_context_snapshot: "ctx=aico_session_999988887777666655554444",
+          created_at: ts
+        },
+        alternate: {
+          audit_id: "audit-all24-alt",
+          room_id: chatRoomPrimary.room_id,
+          action: "room_created",
+          actor_id: "flash-01",
+          details: {},
+          internal_details: {},
+          security_context_snapshot: null,
+          created_at: ts
+        },
+        toDbRow: toRoomAuditLogDbRow,
+        fromDbRow: fromRoomAuditLogDbRow,
+        insert: insertRoomAuditLog,
+        getById: getRoomAuditLogById,
+        toPublicDto: toPublicRoomAuditLogDTO,
+        omittedFields: ["internal_details", "security_context_snapshot"],
+        secretSentinels: [
+          "sk-proj-auditreason1234567890abcd",
+          "ghp_1234567890auditunallow1234567890ab",
+          "audit_secret_val_9988776655",
+          "aico_session_999988887777666655554444"
+        ],
+        assertPublicDto: (dto) => {
+          const details = dto.details as Record<string, unknown>;
+          assert.equal("unallowlisted" in details, false);
+          assert.equal(details.reason, "Clean after [REDACTED_SECRET]");
+        }
+      }),
+      createEntity24Spec({
+        entityName: "DeadLetterQueue",
+        id: "dlq-all24-1",
+        primary: {
+          dlq_id: "dlq-all24-1",
+          original_event_id: outboxEventPrimary.event_id,
+          event_type: "task.failed",
+          payload: { failed_token: "sk-proj-dlqpayload1234567890abcdef" },
+          failure_reason: "Downstream timeout",
+          stack_trace: "Error: boom with ghp_1234567890dlqstack1234567890abcd\n  at worker()",
+          resolved: true,
+          resolved_by: "flash-02",
+          resolved_at: ts,
+          failed_at: ts
+        },
+        alternate: {
+          dlq_id: "dlq-all24-alt",
+          original_event_id: outboxEventPrimary.event_id,
+          event_type: "task.failed",
+          payload: {},
+          failure_reason: "Retry exhausted",
+          stack_trace: null,
+          resolved: false,
+          resolved_by: null,
+          resolved_at: null,
+          failed_at: ts
+        },
+        toDbRow: toDeadLetterQueueDbRow,
+        fromDbRow: fromDeadLetterQueueDbRow,
+        insert: insertDeadLetterQueue,
+        getById: getDeadLetterQueueById,
+        toPublicDto: toPublicDeadLetterQueueDTO,
+        omittedFields: ["payload", "stack_trace"],
+        secretSentinels: [
+          "sk-proj-dlqpayload1234567890abcdef",
+          "ghp_1234567890dlqstack1234567890abcd"
+        ],
+        assertDbRow: (row, variant) => {
+          assert.equal(row.resolved, variant === "primary" ? 1 : 0);
+        }
+      }),
+      createEntity24Spec({
+        entityName: "DeliveryAttempt",
+        id: "attempt-all24-1",
+        primary: {
+          attempt_id: "attempt-all24-1",
+          outbox_event_id: outboxEventPrimary.event_id,
+          attempt_number: 1,
+          status: "failed",
+          response_code: 503,
+          error_message: "Gateway error with token sk-proj-delivmsg1234567890abcdef",
+          internal_worker_id: "worker-sk-proj-delivwrk1234567890abcdef",
+          latency_ms: 142.5,
+          attempted_at: ts
+        },
+        alternate: {
+          attempt_id: "attempt-all24-alt",
+          outbox_event_id: outboxEventPrimary.event_id,
+          attempt_number: 2,
+          status: "success",
+          response_code: null,
+          error_message: null,
+          internal_worker_id: null,
+          latency_ms: 12,
+          attempted_at: ts
+        },
+        toDbRow: toDeliveryAttemptDbRow,
+        fromDbRow: fromDeliveryAttemptDbRow,
+        insert: insertDeliveryAttempt,
+        getById: getDeliveryAttemptById,
+        toPublicDto: toPublicDeliveryAttemptDTO,
+        omittedFields: ["internal_worker_id"],
+        secretSentinels: [
+          "sk-proj-delivmsg1234567890abcdef",
+          "sk-proj-delivwrk1234567890abcdef"
+        ],
+        assertPublicDto: (dto) => {
+          assert.equal(dto.error_message, "Gateway error with token [REDACTED_SECRET]");
+        }
+      }),
+      createEntity24Spec({
+        entityName: "AgentLease",
+        id: "lease-all24-1",
+        primary: {
+          lease_id: "lease-all24-1",
+          task_id: projectTaskPrimary.task_id,
+          agent_id: "codex-01",
+          lease_nonce: "lease-sk-proj-leasenonce1234567890abc",
+          status: "active",
+          heartbeat_at: ts,
+          expires_at: "2026-11-11T15:30:00Z",
+          acquired_at: ts
+        },
+        alternate: {
+          lease_id: "lease-all24-alt",
+          task_id: projectTaskPrimary.task_id,
+          agent_id: "codex-01",
+          lease_nonce: "lease-alt-0001",
+          status: "released",
+          heartbeat_at: ts,
+          expires_at: "2026-11-11T15:30:00Z",
+          acquired_at: ts
+        },
+        toDbRow: toAgentLeaseDbRow,
+        fromDbRow: fromAgentLeaseDbRow,
+        insert: insertAgentLease,
+        getById: getAgentLeaseById,
+        toPublicDto: toPublicAgentLeaseDTO,
+        omittedFields: ["lease_nonce"],
+        secretSentinels: ["sk-proj-leasenonce1234567890abc"]
+      }),
+      createEntity24Spec({
+        entityName: "AgentHeartbeat",
+        id: "hb-all24-1",
+        primary: {
+          heartbeat_id: "hb-all24-1",
+          agent_id: "flash-02",
+          status: "busy",
+          current_task_id: projectTaskPrimary.task_id,
+          memory_usage_mb: 256.5,
+          cpu_percent: 42.5,
+          host_process_pid: 91827364,
+          recorded_at: ts
+        },
+        alternate: {
+          heartbeat_id: "hb-all24-alt",
+          agent_id: "flash-02",
+          status: "idle",
+          current_task_id: null,
+          memory_usage_mb: 64,
+          cpu_percent: 0,
+          host_process_pid: null,
+          recorded_at: ts
+        },
+        toDbRow: toAgentHeartbeatDbRow,
+        fromDbRow: fromAgentHeartbeatDbRow,
+        insert: insertAgentHeartbeat,
+        getById: getAgentHeartbeatById,
+        toPublicDto: toPublicAgentHeartbeatDTO,
+        omittedFields: ["host_process_pid"],
+        secretSentinels: ["91827364"]
+      }),
+      createEntity24Spec({
+        entityName: "TaskTransitionLog",
+        id: "trans-all24-1",
+        primary: {
+          transition_id: "trans-all24-1",
+          task_id: projectTaskPrimary.task_id,
+          transition_seq: 1,
+          from_execution_status: "assigned",
+          to_execution_status: "in_progress",
+          from_dispatch_status: "operator_delivered",
+          to_dispatch_status: "external_running",
+          transition_code: "EXEC_STARTED",
+          triggered_by: "flash-02",
+          reason: "Execution started by codex-01",
+          internal_diagnostic_payload: "diag=sk-proj-transdiag1234567890abcdef",
+          created_at: ts
+        },
+        alternate: {
+          transition_id: "trans-all24-alt",
+          task_id: projectTaskPrimary.task_id,
+          transition_seq: 2,
+          from_execution_status: "in_progress",
+          to_execution_status: "review_required",
+          from_dispatch_status: "external_running",
+          to_dispatch_status: "result_received",
+          transition_code: "REVIEW_READY",
+          triggered_by: "codex-01",
+          reason: "Tests ready",
+          internal_diagnostic_payload: null,
+          created_at: ts
+        },
+        toDbRow: toTaskTransitionLogDbRow,
+        fromDbRow: fromTaskTransitionLogDbRow,
+        insert: insertTaskTransitionLog,
+        getById: getTaskTransitionLogById,
+        toPublicDto: toPublicTaskTransitionLogDTO,
+        omittedFields: ["internal_diagnostic_payload"],
+        secretSentinels: ["sk-proj-transdiag1234567890abcdef"]
+      }),
+      createEntity24Spec({
+        entityName: "TaskApprovalBinding",
+        id: "bind-all24-1",
+        primary: {
+          binding_id: "bind-all24-1",
+          task_id: projectTaskPrimary.task_id,
+          approval_tier: "technical",
+          required_role: "flash-01",
+          status: "approved",
+          approver_principal_id: "flash-01",
+          canonical_payload_hash: shaB,
+          signature_nonce: "sig-sk-proj-bindsig1234567890abcdef",
+          decision_reason: "Schema and tests verified",
+          decided_at: ts,
+          created_at: ts
+        },
+        alternate: {
+          binding_id: "bind-all24-alt",
+          task_id: projectTaskPrimary.task_id,
+          approval_tier: "founder",
+          required_role: "founder",
+          status: "pending",
+          approver_principal_id: null,
+          canonical_payload_hash: shaB,
+          signature_nonce: "sig-alt-0001",
+          decision_reason: null,
+          decided_at: null,
+          created_at: ts
+        },
+        toDbRow: toTaskApprovalBindingDbRow,
+        fromDbRow: fromTaskApprovalBindingDbRow,
+        insert: insertTaskApprovalBinding,
+        getById: getTaskApprovalBindingById,
+        toPublicDto: toPublicTaskApprovalBindingDTO,
+        omittedFields: ["canonical_payload_hash", "signature_nonce"],
+        secretSentinels: [shaB, "sk-proj-bindsig1234567890abcdef"]
+      }),
+      createEntity24Spec({
+        entityName: "ReviewAssignment",
+        id: "rev-all24-1",
+        primary: {
+          review_id: "rev-all24-1",
+          task_id: projectTaskPrimary.task_id,
+          reviewer_agent_id: "flash-02",
+          assigned_by: "flash-01",
+          review_status: "approved",
+          verdict: "pass",
+          public_feedback: "All 24 entity contracts verified cleanly.",
+          internal_reviewer_notes: "notes-sk-proj-revnote1234567890abcd",
+          created_at: ts,
+          completed_at: ts
+        },
+        alternate: {
+          review_id: "rev-all24-alt",
+          task_id: projectTaskPrimary.task_id,
+          reviewer_agent_id: "flash-02",
+          assigned_by: "flash-01",
+          review_status: "assigned",
+          verdict: null,
+          public_feedback: null,
+          internal_reviewer_notes: null,
+          created_at: ts,
+          completed_at: null
+        },
+        toDbRow: toReviewAssignmentDbRow,
+        fromDbRow: fromReviewAssignmentDbRow,
+        insert: insertReviewAssignment,
+        getById: getReviewAssignmentById,
+        toPublicDto: toPublicReviewAssignmentDTO,
+        omittedFields: ["internal_reviewer_notes"],
+        secretSentinels: ["sk-proj-revnote1234567890abcd"]
+      }),
+      createEntity24Spec({
+        entityName: "ArtifactAttestation",
+        id: "attest-all24-1",
+        primary: {
+          attestation_id: "attest-all24-1",
+          task_id: projectTaskPrimary.task_id,
+          artifact_path: "test/t18-sandbox-migration-g2.test.ts",
+          artifact_sha256: shaC,
+          byte_size: 4096,
+          attested_by_agent_id: "flash-02",
+          attestation_type: "test_evidence",
+          verification_signature: "sig-sk-proj-attsig1234567890abcdef",
+          internal_audit_trail: "trail-ghp_1234567890attrail1234567890abcd",
+          created_at: ts
+        },
+        alternate: {
+          attestation_id: "attest-all24-alt",
+          task_id: projectTaskPrimary.task_id,
+          artifact_path: "src/db/v3-storage-mappers.ts",
+          artifact_sha256: shaC,
+          byte_size: 0,
+          attested_by_agent_id: "flash-01",
+          attestation_type: "source_code",
+          verification_signature: "sig-alt-0001",
+          internal_audit_trail: null,
+          created_at: ts
+        },
+        toDbRow: toArtifactAttestationDbRow,
+        fromDbRow: fromArtifactAttestationDbRow,
+        insert: insertArtifactAttestation,
+        getById: getArtifactAttestationById,
+        toPublicDto: toPublicArtifactAttestationDTO,
+        omittedFields: ["verification_signature", "internal_audit_trail"],
+        secretSentinels: [
+          "sk-proj-attsig1234567890abcdef",
+          "ghp_1234567890attrail1234567890abcd"
+        ]
+      }),
+      createEntity24Spec({
+        entityName: "KnowledgeChunkFTS",
+        id: knowledgeChunkPrimary.chunk_id,
+        primary: knowledgeChunkPrimary,
+        alternate: {
+          ...knowledgeChunkPrimary,
+          chunk_id: "chunk-all24-alt",
+          tags: [],
+          embedding_vector_ref: null
+        },
+        toDbRow: toKnowledgeChunkFTSDbRow,
+        fromDbRow: fromKnowledgeChunkFTSDbRow,
+        insert: insertKnowledgeChunkFTS,
+        getById: getKnowledgeChunkFTSById,
+        toPublicDto: toPublicKnowledgeChunkFTSDTO,
+        omittedFields: ["embedding_vector_ref"],
+        secretSentinels: ["sk-proj-kcvec1234567890abcdef"],
+        assertDbRow: (row, variant) => {
+          assert.equal(row.meta.chunk_id, row.fts.chunk_id);
+          assert.equal(row.meta.memory_id, row.fts.memory_id);
+          assert.equal(row.meta.created_at, row.fts.created_at);
+          assert.equal(row.fts.tags, variant === "primary" ? JSON.stringify(knowledgeChunkPrimary.tags) : "[]");
+        }
+      }),
+      createEntity24Spec({
+        entityName: "ContextSnapshot",
+        id: "snap-all24-1",
+        primary: {
+          snapshot_id: "snap-all24-1",
+          task_id: projectTaskPrimary.task_id,
+          agent_id: "flash-02",
+          summary: "QA checkpoint after 24-entity verification",
+          token_count: 1850,
+          snapshot_data: "snap-sk-proj-snapdata1234567890abcdef",
+          encryption_iv: "iv-ghp_1234567890snapiv1234567890abcd",
+          created_at: ts
+        },
+        alternate: {
+          snapshot_id: "snap-all24-alt",
+          task_id: null,
+          agent_id: "flash-02",
+          summary: "Empty snapshot",
+          token_count: 0,
+          snapshot_data: "opaque-snapshot-blob",
+          encryption_iv: null,
+          created_at: ts
+        },
+        toDbRow: toContextSnapshotDbRow,
+        fromDbRow: fromContextSnapshotDbRow,
+        insert: insertContextSnapshot,
+        getById: getContextSnapshotById,
+        toPublicDto: toPublicContextSnapshotDTO,
+        omittedFields: ["snapshot_data", "encryption_iv"],
+        secretSentinels: [
+          "sk-proj-snapdata1234567890abcdef",
+          "ghp_1234567890snapiv1234567890abcd"
+        ]
+      })
+    ];
+
+    return { parentRootTask, knowledgeChunkPrimary, specs };
+  }
+
+  // Scenario 20: Complete 24/24 Entity Bidirectional Mappers, Persistence Adapter Registry Parity & Fail-Closed Validation
+  await suite.test("20. Complete 24/24 bidirectional row mappers, V3_ENTITY_PERSISTENCE_ADAPTERS registry parity & KnowledgeChunkFTS fail-closed validation", () => {
+    const mappingKeys = Object.keys(V3_ENTITY_STORAGE_MAPPINGS).sort();
+    const adapterKeys = Object.keys(V3_ENTITY_PERSISTENCE_ADAPTERS).sort();
+    assert.equal(mappingKeys.length, 24, "V3_ENTITY_STORAGE_MAPPINGS must contain 24 entities");
+    assert.equal(adapterKeys.length, 24, "V3_ENTITY_PERSISTENCE_ADAPTERS must contain 24 entities");
+    assert.deepEqual(
+      adapterKeys,
+      mappingKeys,
+      "V3_ENTITY_PERSISTENCE_ADAPTERS keys must match V3_ENTITY_STORAGE_MAPPINGS keys 1-to-1"
+    );
+
+    const { knowledgeChunkPrimary, specs } = buildAll24EntityDataset("2026-11-11T14:30:00Z");
+    assert.equal(specs.length, 24, "Test dataset must include all 24 domain entities");
+    assert.deepEqual(
+      specs.map((s) => s.entityName).sort(),
+      mappingKeys,
+      "Test dataset entities must match all 24 canonical keys"
+    );
+
+    for (const spec of specs) {
+      spec.verifyMapperRoundTrip();
+    }
+
+    // Fail-closed KnowledgeChunkFTS cross-table mismatch & tags JSON validation
+    const validKcRow = toKnowledgeChunkFTSDbRow(knowledgeChunkPrimary);
+    assert.throws(
+      () =>
+        fromKnowledgeChunkFTSDbRow({
+          meta: { ...validKcRow.meta, chunk_id: "chunk-mismatch" },
+          fts: validKcRow.fts
+        }),
+      /chunk_id|mismatch/i,
+      "fromKnowledgeChunkFTSDbRow must throw on chunk_id mismatch between meta and fts"
+    );
+    assert.throws(
+      () =>
+        fromKnowledgeChunkFTSDbRow({
+          meta: validKcRow.meta,
+          fts: { ...validKcRow.fts, memory_id: "mem-mismatch" }
+        }),
+      /memory_id|mismatch/i,
+      "fromKnowledgeChunkFTSDbRow must throw on memory_id mismatch between meta and fts"
+    );
+    assert.throws(
+      () =>
+        fromKnowledgeChunkFTSDbRow({
+          meta: validKcRow.meta,
+          fts: { ...validKcRow.fts, created_at: "2026-11-11T00:00:00Z" }
+        }),
+      /created_at|mismatch/i,
+      "fromKnowledgeChunkFTSDbRow must throw on created_at mismatch between meta and fts"
+    );
+    for (const badTags of ["{not-json", '{"not":"array"}', "[123]"] as const) {
+      assert.throws(
+        () =>
+          fromKnowledgeChunkFTSDbRow({
+            meta: validKcRow.meta,
+            fts: { ...validKcRow.fts, tags: badTags }
+          }),
+        Error,
+        `fromKnowledgeChunkFTSDbRow must throw on invalid tags JSON '${badTags}'`
+      );
+    }
+    assert.throws(
+      () =>
+        fromKnowledgeChunkFTSDbRow({
+          meta: { ...validKcRow.meta, created_at: "not-a-timestamp" },
+          fts: { ...validKcRow.fts, created_at: "not-a-timestamp" }
+        }),
+      Error,
+      "fromKnowledgeChunkFTSDbRow must throw on invalid ISO timestamp"
+    );
+
+    // Fail-closed SQL boolean & JSON validation across remaining typed entities
+    const baseSub = toEventSubscriptionDbRow({
+      subscription_id: "sub-fail-check",
+      subscriber_id: "worker-1",
+      event_pattern: "task.*",
+      endpoint: "https://internal.example.local/sub",
+      is_active: true,
+      auth_secret_hash: null,
+      created_at: "2026-11-11T14:30:00Z",
+      updated_at: "2026-11-11T14:30:00Z"
+    });
+    assert.throws(() => fromEventSubscriptionDbRow({ ...baseSub, is_active: 2 }), /Invalid SQL boolean value/);
+
+    const baseDlq = toDeadLetterQueueDbRow({
+      dlq_id: "dlq-fail-check",
+      original_event_id: "evt-1",
+      event_type: "task.failed",
+      payload: { ok: true },
+      failure_reason: "timeout",
+      stack_trace: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      failed_at: "2026-11-11T14:30:00Z"
+    });
+    assert.throws(() => fromDeadLetterQueueDbRow({ ...baseDlq, resolved: -1 }), /Invalid SQL boolean value/);
+    assert.throws(() => fromDeadLetterQueueDbRow({ ...baseDlq, payload_json: "[]" }), /Invalid JSON object/);
+
+    const baseOutbox = toOutboxEventDbRow({
+      event_id: "evt-fail-check",
+      aggregate_type: "task",
+      aggregate_id: "task-1",
+      event_type: "task.created",
+      payload: { id: "task-1" },
+      status: "pending",
+      retry_count: 0,
+      max_retries: 3,
+      last_error: null,
+      internal_routing_key: null,
+      scheduled_for: "2026-11-11T14:30:00Z",
+      processed_at: null,
+      created_at: "2026-11-11T14:30:00Z"
+    });
+    assert.throws(() => fromOutboxEventDbRow({ ...baseOutbox, payload_json: "{broken" }), /Invalid JSON/);
+
+    const baseCap = toAgentCapabilityDbRow({
+      capability_id: "cap-fail-check",
+      agent_id: "flash-02",
+      capability_name: "qa",
+      version: "1.0.0",
+      is_enabled: true,
+      proficiency: "specialist",
+      internal_evaluation_score: null,
+      granted_at: "2026-11-11T14:30:00Z"
+    });
+    assert.throws(() => fromAgentCapabilityDbRow({ ...baseCap, is_enabled: 2 }), /Invalid SQL boolean value/);
+
+    const baseTask = toProjectTaskV3DbRow({
+      task_id: "task-fail-check",
+      project_id: "proj-1",
+      parent_task_id: null,
+      title: "Check",
+      objective: "Fail closed",
+      risk_class: "low",
+      priority: "low",
+      execution_status: "queued",
+      dispatch_status: "not_dispatched",
+      assigned_agent_id: null,
+      reviewer_agent_id: null,
+      version: 1,
+      token_budget: 1000,
+      token_used: 0,
+      acceptance_criteria: ["One"],
+      internal_evaluation_notes: null,
+      created_at: "2026-11-11T14:30:00Z",
+      updated_at: "2026-11-11T14:30:00Z"
+    });
+    assert.throws(
+      () => fromProjectTaskV3DbRow({ ...baseTask, acceptance_criteria_json: '{"not":"array"}' }),
+      /Invalid JSON array/
+    );
+  });
+
+  // Scenario 21: Complete 24/24 Live SQLite Sandbox Round-Trip, Public DTO Secret Stripping & KnowledgeChunkFTS 1-to-2 Split Verification
+  await suite.test("21. Live SQLite sandbox round-trip across ALL 24 entities, 24/24 public DTO secret stripping & KnowledgeChunkFTS 1-to-2 split persistence", () => {
+    const ctx = createSandboxTestContext("aico-v3-all24-sqlite-");
+
+    try {
+      const conn = new ConnectionManager(ctx.dbPath);
+      const runner = new MigrationRunner(conn);
+      runner.runMigrations([migrationV050V3Foundation]);
+
+      const ts = "2026-11-11T14:35:00Z";
+      const { parentRootTask, knowledgeChunkPrimary, specs } = buildAll24EntityDataset(ts);
+
+      // Insert parent task + all 24 domain entities inside a foreign-key-enforced write transaction
+      conn.withWriteTransaction((db) => {
+        const fkState = db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number };
+        assert.equal(fkState.foreign_keys, 1, "ConnectionManager must keep PRAGMA foreign_keys = ON");
+
+        insertProjectTaskV3(db, parentRootTask);
+        for (const spec of specs) {
+          spec.insertPrimary(db);
+        }
+      });
+
+      // Read back all 24 entities via both named helpers & V3_ENTITY_PERSISTENCE_ADAPTERS, and test all 24 DTO projections
+      conn.withReadTransaction((db) => {
+        for (const spec of specs) {
+          spec.verifySqliteAndDtoRoundTrip(db);
+        }
+
+        // Verify KnowledgeChunkFTS 1-to-2 physical split in SQLite + FTS5 MATCH queries
+        const metaRow = db
+          .prepare("SELECT chunk_id, memory_id, embedding_vector_ref, created_at FROM knowledge_chunks_meta WHERE chunk_id = ?")
+          .get(knowledgeChunkPrimary.chunk_id) as Record<string, unknown> | undefined;
+        assert.ok(metaRow !== undefined, "knowledge_chunks_meta row must exist");
+        assert.equal(metaRow.chunk_id, knowledgeChunkPrimary.chunk_id);
+        assert.equal(metaRow.memory_id, knowledgeChunkPrimary.memory_id);
+        assert.equal(metaRow.embedding_vector_ref, knowledgeChunkPrimary.embedding_vector_ref);
+        assert.equal(metaRow.created_at, knowledgeChunkPrimary.created_at);
+
+        const ftsRow = db
+          .prepare("SELECT chunk_id, memory_id, title, chunk_content, tags, created_at FROM knowledge_chunks_fts WHERE chunk_id = ?")
+          .get(knowledgeChunkPrimary.chunk_id) as Record<string, unknown> | undefined;
+        assert.ok(ftsRow !== undefined, "knowledge_chunks_fts row must exist");
+        assert.equal(ftsRow.title, knowledgeChunkPrimary.title);
+        assert.equal(ftsRow.chunk_content, knowledgeChunkPrimary.chunk_content);
+        assert.equal(ftsRow.tags, JSON.stringify(knowledgeChunkPrimary.tags));
+
+        // Search via SQLite FTS5 MATCH across title, chunk_content, and tags columns
+        for (const [colQuery, label] of [
+          ["title : Sentinelftsalpha", "title"],
+          ["chunk_content : sentinelftsbeta", "chunk_content"],
+          ["tags : sentinelftsgamma", "tags"]
+        ] as const) {
+          const hits = db
+            .prepare("SELECT chunk_id FROM knowledge_chunks_fts WHERE knowledge_chunks_fts MATCH ?")
+            .all(colQuery) as Array<{ chunk_id: string }>;
+          assert.deepEqual(
+            hits.map((h) => h.chunk_id),
+            [knowledgeChunkPrimary.chunk_id],
+            `FTS5 MATCH by ${label} ('${colQuery}') must locate chunk`
+          );
+        }
+      });
+
+      // Verify KnowledgeChunkFTS empty tags [] round-trip AND fail-closed split integrity when either table row is missing or FTS row is duplicated
+      const chunkEmptyTags: KnowledgeChunkFTS = {
+        chunk_id: "chunk-all24-empty-tags",
+        memory_id: "mem-all24-1",
+        title: "Empty Tags Chunk",
+        chunk_content: "Chunk verifying empty tags serialization.",
+        tags: [],
+        embedding_vector_ref: null,
+        created_at: ts
+      };
+      const chunkMissingFts: KnowledgeChunkFTS = {
+        chunk_id: "chunk-all24-orphan-meta",
+        memory_id: "mem-all24-1",
+        title: "Missing FTS Half",
+        chunk_content: "Will delete FTS row to prove fail-closed read.",
+        tags: ["orphan-check"],
+        embedding_vector_ref: null,
+        created_at: ts
+      };
+      const chunkMissingMeta: KnowledgeChunkFTS = {
+        chunk_id: "chunk-all24-orphan-fts",
+        memory_id: "mem-all24-1",
+        title: "Missing Meta Half",
+        chunk_content: "Will delete meta row to prove fail-closed read.",
+        tags: ["orphan-check"],
+        embedding_vector_ref: "vec://orphan",
+        created_at: ts
+      };
+      const chunkDuplicateFts: KnowledgeChunkFTS = {
+        chunk_id: "chunk-all24-duplicate-fts",
+        memory_id: "mem-all24-1",
+        title: "Duplicate FTS Half",
+        chunk_content: "Will duplicate FTS row to prove fail-closed multi-row guard.",
+        tags: ["duplicate-fts-check"],
+        embedding_vector_ref: "vec://duplicate",
+        created_at: ts
+      };
+
+      conn.withWriteTransaction((db) => {
+        insertKnowledgeChunkFTS(db, chunkEmptyTags);
+        insertKnowledgeChunkFTS(db, chunkMissingFts);
+        insertKnowledgeChunkFTS(db, chunkMissingMeta);
+        insertKnowledgeChunkFTS(db, chunkDuplicateFts);
+
+        db.prepare("DELETE FROM knowledge_chunks_fts WHERE chunk_id = ?").run(chunkMissingFts.chunk_id);
+        db.prepare("DELETE FROM knowledge_chunks_meta WHERE chunk_id = ?").run(chunkMissingMeta.chunk_id);
+        db.prepare(
+          "INSERT INTO knowledge_chunks_fts (chunk_id, memory_id, title, chunk_content, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+        ).run(
+          chunkDuplicateFts.chunk_id,
+          chunkDuplicateFts.memory_id,
+          chunkDuplicateFts.title,
+          chunkDuplicateFts.chunk_content,
+          JSON.stringify(chunkDuplicateFts.tags),
+          chunkDuplicateFts.created_at
+        );
+      });
+
+      conn.withReadTransaction((db) => {
+        assert.deepEqual(
+          getKnowledgeChunkFTSById(db, chunkEmptyTags.chunk_id),
+          chunkEmptyTags,
+          "KnowledgeChunkFTS must preserve empty tags [] and null embedding_vector_ref losslessly"
+        );
+        assert.throws(
+          () => getKnowledgeChunkFTSById(db, chunkMissingFts.chunk_id),
+          /KnowledgeChunkFTS integrity violation.*without matching row in knowledge_chunks_fts/,
+          "getKnowledgeChunkFTSById must fail closed when FTS half is missing"
+        );
+        assert.throws(
+          () => getKnowledgeChunkFTSById(db, chunkMissingMeta.chunk_id),
+          /KnowledgeChunkFTS integrity violation.*without matching row in knowledge_chunks_meta/,
+          "getKnowledgeChunkFTSById must fail closed when meta half is missing"
+        );
+        assert.throws(
+          () => getKnowledgeChunkFTSById(db, chunkDuplicateFts.chunk_id),
+          /KnowledgeChunkFTS integrity violation.*expected at most 1 row/,
+          "getKnowledgeChunkFTSById must fail closed when duplicate chunk_id rows exist in knowledge_chunks_fts"
+        );
+      });
+
+      // Verify atomic SAVEPOINT rollback in insertKnowledgeChunkFTS (standalone DatabaseSync connection)
+      const standaloneBadChunk: KnowledgeChunkFTS = {
+        chunk_id: "chunk-savepoint-standalone-fail",
+        memory_id: "nonexistent-memory-standalone",
+        title: "Should Rollback Standalone",
+        chunk_content: "Standalone FK failure must roll back cleanly.",
+        tags: ["savepoint"],
+        embedding_vector_ref: "vec://rollback",
+        created_at: ts
+      };
+
+      const rawDb = new DatabaseSync(ctx.dbPath);
+      try {
+        rawDb.exec("PRAGMA foreign_keys = ON;");
+        assert.throws(
+          () => insertKnowledgeChunkFTS(rawDb, standaloneBadChunk),
+          /FOREIGN KEY/i,
+          "Standalone insertKnowledgeChunkFTS must fail on nonexistent memory_id FK"
+        );
+        assert.equal(
+          rawDb.prepare("SELECT chunk_id FROM knowledge_chunks_meta WHERE chunk_id = ?").get(standaloneBadChunk.chunk_id),
+          undefined,
+          "Standalone failed insert must leave zero rows in knowledge_chunks_meta"
+        );
+        assert.equal(
+          rawDb.prepare("SELECT chunk_id FROM knowledge_chunks_fts WHERE chunk_id = ?").get(standaloneBadChunk.chunk_id),
+          undefined,
+          "Standalone failed insert must leave zero rows in knowledge_chunks_fts"
+        );
+      } finally {
+        rawDb.close();
+      }
+
+      // Verify SAVEPOINT rollback works cleanly when nested inside conn.withWriteTransaction
+      const canaryMemory: MemoryRecordV3 = {
+        memory_id: "mem-all24-savepoint-canary",
+        owner_agent_id: "flash-02",
+        scope: "TASK",
+        category: "INCIDENT_LEARNING",
+        key: "savepoint.nested.canary",
+        content: "Outer transaction sibling row survives inner SAVEPOINT rollback.",
+        raw_context_bytes: null,
+        access_count: 1,
+        confidence_score: 1.0,
+        created_at: ts,
+        updated_at: ts
+      };
+      const nestedBadChunk: KnowledgeChunkFTS = {
+        chunk_id: "chunk-savepoint-nested-fail",
+        memory_id: "nonexistent-memory-nested",
+        title: "Should Rollback Nested",
+        chunk_content: "Nested FK failure must only roll back inner SAVEPOINT.",
+        tags: ["nested-savepoint"],
+        embedding_vector_ref: null,
+        created_at: ts
+      };
+      const validCanaryChunk: KnowledgeChunkFTS = {
+        chunk_id: "chunk-savepoint-nested-ok",
+        memory_id: canaryMemory.memory_id,
+        title: "Nested Survivor Chunk",
+        chunk_content: "Inserted in same outer transaction after inner SAVEPOINT rollback.",
+        tags: ["nested-ok"],
+        embedding_vector_ref: null,
+        created_at: ts
+      };
+
+      conn.withWriteTransaction((db) => {
+        insertMemoryRecordV3(db, canaryMemory);
+        assert.throws(
+          () => insertKnowledgeChunkFTS(db, nestedBadChunk),
+          /FOREIGN KEY/i,
+          "Nested insertKnowledgeChunkFTS must throw on nonexistent memory_id"
+        );
+        insertKnowledgeChunkFTS(db, validCanaryChunk);
+      });
+
+      conn.withReadTransaction((db) => {
+        assert.deepEqual(getMemoryRecordV3ById(db, canaryMemory.memory_id), canaryMemory);
+        assert.deepEqual(getKnowledgeChunkFTSById(db, validCanaryChunk.chunk_id), validCanaryChunk);
+        assert.equal(getKnowledgeChunkFTSById(db, nestedBadChunk.chunk_id), null);
+        assert.equal(
+          db.prepare("SELECT chunk_id FROM knowledge_chunks_meta WHERE chunk_id = ?").get(nestedBadChunk.chunk_id),
+          undefined
+        );
+        assert.equal(
+          db.prepare("SELECT chunk_id FROM knowledge_chunks_fts WHERE chunk_id = ?").get(nestedBadChunk.chunk_id),
+          undefined
+        );
       });
     } finally {
       ctx.cleanup();
