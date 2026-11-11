@@ -4,9 +4,11 @@ export class SecretScanner {
     /sk-[a-zA-Z0-9_-]{20,}/g,
     /ghp_[a-zA-Z0-9]{20,}/g,
     /gho_[a-zA-Z0-9]{20,}/g,
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g,
     /AIza[0-9A-Za-z-_]{35}/g,
-    /bearer\s+[a-zA-Z0-9_\-\.]{24,}/gi
+    /bearer\s+[a-zA-Z0-9_\-\.+/=]{24,}/gi,
+    /https?:\/\/[^/\s:@]+:[^/\s@]+@/gi
   ];
 
   public static scan(content: string): { hasSecret: boolean; patternMatched?: string } {

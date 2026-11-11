@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { OutboxStatusSchema, IsoTimestampSchema } from "../common.js";
+import { redactPublicString } from "../sanitization.js";
 
 export const OutboxEventSchema = z.object({
   event_id: z.string().min(1),
@@ -20,12 +21,16 @@ export const OutboxEventSchema = z.object({
 export type OutboxEvent = z.infer<typeof OutboxEventSchema>;
 
 export const PublicOutboxEventDTOSchema = OutboxEventSchema.omit({
+  payload: true,
   internal_routing_key: true
 });
 
 export type PublicOutboxEventDTO = z.infer<typeof PublicOutboxEventDTOSchema>;
 
 export function toPublicOutboxEventDTO(event: OutboxEvent): PublicOutboxEventDTO {
-  const { internal_routing_key, ...publicData } = event;
-  return PublicOutboxEventDTOSchema.parse(publicData);
+  const { payload, internal_routing_key, ...publicData } = event;
+  return PublicOutboxEventDTOSchema.parse({
+    ...publicData,
+    last_error: redactPublicString(publicData.last_error)
+  });
 }

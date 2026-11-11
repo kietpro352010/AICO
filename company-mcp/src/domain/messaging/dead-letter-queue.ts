@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { redactPublicString } from "../sanitization.js";
 
 export const DeadLetterQueueSchema = z.object({
   dlq_id: z.string().min(1),
@@ -17,12 +18,16 @@ export const DeadLetterQueueSchema = z.object({
 export type DeadLetterQueue = z.infer<typeof DeadLetterQueueSchema>;
 
 export const PublicDeadLetterQueueDTOSchema = DeadLetterQueueSchema.omit({
+  payload: true,
   stack_trace: true
 });
 
 export type PublicDeadLetterQueueDTO = z.infer<typeof PublicDeadLetterQueueDTOSchema>;
 
 export function toPublicDeadLetterQueueDTO(dlq: DeadLetterQueue): PublicDeadLetterQueueDTO {
-  const { stack_trace, ...publicData } = dlq;
-  return PublicDeadLetterQueueDTOSchema.parse(publicData);
+  const { payload, stack_trace, ...publicData } = dlq;
+  return PublicDeadLetterQueueDTOSchema.parse({
+    ...publicData,
+    failure_reason: redactPublicString(publicData.failure_reason)
+  });
 }

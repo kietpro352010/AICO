@@ -6,6 +6,7 @@
 
 // Common
 export * from "./common.js";
+export * from "./sanitization.js";
 
 // Core Collaboration (7 entities)
 export * from "./collaboration/chat-room.js";

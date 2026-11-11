@@ -36,11 +36,11 @@ Every entity is implemented with:
 | :--- | :--- | :--- | :--- | :--- |
 | **ChatRoom** | `src/domain/collaboration/chat-room.ts` | `room_id` | Top-level communication channels (Executive Boardroom, Announcements, Projects, Tasks). | `internal_notes` |
 | **ChatMember** | `src/domain/collaboration/chat-member.ts` | `membership_id` | Association between a principal (human/agent/system) and a chat room with defined role. | `internal_cursor` |
-| **ChatMessage** | `src/domain/collaboration/chat-message.ts` | `message_id` | Chronological communication records with thread support, mentions, and message types. | `raw_token_trace` |
+| **ChatMessage** | `src/domain/collaboration/chat-message.ts` | `message_id` | Chronological communication records with thread support, mentions, and message types. | `raw_token_trace`, `internal_metadata`; `metadata` allowlisted & redacted (`PublicChatMessageMetadataSchema.strict()`) |
 | **MessageAttachment** | `src/domain/collaboration/message-attachment.ts` | `attachment_id` | File attachments bound to messages with SHA-256 verification and storage driver references. | `storage_driver_token` |
 | **MessageReaction** | `src/domain/collaboration/message-reaction.ts` | `reaction_id` | Emoji reactions attached to messages by principals. | `internal_client_ip` |
 | **RoomInvite** | `src/domain/collaboration/room-invite.ts` | `invite_id` | Room invitation workflow records with status lifecycle (`pending`, `accepted`, `declined`, `expired`). | `invite_token_hash` |
-| **RoomAuditLog** | `src/domain/collaboration/room-audit-log.ts` | `audit_id` | Security audit trail for membership, role, and configuration changes within a chat room. | `security_context_snapshot` |
+| **RoomAuditLog** | `src/domain/collaboration/room-audit-log.ts` | `audit_id` | Security audit trail for membership, role, and configuration changes within a chat room. | `security_context_snapshot`, `internal_details`; `details` allowlisted & redacted (`PublicRoomAuditDetailsSchema.strict()`) |
 
 ---
 
@@ -48,10 +48,10 @@ Every entity is implemented with:
 
 | Entity Name | Source File | Primary Key | Description | Public DTO Stripped Fields |
 | :--- | :--- | :--- | :--- | :--- |
-| **OutboxEvent** | `src/domain/messaging/outbox-event.ts` | `event_id` | Transactional outbox records ensuring at-least-once cross-boundary event delivery. | `internal_routing_key` |
-| **EventSubscription** | `src/domain/messaging/event-subscription.ts` | `subscription_id` | Registered consumers with wildcard topic subscriptions and target delivery endpoints. | `auth_secret_hash` |
-| **DeadLetterQueue** | `src/domain/messaging/dead-letter-queue.ts` | `dlq_id` | Poison and permanently failed messages quarantined after exhausting retry policies. | `stack_trace` |
-| **DeliveryAttempt** | `src/domain/messaging/delivery-attempt.ts` | `attempt_id` | Individual dispatch attempts against subscribed endpoints with latency and error tracking. | `internal_worker_id` |
+| **OutboxEvent** | `src/domain/messaging/outbox-event.ts` | `event_id` | Transactional outbox records ensuring at-least-once cross-boundary event delivery. | `internal_routing_key`, `payload`; `last_error` scrubbed via `redactPublicString` |
+| **EventSubscription** | `src/domain/messaging/event-subscription.ts` | `subscription_id` | Registered consumers with wildcard topic subscriptions and target delivery endpoints. | `auth_secret_hash`; `endpoint` scrubbed via `redactPublicString` |
+| **DeadLetterQueue** | `src/domain/messaging/dead-letter-queue.ts` | `dlq_id` | Poison and permanently failed messages quarantined after exhausting retry policies. | `stack_trace`, `payload`; `failure_reason` scrubbed via `redactPublicString` |
+| **DeliveryAttempt** | `src/domain/messaging/delivery-attempt.ts` | `attempt_id` | Individual dispatch attempts against subscribed endpoints with latency and error tracking. | `internal_worker_id`; `error_message` scrubbed via `redactPublicString` |
 
 ---
 
@@ -122,15 +122,15 @@ export function toPublicAgentLeaseDTO(lease: AgentLease): PublicAgentLeaseDTO {
 ### Complete Inventory of Omitted Fields
 1. `ChatRoom`: `internal_notes` (private executive/admin notes)
 2. `ChatMember`: `internal_cursor` (internal database read position)
-3. `ChatMessage`: `raw_token_trace` (internal token usage telemetry)
+3. `ChatMessage`: `raw_token_trace`, `internal_metadata`, plus strict allowlisted `metadata` projection (`PUBLIC_CHAT_MESSAGE_METADATA_KEYS`: `thread_title`, `topic`, `priority_label`, `ui_display_mode`, `related_task_id`, `tags`, `reply_preview`, `format_version` via `projectPublicAllowlistedRecord` and `PublicChatMessageMetadataSchema.strict()`)
 4. `MessageAttachment`: `storage_driver_token` (cloud storage credentials/tokens)
 5. `MessageReaction`: `internal_client_ip` (network metadata)
 6. `RoomInvite`: `invite_token_hash` (cryptographic invitation secret)
-7. `RoomAuditLog`: `security_context_snapshot` (raw authentication context)
-8. `OutboxEvent`: `internal_routing_key` (message broker internal routing)
-9. `EventSubscription`: `auth_secret_hash` (webhook signature secret)
-10. `DeadLetterQueue`: `stack_trace` (internal error stack trace)
-11. `DeliveryAttempt`: `internal_worker_id` (process worker ID)
+7. `RoomAuditLog`: `security_context_snapshot`, `internal_details`, plus strict allowlisted `details` projection (`PUBLIC_ROOM_AUDIT_DETAILS_KEYS`: `target`, `target_principal_id`, `previous_role`, `new_role`, `reason`, `summary` via `projectPublicAllowlistedRecord` and `PublicRoomAuditDetailsSchema.strict()`)
+8. `OutboxEvent`: `internal_routing_key`, `payload` (arbitrary event payload stripped from public DTO; `last_error` scrubbed via `redactPublicString`)
+9. `EventSubscription`: `auth_secret_hash` (webhook signature secret; `endpoint` scrubbed via `redactPublicString`)
+10. `DeadLetterQueue`: `stack_trace`, `payload` (arbitrary DLQ payload stripped from public DTO; `failure_reason` scrubbed via `redactPublicString`)
+11. `DeliveryAttempt`: `internal_worker_id` (process worker ID; `error_message` scrubbed via `redactPublicString`)
 12. `AgentLease`: `lease_nonce` (cryptographic lease token)
 13. `AgentHeartbeat`: `host_process_pid` (runtime operating system PID)
 14. `AgentCapability`: `internal_evaluation_score` (internal QA benchmark scores)
@@ -145,13 +145,17 @@ export function toPublicAgentLeaseDTO(lease: AgentLease): PublicAgentLeaseDTO {
 23. `KnowledgeChunkFTS`: `embedding_vector_ref` (vector database storage key)
 24. `ContextSnapshot`: `snapshot_data`, `encryption_iv` (serialized state payload & AES IV)
 
+### Metadata Allowlisting & Anti-Leakage Sanitization (`src/domain/sanitization.ts` & `src/security/secret-scanner.ts`)
+- Shared `projectPublicAllowlistedRecord(source, allowedKeys)` projects only own properties present on an explicit allowlist, blocks dangerous prototype-pollution keys (`__proto__`, `constructor`, `prototype`), uses a `WeakMap` DAG/cycle guard so shared or cyclic structures never return raw unredacted references, and runs `SecretScanner.redact()` on strings and nested structures while keeping non-string values uncoerced so `.strict()` Zod schemas fail closed on type confusion.
+- `SecretScanner.redact()` scrubs API keys (`sk-...`, `aico_live_...`, `ghp_...`, `gho_...`, `AIza...`), full multi-line PEM private key blocks (`-----BEGIN ... PRIVATE KEY----- ... -----END ... PRIVATE KEY-----`), `Bearer` tokens (including `+/=`), and `https?://user:pass@` URL credentials.
+- `redactPublicString()` scrubs residual secrets/credentials from public diagnostic and webhook fields (`last_error`, `failure_reason`, `error_message`, `endpoint`).
+
 ---
 
 ## 4. VERIFICATION EVIDENCE
 
-The entire domain model is verified by `company-mcp/test/t17-domain-models-g1.test.ts`:
-- **30 test cases** executed.
+The entire domain model and public DTO boundary hardening is verified by `company-mcp/test/t17-domain-models-g1.test.ts`:
+- **46 tests** executed (30 baseline V3-G1 suite/entity tests across all 24 domain entities + 16 P1 Blocker #2 regression tests covering multi-level nested secrets, internal routing, private identifiers, prototype pollution, type confusion, strict metadata/details rejection, `OutboxEvent`/`DeadLetterQueue` payload omission, `SecretScanner` PEM/URL/Bearer redaction, and `WeakMap` DAG/cycle guards).
 - Valid parsing verified across all 24 entities.
-- Rejection of invalid types, missing required fields, bad regexes, and out-of-bounds numbers verified.
-- Public DTO boundary projection verified: 100% of sensitive fields are confirmed omitted and unreachable in DTO objects.
-- Result: **30/30 passed, 0 failures, 0 skipped**.
+- Rejection of invalid types, missing required fields, bad regexes, out-of-bounds numbers, un-allowlisted keys, and allowlisted type confusion verified (`ZodError`).
+- Result: **46/46 passed, 0 failures, 0 skipped**.

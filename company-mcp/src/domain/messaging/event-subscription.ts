@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { redactPublicString } from "../sanitization.js";
 
 export const EventSubscriptionSchema = z.object({
   subscription_id: z.string().min(1),
@@ -22,5 +23,8 @@ export type PublicEventSubscriptionDTO = z.infer<typeof PublicEventSubscriptionD
 
 export function toPublicEventSubscriptionDTO(sub: EventSubscription): PublicEventSubscriptionDTO {
   const { auth_secret_hash, ...publicData } = sub;
-  return PublicEventSubscriptionDTOSchema.parse(publicData);
+  return PublicEventSubscriptionDTOSchema.parse({
+    ...publicData,
+    endpoint: redactPublicString(publicData.endpoint)
+  });
 }

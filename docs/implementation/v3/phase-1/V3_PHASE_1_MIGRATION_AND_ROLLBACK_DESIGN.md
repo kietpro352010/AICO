@@ -135,5 +135,5 @@ When `runner.rollbackMigration(migrationV050V3Foundation)` is invoked:
 ## 5. VERIFICATION EVIDENCE
 
 The migration and rollback engine is verified by `company-mcp/test/t18-sandbox-migration-g2.test.ts`:
-- **11 verification scenarios** covering virgin sandbox migration, seeded migration, idempotency, checksum drift, constraints, cascading FK deletes, index usage, rollback, re-migration, failure injection, and production DB path guards.
-- Result: **12/12 passed, 0 failures, 0 skipped**.
+- **17 verification scenarios** (`18` `node --test` items total: 1 outer suite + 17 subtests) covering virgin sandbox migration, seeded migration, idempotency, checksum drift, constraints, cascading FK deletes, index usage, rollback, re-migration, failure injection, and comprehensive canonical/symlink/junction/hardlink/ADS/URI/companion-file production DB path guards (against synthetic `os.tmpdir()` fixtures and mock `CanonicalPathFs`, never touching `data/aico.db`).
+- Result: **18/18 passed, 0 failures, 0 skipped**.

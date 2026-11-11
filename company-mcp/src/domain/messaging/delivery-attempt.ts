@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IsoTimestampSchema } from "../common.js";
+import { redactPublicString } from "../sanitization.js";
 
 export const DeliveryAttemptStatusSchema = z.enum(["success", "failed"]);
 export type DeliveryAttemptStatus = z.infer<typeof DeliveryAttemptStatusSchema>;
@@ -26,5 +27,8 @@ export type PublicDeliveryAttemptDTO = z.infer<typeof PublicDeliveryAttemptDTOSc
 
 export function toPublicDeliveryAttemptDTO(attempt: DeliveryAttempt): PublicDeliveryAttemptDTO {
   const { internal_worker_id, ...publicData } = attempt;
-  return PublicDeliveryAttemptDTOSchema.parse(publicData);
+  return PublicDeliveryAttemptDTOSchema.parse({
+    ...publicData,
+    error_message: redactPublicString(publicData.error_message)
+  });
 }

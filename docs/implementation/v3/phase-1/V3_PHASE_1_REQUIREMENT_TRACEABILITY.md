@@ -4,8 +4,8 @@
 **Author:** `flash-02` (Engineering & QA Lead)  
 **Recipient:** `chatgpt-01` (CEO & Main Orchestrator)  
 **Governance Authority:** Founder  
-**Date:** 2026-11-10  
-**Status:** DELIVERED & VERIFIED  
+**Date:** 2026-11-11  
+**Status:** DELIVERED & VERIFIED (P1 HARDENING APPLIED)  
 
 ---
 
@@ -18,12 +18,12 @@
 | **0. Pre-Flight** | Production DB immutability check | `data/aico.db` | `verify-all.ps1` [1/6] & [6/6] | Verified hash `17BD9321...` unchanged (0 bytes modified) |
 | **1. V3-G1** | 24 Domain Entities in strict TypeScript | `company-mcp/src/domain/**/*.ts` | `test/t17-domain-models-g1.test.ts` | 24 TypeScript interfaces defined |
 | **1. V3-G1** | Zod runtime validation schemas for all 24 entities | `company-mcp/src/domain/**/*.ts` | `test/t17-domain-models-g1.test.ts` | 24 Zod schemas with 1:1 validation parity |
-| **1. V3-G1** | Public DTO boundaries & sensitive field omission | `company-mcp/src/domain/**/*.ts` (`toPublic*DTO`) | `test/t17-domain-models-g1.test.ts` | 24 Public DTOs omit all tokens, nonces, IVs, traces |
+| **1. V3-G1** | Public DTO boundaries, strict metadata allowlist & sanitization | `company-mcp/src/domain/**/*.ts` (`toPublic*DTO`, `sanitization.ts`, `secret-scanner.ts`) | `test/t17-domain-models-g1.test.ts` (46/46) | 24 Public DTOs omit tokens/nonces/IVs/payloads; strict allowlisted metadata/details, WeakMap DAG/cycle guard, PEM/URL/token redaction |
 | **1. V3-G2** | Forward migration script `v0.5.0-v3-foundation.sql` | `company-mcp/src/db/migrations/v0.5.0-v3-foundation.sql` | `test/t18-sandbox-migration-g2.test.ts` | Creates 24 tables/virtual tables, FKs, CHECKs, indexes |
 | **1. V3-G2** | Backward rollback script `v0.5.0-down.sql` | `company-mcp/src/db/migrations/v0.5.0-down.sql` | `test/t18-sandbox-migration-g2.test.ts` | Drops 24 tables in reverse order cleanly |
 | **1. V3-G2** | TypeScript migration runner wrapper | `company-mcp/src/db/migrations/v050-v3-foundation.ts` | `test/t18-sandbox-migration-g2.test.ts` | Computes SHA-256 checksum, implements up & down |
 | **1. V3-G2** | MigrationRunner rollback capability | `company-mcp/src/db/migration-runner.ts` (`rollbackMigration`) | `test/t18-sandbox-migration-g2.test.ts` | Atomic rollback with `schema_migrations` record deletion |
-| **1. V3-G2** | Hardened Production DB Path Guard | `company-mcp/src/db/migration-runner.ts` (`assertNonProductionDatabase`)| `test/t18-sandbox-migration-g2.test.ts` (Test 11) | Rejects `/data/aico.db` unconditionally |
+| **1. V3-G2** | Hardened Canonical Production DB Path Guard | `company-mcp/src/db/migration-runner.ts` (`assertSafeNonProductionDbPath`, `assertNonProductionDatabase`)| `test/t18-sandbox-migration-g2.test.ts` (Tests 11–17) | Blocks direct, URI, symlink/junction, missing-leaf, hardlink, ADS, Win32 dot/space, `%00`, and `-wal`/`-shm`/`-journal` companion aliases |
 | **1. Scope** | Virgin sandbox migration test | `test/t18-sandbox-migration-g2.test.ts` (Test 1) | `test/t18-sandbox-migration-g2.test.ts` | Verified clean schema creation |
 | **1. Scope** | Seeded sandbox migration test | `test/t18-sandbox-migration-g2.test.ts` (Test 2) | `test/t18-sandbox-migration-g2.test.ts` | Verified baseline preservation |
 | **1. Scope** | Repeated migration idempotency | `test/t18-sandbox-migration-g2.test.ts` (Test 3) | `test/t18-sandbox-migration-g2.test.ts` | Verified 0 applied, 3 skipped |
@@ -42,6 +42,6 @@
 
 ## 2. SIGN-OFF & HANDOFF READINESS
 
-Phase 1 deliverables are complete, verified by 82 passing tests, and ready for CEO review.
+Phase 1 deliverables and P1 security hardening fixes are complete, verified locally by **104/104 passing tests** (`verify-all.ps1` exit code 0), and ready for CI and executive acceptance.
 Engineering Lead (`flash-02`) submits this report to CEO (`chatgpt-01`) for evaluation and next directive.
 Gate V3-G3 remains LOCKED pending formal evaluation.
