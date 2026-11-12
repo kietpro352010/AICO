@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { createSandboxTestContext } from "./helpers/test-context.js";
+import { createSandboxTestContext, issueTestPrincipalContext } from "./helpers/test-context.js";
 import { ConnectionManager } from "../src/db/connection-manager.js";
 import { MigrationRunner } from "../src/db/migration-runner.js";
 import { migrationV040 } from "../src/db/migrations/v040-agent-columns.js";
@@ -28,10 +28,32 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
   const taskService = new ProjectTaskService(conn, appService);
   const obsService = new ObservabilityQuotaService(conn, "test_hmac_secret_key_v221_32bytes_long", ctx.anchorPath);
 
-  const founderCtx = idService.getPrincipalById("founder-01")!;
-  const flash1Ctx = idService.getPrincipalById("flash-01")!;
-  const flash2Ctx = idService.getPrincipalById("flash-02")!;
-  const codexCtx = idService.getPrincipalById("codex-01")!;
+  const founderCtx = issueTestPrincipalContext(idService, "founder-01", ["*"]);
+  const flash1Ctx = issueTestPrincipalContext(idService, "flash-01", [
+    "company:read",
+    "tasks:manage",
+    "tasks:transition",
+    "tasks:review",
+    "approvals:request",
+    "workspace:read:self",
+    "workspace:write:self"
+  ]);
+  const flash2Ctx = issueTestPrincipalContext(idService, "flash-02", [
+    "company:read",
+    "tasks:claim",
+    "tasks:transition",
+    "tasks:review",
+    "tasks:read:assigned",
+    "tasks:update:assigned"
+  ]);
+  const codexCtx = issueTestPrincipalContext(idService, "codex-01", [
+    "company:read",
+    "tasks:claim",
+    "tasks:transition",
+    "tasks:submit",
+    "tasks:read:assigned",
+    "tasks:update:assigned"
+  ]);
 
   try {
     // ------------------------------------------------------------------------
@@ -815,7 +837,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       assert.equal(sweep1.recovered, 1);
       assert.ok(sweep1.details.some(d => d.includes("Requeued to assigned")));
 
-      const refreshedNorm = taskService.getTask(tNorm.task_id)!;
+      const refreshedNorm = taskService.getTask(tNorm.task_id, flash1Ctx)!;
       assert.ok(refreshedNorm, "Refreshed normal task exists");
       assert.equal(refreshedNorm.execution_status, "assigned");
       assert.equal(refreshedNorm.retry_count, 1);
@@ -831,7 +853,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       const sweepExhausted = taskService.recoverStaleLeases();
       assert.equal(sweepExhausted.recovered, 1);
       assert.ok(sweepExhausted.details.some(d => d.includes("RETRY_EXHAUSTED")));
-      const blockedTask = taskService.getTask(tNorm.task_id)!;
+      const blockedTask = taskService.getTask(tNorm.task_id, flash1Ctx)!;
       assert.ok(blockedTask, "Blocked task exists");
       assert.equal(blockedTask.execution_status, "blocked");
 
@@ -866,7 +888,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
       const sweepArgon = taskService.recoverStaleLeases();
       assert.equal(sweepArgon.recovered, 1);
       assert.ok(sweepArgon.details.some(d => d.includes("BLOCKED_MANUAL_INTERVENTION")));
-      const refreshedArgon = taskService.getTask(tArgon.task_id)!;
+      const refreshedArgon = taskService.getTask(tArgon.task_id, flash1Ctx)!;
       assert.ok(refreshedArgon, "Refreshed argon task exists");
       assert.equal(refreshedArgon.execution_status, "blocked");
     });

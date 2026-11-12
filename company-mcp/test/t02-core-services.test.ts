@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSandboxTestContext } from "./helpers/test-context.js";
+import { createSandboxTestContext, issueTestPrincipalContext } from "./helpers/test-context.js";
 import { ConnectionManager } from "../src/db/connection-manager.js";
 import { MigrationRunner } from "../src/db/migration-runner.js";
 import { migrationV040 } from "../src/db/migrations/v040-agent-columns.js";
@@ -42,8 +42,10 @@ test("T02: Core Services — Identity, Approvals and Workspace Artifact Guard", 
     // 2. ApprovalService verification (One-time payload-bound approval)
     const appService = new ApprovalService(connManager);
     const payload = { action: "deploy", target: "staging", version: "1.0.0" };
+    const flash1Ctx = issueTestPrincipalContext(idService, "flash-01", ["approvals:request"]);
 
     const { approvalId, payloadHashSha256 } = appService.createApprovalRequest({
+      ctx: flash1Ctx,
       actionType: "acl_or_service_change",
       requestedBy: "flash-01",
       requiredApprover: "founder-01",
@@ -52,7 +54,7 @@ test("T02: Core Services — Identity, Approvals and Workspace Artifact Guard", 
     assert.ok(approvalId.startsWith("appr_"));
 
     // Approve by founder
-    const founderCtx = idService.getPrincipalById("founder-01")!;
+    const founderCtx = issueTestPrincipalContext(idService, "founder-01", ["*"]);
     const decResult = appService.decideApproval({
       ctx: founderCtx,
       approvalId,
@@ -81,10 +83,10 @@ test("T02: Core Services — Identity, Approvals and Workspace Artifact Guard", 
     // 3. WorkspaceArtifactService verification
     const wsService = new WorkspaceArtifactService(ctx.tempDir);
 
-    const writeRes = wsService.safeWriteArtifact("test-doc.txt", "Hello AICO v2.2.1", "workspace");
+    const writeRes = wsService.safeWriteArtifact("test-doc.txt", "Hello AICO v2.2.1", "workspace", true, founderCtx);
     assert.ok(writeRes.bytesWritten > 0);
 
-    const readContent = wsService.safeReadArtifact("test-doc.txt", "workspace");
+    const readContent = wsService.safeReadArtifact("test-doc.txt", "workspace", founderCtx);
     assert.equal(readContent, "Hello AICO v2.2.1");
 
     // Enforce path traversal failure

@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
-import type { PrincipalContext } from "../security/context-store.js";
+import { assertAuthenticatedContext, type PrincipalContext } from "../security/context-store.js";
 import { rfc8785Canonicalize } from "../security/rfc8785-canonicalize.js";
 
 export interface ApprovalRequestRecord {
@@ -73,9 +73,10 @@ export class ApprovalService {
     status: string;
     expires_at: string;
   } {
+    assertAuthenticatedContext(params.ctx, "createApprovalRequest", { allowedPrincipalTypes: ["human", "agent"] });
     const actionType = params.actionType || params.action_type || "architecture_review";
-    const requestedById = params.ctx?.principalId || params.requestedBy || params.requested_by || "chatgpt-01";
-    const requestedByType: "human" | "agent" = params.ctx?.principalType === "human" ? "human" : "agent";
+    const requestedById = params.ctx.principalId;
+    const requestedByType: "human" | "agent" = params.ctx.principalType;
     const targetAgentId = params.targetAgentId || params.target_agent_id || null;
     const targetResource = params.targetResource || params.target_resource || "default_resource";
     const reason = params.reason || "Operational approval request";

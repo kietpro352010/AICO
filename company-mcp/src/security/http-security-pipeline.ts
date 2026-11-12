@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type * as http from "node:http";
 import type { Request, Response, NextFunction } from "express";
 import { TokenBucketRateLimiter } from "./rate-limiter.js";
 import { IdentityAccessService, type PrincipalContext } from "../services/identity-access-service.js";
@@ -78,6 +79,17 @@ export const PUBLIC_TOOL_ALLOWLIST = new Set([
 export interface AuthenticatedRequest extends Request {
   requestId: string;
   principalContext?: PrincipalContext;
+}
+
+export function configureGatewayHttpServer(
+  server: http.Server,
+  profile: GatewaySecurityProfile
+): http.Server {
+  const keepAliveTimeoutMs = Math.max(profile.requestTimeoutMs + 35_000, 65_000);
+  server.keepAliveTimeout = keepAliveTimeoutMs;
+  server.headersTimeout = keepAliveTimeoutMs + 5_000;
+  server.requestTimeout = Math.max(profile.requestTimeoutMs + 5_000, 35_000);
+  return server;
 }
 
 export class HttpSecurityPipeline {
@@ -244,8 +256,14 @@ export class HttpSecurityPipeline {
       }
 
       // Step 6: Unauthenticated IP Rate Limiting
+      // Only unauthenticated/missing/failed-auth requests consume ipLimiter so
+      // valid authenticated agents on shared localhost are governed by credLimiter.
       const clientIp = req.ip || req.socket.remoteAddress || "127.0.0.1";
-      const ipCheck = this.ipLimiter.consume(clientIp);
+      const authHeader = req.headers.authorization;
+      const hasBearerHeader = typeof authHeader === "string" && authHeader.startsWith("Bearer ");
+      const ipCheck = hasBearerHeader
+        ? this.ipLimiter.check(clientIp)
+        : this.ipLimiter.consume(clientIp);
       if (!ipCheck.allowed) {
         clearTimeout(timeoutHandle);
         res.setHeader("Retry-After", String(ipCheck.retryAfterSeconds));
@@ -258,8 +276,7 @@ export class HttpSecurityPipeline {
       }
 
       // Step 7: Bearer Token Extraction & Timing-Safe Verification
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      if (!hasBearerHeader) {
         clearTimeout(timeoutHandle);
         await new Promise((r) => setTimeout(r, 20 + Math.random() * 30));
         res.status(401).json({
@@ -278,7 +295,17 @@ export class HttpSecurityPipeline {
       );
 
       if (!principal || !principal.authenticated) {
+        const failedIpCheck = this.ipLimiter.consume(clientIp);
         clearTimeout(timeoutHandle);
+        if (!failedIpCheck.allowed) {
+          res.setHeader("Retry-After", String(failedIpCheck.retryAfterSeconds));
+          res.status(429).json({
+            error_code: "RATE_LIMIT_EXCEEDED",
+            message: `Unauthenticated rate limit exceeded. Retry in ${failedIpCheck.retryAfterSeconds}s`,
+            request_id: authReq.requestId
+          });
+          return;
+        }
         await new Promise((r) => setTimeout(r, 20 + Math.random() * 30));
         res.status(401).json({
           error_code: "AUTH_MISSING_OR_INVALID_TOKEN",

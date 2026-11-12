@@ -1,6 +1,14 @@
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
-import type { PrincipalContext } from "../security/context-store.js";
+import {
+  assertAuthenticatedContext,
+  hasPrincipalScope,
+  isArchiveLeadership,
+  isExecutiveLeadership,
+  isFounderHuman,
+  isReviewLeadership,
+  type PrincipalContext
+} from "../security/context-store.js";
 import { ApprovalService } from "./approval-service.js";
 
 export type TaskExecutionStatus =
@@ -89,6 +97,7 @@ export interface TransitionInput {
   outputArtifactIds?: string[];
   verificationEvidence?: string;
   metadata?: Record<string, unknown>;
+  allowReviewAndAdminTransitions?: boolean;
 }
 
 function isArgonAgent(assignedAgentId: string | null | undefined): boolean {
@@ -122,11 +131,14 @@ export class ProjectTaskService {
     approvalId?: string
   ): void {
     const isArgon = task.assigned_agent_id === "argon-01" || task.assigned_agent_id === "argon-02";
+    const isCritical = isCriticalGovernanceTask(task);
     if (!approvalId) {
       if (isArgon) {
         throw new Error(`ARGON_FOUNDER_APPROVAL_REQUIRED: Argon agent '${task.assigned_agent_id}' task execution/dispatch requires an explicit Founder approval ID`);
-      } else {
+      } else if (isCritical) {
         throw new Error(`CRITICAL_TASK_APPROVAL_REQUIRED: Critical task '${task.task_id}' (risk: ${task.risk_class}, priority: ${task.priority}) requires explicit Founder approval ID`);
+      } else {
+        throw new Error(`TASK_APPROVAL_REQUIRED: Transitioning task '${task.task_id}' out of waiting_approval requires an explicit approval ID`);
       }
     }
 
@@ -134,7 +146,20 @@ export class ProjectTaskService {
       throw new Error(`APPROVAL_SERVICE_UNAVAILABLE: Cannot verify approval for task '${task.task_id}' without active ApprovalService`);
     }
 
-    const actionType = isArgon ? "argon_invocation" : "critical_task_approval";
+    let actionType: "argon_invocation" | "critical_task_approval" | "architecture_review";
+    if (isArgon) {
+      actionType = "argon_invocation";
+    } else if (isCritical) {
+      actionType = "critical_task_approval";
+    } else {
+      const existingRow = db
+        .prepare("SELECT action_type FROM approval_requests WHERE approval_id = ?")
+        .get(approvalId) as { action_type?: string } | undefined;
+      actionType = existingRow?.action_type === "architecture_review"
+        ? "architecture_review"
+        : "critical_task_approval";
+    }
+
     const payload = isArgon
       ? { taskId: task.task_id, targetAgentId: task.assigned_agent_id }
       : { taskId: task.task_id, riskClass: task.risk_class, priority: task.priority };
@@ -144,22 +169,22 @@ export class ProjectTaskService {
       ? task.assigned_agent_id
       : (task.assigned_agent_id || undefined);
 
-    let res = this.approvalService.consumeApproval({
+    const res = this.approvalService.consumeApproval({
       approvalId,
       expectedActionType: actionType,
       expectedTargetAgentId: expectedTargetAgentId || undefined,
       expectedTargetResource,
       canonicalPayload: payload,
-      requestId: `req_${isArgon ? "argon" : "crit"}_${task.task_id}`
+      requestId: `req_${isArgon ? "argon" : isCritical ? "crit" : "task"}_${task.task_id}`
     }, db);
-
-    
 
     if (!res.valid) {
       if (isArgon) {
         throw new Error(`ARGON_FOUNDER_APPROVAL_REQUIRED: Argon Founder approval verification failed: ${res.error}`);
-      } else {
+      } else if (isCritical) {
         throw new Error(`CRITICAL_TASK_APPROVAL_REQUIRED: Critical task approval verification failed: ${res.error}`);
+      } else {
+        throw new Error(`TASK_APPROVAL_REQUIRED: Task approval verification failed: ${res.error}`);
       }
     }
   }
@@ -262,8 +287,19 @@ export class ProjectTaskService {
     riskClass?: "low" | "medium" | "high" | "critical";
     risk_class?: "low" | "medium" | "high" | "critical";
   }): ProjectRecord {
+    assertAuthenticatedContext(params.ctx, "createProject", { allowedPrincipalTypes: ["human", "agent"] });
+    if (!isExecutiveLeadership(params.ctx) && !hasPrincipalScope(params.ctx, "tasks:manage")) {
+      throw new Error(
+        `PERMISSION_DENIED: Principal '${params.ctx.principalId}' is not authorized to create projects`
+      );
+    }
+
     const projectId = params.projectId || params.project_id || "proj_" + crypto.randomBytes(8).toString("hex");
-    const ownerAgentId = params.ownerAgentId || params.owner_agent_id || "flash-01";
+    const ownerAgentId = params.ownerAgentId || params.owner_agent_id || params.ctx.agentId;
+    if (!ownerAgentId) {
+      throw new Error("VALIDATION_ERROR: ownerAgentId is required when creating a project without a bound agent_id");
+    }
+    const approvedByHumanId = isFounderHuman(params.ctx) ? params.ctx.principalId : null;
     const priority = params.priority || "P1";
     const riskClass = params.riskClass || params.risk_class || "medium";
     const now = new Date().toISOString();
@@ -273,8 +309,8 @@ export class ProjectTaskService {
         INSERT INTO projects (
           project_id, name, description, status, owner_agent_id,
           approved_by_human_id, priority, risk_class, created_at, updated_at
-        ) VALUES (?, ?, ?, 'active', ?, 'founder-01', ?, ?, ?, ?)
-      `).run(projectId, params.name, params.description, ownerAgentId, priority, riskClass, now, now);
+        ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+      `).run(projectId, params.name, params.description, ownerAgentId, approvedByHumanId, priority, riskClass, now, now);
 
       return {
         project_id: projectId,
@@ -333,6 +369,13 @@ export class ProjectTaskService {
     createdBy?: string;
     created_by?: string;
   }): TaskRecord {
+    assertAuthenticatedContext(params.ctx, "createTask", { allowedPrincipalTypes: ["human", "agent"] });
+    if (!isExecutiveLeadership(params.ctx) && !hasPrincipalScope(params.ctx, "tasks:manage")) {
+      throw new Error(
+        `PERMISSION_DENIED: Principal '${params.ctx.principalId}' is not authorized to create tasks`
+      );
+    }
+
     const taskId = params.taskId || params.task_id || "task_" + crypto.randomBytes(8).toString("hex");
     const idempotencyKey = params.idempotencyKey || params.idempotency_key || "idemp_" + crypto.randomBytes(12).toString("hex");
     const projectId = params.projectId || params.project_id || "proj_aico_v221";
@@ -344,8 +387,8 @@ export class ProjectTaskService {
     const priority = params.priority || "P1";
     const riskClass = params.riskClass || params.risk_class || "medium";
     const criteria = params.acceptanceCriteria || params.acceptance_criteria || ["Deliver verification evidence"];
-    const createdById = params.ctx?.principalId || params.createdBy || params.created_by || "chatgpt-01";
-    const createdByType = params.ctx?.principalType || (createdById === "founder-01" ? "human" : "agent");
+    const createdById = params.ctx.principalId;
+    const createdByType = params.ctx.principalType;
 
     // Invariant: Critical, P0, and Argon tasks start in waiting_approval; Argon tasks cannot retry
     const isArgon = isArgonAgent(assignedAgentId);
@@ -366,11 +409,15 @@ export class ProjectTaskService {
       // Check existing project
       const proj = db.prepare("SELECT * FROM projects WHERE project_id = ?").get(projectId);
       if (!proj) {
-        // Fallback create default project
+        const fallbackOwner = params.ctx!.agentId || assignedAgentId;
+        if (!fallbackOwner) {
+          throw new Error(`RESOURCE_NOT_FOUND: Project '${projectId}' not found and no valid owner agent was provided`);
+        }
+        const approvedByHuman = isFounderHuman(params.ctx) ? params.ctx!.principalId : null;
         db.prepare(`
           INSERT OR IGNORE INTO projects (project_id, name, description, owner_agent_id, approved_by_human_id)
-          VALUES (?, 'Default Project', 'Auto-created project container', 'flash-01', 'founder-01')
-        `).run(projectId);
+          VALUES (?, ?, 'Auto-created project container', ?, ?)
+        `).run(projectId, `Project ${projectId}`, fallbackOwner, approvedByHuman);
       }
 
       db.prepare(`
@@ -437,20 +484,23 @@ export class ProjectTaskService {
     },
     callerCtx?: PrincipalContext
   ): TaskRecord[] {
+    assertAuthenticatedContext(callerCtx, "listTasks");
+
     return this.connManager.withReadTransaction((db) => {
       let query = "SELECT * FROM tasks WHERE 1=1";
       const params: any[] = [];
 
-      // Task Isolation: If caller only has tasks:read:assigned (not tasks:read, tasks:manage, *, or Founder/CTO)
-      const hasBroadRead = !callerCtx ||
-        callerCtx.principalId === "founder-01" ||
-        callerCtx.principalId === "flash-01" ||
-        callerCtx.scopes.has("*") ||
-        callerCtx.scopes.has("tasks:read") ||
-        callerCtx.scopes.has("tasks:manage");
+      const hasBroadRead =
+        isFounderHuman(callerCtx) ||
+        (callerCtx.principalType === "agent" && callerCtx.principalId === "flash-01") ||
+        hasPrincipalScope(callerCtx, "tasks:read") ||
+        hasPrincipalScope(callerCtx, "tasks:manage");
 
       let effectiveAssignedAgentId = filter?.assignedAgentId;
-      if (!hasBroadRead && callerCtx?.agentId) {
+      if (!hasBroadRead) {
+        if (!callerCtx.agentId) {
+          return [];
+        }
         effectiveAssignedAgentId = callerCtx.agentId;
       }
 
@@ -477,20 +527,25 @@ export class ProjectTaskService {
   }
 
   public getTask(taskId: string, callerCtx?: PrincipalContext): TaskRecord | null {
+    assertAuthenticatedContext(callerCtx, "getTask");
+
     return this.connManager.withReadTransaction((db) => {
       const row = db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(taskId) as any;
       if (!row) return null;
 
-      // Task Isolation: If caller only has tasks:read:assigned, verify assignment or creation ownership
-      const hasBroadRead = !callerCtx ||
-        callerCtx.principalId === "founder-01" ||
-        callerCtx.principalId === "flash-01" ||
-        callerCtx.scopes.has("*") ||
-        callerCtx.scopes.has("tasks:read") ||
-        callerCtx.scopes.has("tasks:manage");
+      const hasBroadRead =
+        isFounderHuman(callerCtx) ||
+        (callerCtx.principalType === "agent" && callerCtx.principalId === "flash-01") ||
+        hasPrincipalScope(callerCtx, "tasks:read") ||
+        hasPrincipalScope(callerCtx, "tasks:manage");
 
-      if (!hasBroadRead && callerCtx?.agentId) {
-        if (row.assigned_agent_id !== callerCtx.agentId && row.created_by_principal_id !== callerCtx.principalId) {
+      if (!hasBroadRead) {
+        const isAssignedCaller = Boolean(callerCtx.agentId && row.assigned_agent_id === callerCtx.agentId);
+        const isCreatorCaller = Boolean(
+          row.created_by_principal_id === callerCtx.principalId &&
+          row.created_by_principal_type === callerCtx.principalType
+        );
+        if (!isAssignedCaller && !isCreatorCaller) {
           throw new Error(`PERMISSION_DENIED: Access to task '${taskId}' denied (not assigned to caller)`);
         }
       }
@@ -505,9 +560,7 @@ export class ProjectTaskService {
     agentId?: string;
     expectedVersion?: number;
   }): TaskRecord {
-    if (!params.ctx || params.ctx.authenticated !== true || !params.ctx.principalId) {
-      throw new Error("AUTHENTICATION_REQUIRED: heartbeatTask requires an authenticated PrincipalContext");
-    }
+    assertAuthenticatedContext(params.ctx, "heartbeatTask", { allowedPrincipalTypes: ["human", "agent"] });
     if (
       params.expectedVersion !== undefined &&
       (typeof params.expectedVersion !== "number" ||
@@ -517,7 +570,8 @@ export class ProjectTaskService {
       throw new Error("VALIDATION_ERROR: heartbeatTask expectedVersion must be a positive integer");
     }
 
-    const callerActorId = params.ctx.agentId || params.ctx.principalId;
+    const callerAgentId = params.ctx.agentId;
+    const isFounder = isFounderHuman(params.ctx);
     const now = new Date();
     const nowIso = now.toISOString();
     const newExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
@@ -534,7 +588,7 @@ export class ProjectTaskService {
         throw new Error(`TASK_VERSION_CONFLICT: Optimistic lock failure: expected version ${params.expectedVersion}, but found ${task.version}`);
       }
 
-      if (!task.lease_owner_agent_id || (task.lease_owner_agent_id !== callerActorId && params.ctx!.principalId !== "founder-01")) {
+      if (!task.lease_owner_agent_id || (task.lease_owner_agent_id !== callerAgentId && !isFounder)) {
         throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only current lease owner '${task.lease_owner_agent_id}' can heartbeat task`);
       }
 
@@ -579,8 +633,11 @@ export class ProjectTaskService {
     agentId?: string;
     expectedVersion: number;
   }): TaskRecord {
-    const agentId = params.ctx?.agentId || params.agentId;
-    if (!agentId) throw new Error("Agent ID required to claim task");
+    assertAuthenticatedContext(params.ctx, "claimTask", { allowedPrincipalTypes: ["human", "agent"] });
+    const claimerId = params.ctx.agentId || (isFounderHuman(params.ctx) ? params.ctx.principalId : null);
+    if (!claimerId) {
+      throw new Error("VALIDATION_ERROR: Agent ID or Founder principal required to claim task");
+    }
     if (typeof params.expectedVersion !== "number" || !Number.isInteger(params.expectedVersion) || params.expectedVersion < 1) {
       throw new Error("VALIDATION_ERROR: claimTask requires a positive integer expectedVersion");
     }
@@ -590,7 +647,7 @@ export class ProjectTaskService {
       taskId: params.taskId,
       expectedVersion: params.expectedVersion,
       toStatus: "claimed",
-      note: `Task claimed by ${agentId}`
+      note: `Task claimed by ${claimerId}`
     });
   }
 
@@ -663,13 +720,16 @@ export class ProjectTaskService {
   }
 
   public transitionTask(input: TransitionInput): TaskRecord {
-    if (!input.ctx || !input.ctx.authenticated || !input.ctx.principalId) {
-      throw new Error("AUTHENTICATION_REQUIRED: transitionTask requires an authenticated PrincipalContext");
-    }
+    assertAuthenticatedContext(input.ctx, "transitionTask", { allowedPrincipalTypes: ["human", "agent"] });
     const now = new Date();
     const nowIso = now.toISOString();
     const actorId = input.ctx.principalId;
     const actorType = input.ctx.principalType;
+    const callerAgentId = input.ctx.principalType === "agent" ? input.ctx.agentId : null;
+    const isFounder = isFounderHuman(input.ctx);
+    const isExecutive = isExecutiveLeadership(input.ctx);
+    const isReviewerLead = isReviewLeadership(input.ctx);
+    const isArchiveLead = isArchiveLeadership(input.ctx);
 
     return this.connManager.withWriteTransaction((db) => {
       const task = db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(input.taskId) as any;
@@ -687,16 +747,30 @@ export class ProjectTaskService {
         return task as TaskRecord;
       }
 
+      if (input.allowReviewAndAdminTransitions === false) {
+        const isReviewDecision = fromStatus === "review_required" && (toStatus === "completed" || toStatus === "rework");
+        const isArchiveTransition = toStatus === "archived";
+        const isApprovalGateResolution =
+          fromStatus === "waiting_approval" && (toStatus === "queued" || toStatus === "in_progress");
+        if (isReviewDecision || isArchiveTransition || isApprovalGateResolution) {
+          throw new Error(
+            `PERMISSION_DENIED: TOOL_NOT_EXPOSED_ON_PUBLIC_GATEWAY: Transition '${fromStatus}' -> '${toStatus}' is forbidden on Public Gateway`
+          );
+        }
+      }
+
+      const isCreator =
+        task.created_by_principal_id === actorId && task.created_by_principal_type === actorType;
+      const isAssigned = Boolean(task.assigned_agent_id && callerAgentId && callerAgentId === task.assigned_agent_id);
+      const isLeaseOwner = Boolean(
+        task.lease_owner_agent_id && callerAgentId && callerAgentId === task.lease_owner_agent_id
+      );
+      const leaseExpiresMs = task.lease_expires_at ? Date.parse(task.lease_expires_at) : Number.NaN;
+      const isLeaseExpired = Boolean(task.lease_expires_at && (Number.isNaN(leaseExpiresMs) || leaseExpiresMs <= now.getTime()));
+
       // Authorization guard for task cancellation across all cancel transitions
       if (toStatus === "cancelled") {
-        const isAuthorizedToCancel =
-          actorId === "founder-01" ||
-          actorId === "flash-01" ||
-          actorId === "chatgpt-01" ||
-          task.created_by_principal_id === actorId ||
-          input.ctx?.scopes.has("tasks:manage") ||
-          input.ctx?.scopes.has("*");
-        if (!isAuthorizedToCancel) {
+        if (!isExecutive && !isCreator) {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' is not authorized to cancel this task`);
         }
       }
@@ -715,6 +789,9 @@ export class ProjectTaskService {
       // Match and validate across TR-01 to TR-26
       if (fromStatus === "draft" && toStatus === "queued") {
         // TR-01
+        if (!isExecutive && !isCreator) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' is not authorized to queue draft task`);
+        }
         if (requiresInitialFounderApproval(task)) {
           throw new Error(
             "TASK_INVALID_STATE_TRANSITION: Critical, P0, or Argon task in draft must go to waiting_approval via TR-03"
@@ -726,19 +803,29 @@ export class ProjectTaskService {
         newDispatchStatus = "not_dispatched";
       } else if (fromStatus === "draft" && toStatus === "waiting_approval") {
         // TR-03
+        if (!isExecutive && !isCreator) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' is not authorized to submit draft task for approval`);
+        }
         newDispatchStatus = "approval_pending";
       } else if (fromStatus === "waiting_approval" && toStatus === "queued") {
         // TR-04
-        if (isArgon || isCritical) {
-          this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
-          newApprovalRequestId = input.approvalId || null;
+        if (!isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only executive leadership can approve queued dispatch from waiting_approval`);
         }
+        if (isAssigned && !isFounder) {
+          throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Assigned agent cannot self-approve waiting_approval transition");
+        }
+        this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
+        newApprovalRequestId = input.approvalId!;
         newDispatchStatus = "handoff_ready";
       } else if (fromStatus === "waiting_approval" && toStatus === "cancelled") {
         // TR-05
         newDispatchStatus = "not_dispatched";
       } else if (fromStatus === "queued" && toStatus === "assigned") {
         // TR-06
+        if (!isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only executive leadership can assign queued tasks`);
+        }
         if (!task.assigned_agent_id) {
           throw new Error("TASK_INVALID_STATE_TRANSITION: Cannot assign task without assigned_agent_id");
         }
@@ -752,6 +839,15 @@ export class ProjectTaskService {
           }
           newDispatchStatus = "awaiting_operator_delivery";
         } else {
+          if (isCritical && !task.approval_request_id && !input.approvalId) {
+            throw new Error(
+              `CRITICAL_TASK_APPROVAL_REQUIRED: Assigning critical task '${task.task_id}' requires explicit Founder approval`
+            );
+          }
+          if (isCritical && input.approvalId) {
+            this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
+            newApprovalRequestId = input.approvalId;
+          }
           newDispatchStatus = "queued_for_client_pull";
         }
       } else if (fromStatus === "queued" && toStatus === "cancelled") {
@@ -759,6 +855,9 @@ export class ProjectTaskService {
         newDispatchStatus = "not_dispatched";
       } else if (fromStatus === "assigned" && toStatus === "queued") {
         // TR-08
+        if (!isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only executive leadership can re-queue an assigned task`);
+        }
         if (isArgon && task.approval_request_id) {
           throw new Error("TASK_INVALID_STATE_TRANSITION: Cannot auto-reassign Argon task after approval");
         }
@@ -771,9 +870,12 @@ export class ProjectTaskService {
         newLeaseExpiresAt = null;
       } else if (fromStatus === "assigned" && toStatus === "claimed") {
         // TR-10
-        const claimer = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && task.assigned_agent_id !== claimer && actorId !== "founder-01") {
-          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can claim task`);
+        if (task.assigned_agent_id) {
+          if (!isAssigned && !isFounder) {
+            throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can claim task`);
+          }
+        } else if (!callerAgentId) {
+          throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: An agent identity is required to claim an unassigned task");
         }
         if (isArgon) {
           if (!task.approval_request_id && !input.approvalId) {
@@ -783,20 +885,23 @@ export class ProjectTaskService {
             this.verifyAndConsumeArgonApproval(db, task.task_id, task.assigned_agent_id, input.approvalId);
             newApprovalRequestId = input.approvalId;
           }
+        } else if (isCritical && !task.approval_request_id && !input.approvalId) {
+          throw new Error(
+            `CRITICAL_TASK_APPROVAL_REQUIRED: Claiming critical task '${task.task_id}' requires explicit Founder approval`
+          );
         }
-        newLeaseOwner = task.assigned_agent_id || claimer;
+        newLeaseOwner = task.assigned_agent_id || callerAgentId;
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
       } else if (fromStatus === "claimed" && toStatus === "in_progress") {
         // TR-11
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01") {
+        if (task.assigned_agent_id && !isAssigned && !isFounder) {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can move task to in_progress`);
         }
-        if (task.lease_owner_agent_id && task.lease_owner_agent_id !== callerAgentId && actorId !== "founder-01") {
-          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId}'`);
+        if (task.lease_owner_agent_id && !isLeaseOwner && !isFounder) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId || actorId}'`);
         }
-        if (task.lease_expires_at && new Date(task.lease_expires_at) <= now) {
-          throw new Error("TASK_LEASE_EXPIRED: Cannot move expired lease to in_progress");
+        if (!task.lease_expires_at || isLeaseExpired) {
+          throw new Error("TASK_LEASE_EXPIRED: Cannot move missing or expired lease to in_progress");
         }
         if (isArgon || isCritical) {
           if (!task.approval_request_id && !input.approvalId) {
@@ -815,44 +920,61 @@ export class ProjectTaskService {
           newDispatchStatus = "external_running";
         }
       } else if (fromStatus === "claimed" && toStatus === "assigned") {
-        // TR-12: Stale lease recovery for local agents
+        // TR-12: Stale lease recovery or explicit release for local agents
         if (isArgon) {
           throw new Error("TASK_INVALID_STATE_TRANSITION: Argon tasks cannot revert to assigned on lease expiry; must go to blocked (TR-15)");
+        }
+        const canReleaseClaim = isLeaseOwner || isExecutive || (isLeaseExpired && isAssigned);
+        if (!canReleaseClaim) {
+          throw new Error(
+            `ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' cannot release active task lease held by '${task.lease_owner_agent_id}'`
+          );
+        }
+        newLeaseOwner = null;
+        newLeaseExpiresAt = null;
+      } else if ((fromStatus === "claimed" || fromStatus === "in_progress") && toStatus === "blocked" && isArgon) {
+        // TR-15: Argon lease expiry or block -> blocked (evaluated before TR-13 so both states reach TR-15)
+        if (!isExecutive && !isAssigned && !isLeaseOwner) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' cannot block Argon task`);
         }
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
       } else if (fromStatus === "in_progress" && toStatus === "blocked") {
         // TR-13
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01" && actorId !== "flash-01") {
+        if (task.assigned_agent_id && !isAssigned && !isExecutive) {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' or leadership can block task`);
         }
-        if (task.lease_owner_agent_id && task.lease_owner_agent_id !== callerAgentId && actorId !== "founder-01" && actorId !== "flash-01") {
-          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId}'`);
+        if (task.lease_owner_agent_id && !isLeaseOwner && !isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId || actorId}'`);
         }
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
       } else if (fromStatus === "in_progress" && toStatus === "waiting_approval") {
         // TR-14
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01" && actorId !== "flash-01") {
+        if (task.assigned_agent_id && !isAssigned && !isExecutive) {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' or leadership can submit task for approval`);
         }
-        if (task.lease_owner_agent_id && task.lease_owner_agent_id !== callerAgentId && actorId !== "founder-01" && actorId !== "flash-01") {
-          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId}'`);
+        if (task.lease_owner_agent_id && !isLeaseOwner && !isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId || actorId}'`);
         }
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
         newDispatchStatus = "approval_pending";
-      } else if ((fromStatus === "claimed" || fromStatus === "in_progress") && toStatus === "blocked" && isArgon) {
-        // TR-15: Argon lease expiry -> blocked
-        newLeaseOwner = null;
-        newLeaseExpiresAt = null;
       } else if (fromStatus === "blocked" && toStatus === "in_progress") {
         // TR-16
+        if (!task.assigned_agent_id) {
+          throw new Error("TASK_INVALID_STATE_TRANSITION: Cannot resume blocked task without assigned_agent_id");
+        }
+        if (isArgon) {
+          if (!isExecutive) {
+            throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only leadership can unblock Argon task '${task.task_id}'`);
+          }
+        } else if (!isAssigned && !isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' or leadership can unblock task`);
+        }
         if (isArgon || isCritical) {
           this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
-          newApprovalRequestId = input.approvalId || null;
+          newApprovalRequestId = input.approvalId!;
           if (isArgon) newDispatchStatus = "external_running";
         }
         newLeaseOwner = task.assigned_agent_id;
@@ -861,23 +983,35 @@ export class ProjectTaskService {
         // TR-17
       } else if (fromStatus === "waiting_approval" && toStatus === "in_progress") {
         // TR-18
-        if (isArgon || isCritical) {
-          this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
-          newApprovalRequestId = input.approvalId || null;
-          if (isArgon) newDispatchStatus = "external_running";
+        if (!task.assigned_agent_id) {
+          throw new Error("TASK_INVALID_STATE_TRANSITION: Cannot move waiting_approval task to in_progress without assigned_agent_id");
         }
+        if (!isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only executive leadership can resume task directly from waiting_approval`);
+        }
+        if (isAssigned && !isFounder) {
+          throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Assigned agent cannot self-approve waiting_approval transition");
+        }
+        this.verifyAndConsumeTaskApproval(db, task, input.approvalId);
+        newApprovalRequestId = input.approvalId!;
+        if (isArgon) newDispatchStatus = "external_running";
         newLeaseOwner = task.assigned_agent_id;
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
       } else if (fromStatus === "in_progress" && toStatus === "failed") {
         // TR-19
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01" && actorId !== "flash-01") {
+        if (task.assigned_agent_id && !isAssigned && !isExecutive) {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' or leadership can mark task as failed`);
+        }
+        if (task.lease_owner_agent_id && !isLeaseOwner && !isExecutive) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId || actorId}'`);
         }
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
       } else if (fromStatus === "failed" && toStatus === "queued") {
         // TR-20: Retry
+        if (!isExecutive && !isCreator) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' is not authorized to retry failed task`);
+        }
         if (isArgon) {
           throw new Error("TASK_INVALID_STATE_TRANSITION: Argon tasks cannot auto-retry. Create follow-up task with Founder approval");
         }
@@ -890,67 +1024,60 @@ export class ProjectTaskService {
         // TR-21
       } else if (fromStatus === "in_progress" && toStatus === "review_required") {
         // TR-22
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01") {
+        if (task.assigned_agent_id && !isAssigned && !isFounder) {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can submit task result for review`);
         }
-        if (task.lease_owner_agent_id && task.lease_owner_agent_id !== callerAgentId && actorId !== "founder-01") {
-          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId}'`);
+        if (task.lease_owner_agent_id && !isLeaseOwner && !isFounder) {
+          throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId || actorId}'`);
+        }
+        if (isLeaseExpired && !isFounder) {
+          throw new Error("TASK_LEASE_EXPIRED: Cannot submit expired lease for review");
         }
         newDispatchStatus = "result_received";
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
       } else if (fromStatus === "review_required" && toStatus === "rework") {
         // TR-23
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && (task.assigned_agent_id === actorId || task.assigned_agent_id === callerAgentId) && actorId !== "founder-01") {
+        if (isAssigned && !isFounder) {
           throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Agent cannot review own task for rework");
         }
-        const isExecutive = actorId === "founder-01" || actorId === "flash-01" || actorId === "flash-02" || actorId === "chatgpt-01";
         if (task.reviewer_agent_id) {
-          const isDesignatedReviewer = callerAgentId === task.reviewer_agent_id || actorId === task.reviewer_agent_id;
-          if (!isDesignatedReviewer && !isExecutive) {
+          const isDesignatedReviewer = callerAgentId === task.reviewer_agent_id;
+          if (!isDesignatedReviewer && !isReviewerLead) {
             throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only designated reviewer '${task.reviewer_agent_id}' or executive leadership can request rework`);
           }
-        } else {
-          if (!isExecutive) {
-            throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Tasks without designated reviewer can only be reviewed for rework by executive leadership");
-          }
+        } else if (!isReviewerLead) {
+          throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Tasks without designated reviewer can only be reviewed for rework by executive leadership");
         }
       } else if (fromStatus === "rework" && toStatus === "in_progress") {
         // TR-24
         if (isArgon) {
           throw new Error("TASK_INVALID_STATE_TRANSITION: Argon tasks cannot be re-invoked for rework in same task");
         }
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && task.assigned_agent_id !== callerAgentId && actorId !== "founder-01") {
+        if (task.assigned_agent_id && !isAssigned && !isFounder) {
           throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only assigned agent '${task.assigned_agent_id}' can resume rework in_progress`);
         }
         newLeaseOwner = task.assigned_agent_id;
         newLeaseExpiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
       } else if (fromStatus === "review_required" && toStatus === "completed") {
         // TR-25
-        const callerAgentId = input.ctx?.agentId || actorId;
-        if (task.assigned_agent_id && (task.assigned_agent_id === actorId || task.assigned_agent_id === callerAgentId) && actorId !== "founder-01") {
+        if (isAssigned && !isFounder) {
           throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Agent cannot approve own task as completed (Separation of Duties)");
         }
-        const isExecutive = actorId === "founder-01" || actorId === "flash-01" || actorId === "flash-02" || actorId === "chatgpt-01";
         if (task.reviewer_agent_id) {
-          const isDesignatedReviewer = callerAgentId === task.reviewer_agent_id || actorId === task.reviewer_agent_id;
-          if (!isDesignatedReviewer && !isExecutive) {
+          const isDesignatedReviewer = callerAgentId === task.reviewer_agent_id;
+          if (!isDesignatedReviewer && !isReviewerLead) {
             throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only designated reviewer '${task.reviewer_agent_id}' or executive leadership can approve task completion`);
           }
-        } else {
-          if (!isExecutive) {
-            throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Tasks without designated reviewer can only be approved by executive leadership");
-          }
+        } else if (!isReviewerLead) {
+          throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Tasks without designated reviewer can only be approved by executive leadership");
         }
         newCompletedAt = nowIso;
         newLeaseOwner = null;
         newLeaseExpiresAt = null;
       } else if ((fromStatus === "completed" || fromStatus === "cancelled") && toStatus === "archived") {
         // TR-26
-        if (actorId !== "founder-01" && actorId !== "flash-01") {
+        if (!isArchiveLead) {
           throw new Error("PERMISSION_DENIED: Only executive leadership (founder-01 or flash-01) can archive tasks");
         }
       } else {

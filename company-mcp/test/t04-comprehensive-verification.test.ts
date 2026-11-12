@@ -40,14 +40,42 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
     assert.equal(searchRes[0].doc_id, "doc_01");
 
     // Test private memory isolation
+    const flash1Ctx = {
+      authenticated: true,
+      principalId: "flash-01",
+      principalType: "agent",
+      displayName: "flash-01",
+      agentId: "flash-01",
+      scopes: new Set(["tasks:review", "tasks:transition", "tasks:manage", "memory:read", "memory:write"])
+    } as any;
+
+    const flash2Ctx = {
+      authenticated: true,
+      principalId: "flash-02",
+      principalType: "agent",
+      displayName: "flash-02",
+      agentId: "flash-02",
+      scopes: new Set(["tasks:review", "tasks:transition", "memory:read", "memory:write"])
+    } as any;
+
+    const chatgptCtx = {
+      authenticated: true,
+      principalId: "chatgpt-01",
+      principalType: "agent",
+      displayName: "chatgpt-01",
+      agentId: "chatgpt-01",
+      scopes: new Set(["tasks:manage", "tasks:transition"])
+    } as any;
+
     kmService.writeMemory({
+      ctx: flash1Ctx,
       memoryId: "mem_flash1_01",
       scope: "agent_private",
       ownerAgentId: "flash-01",
       content: "Flash 1 secret notes"
     });
 
-    const flash2Memories = kmService.searchMemory({ callerAgentId: "flash-02" });
+    const flash2Memories = kmService.searchMemory({ ctx: flash2Ctx, callerAgentId: "flash-02" });
     assert.equal(
       flash2Memories.some((m) => m.memory_id === "mem_flash1_01"),
       false,
@@ -60,6 +88,7 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
 
     // Regular task
     const task1 = ptService.createTask({
+      ctx: chatgptCtx,
       taskId: "task_100",
       projectId: "proj_01",
       title: "Develop feature",
@@ -70,6 +99,7 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
 
     // Argon task -> strictly starts in waiting_approval with max_retries = 0
     const argonTask = ptService.createTask({
+      ctx: chatgptCtx,
       taskId: "task_argon_01",
       projectId: "proj_01",
       title: "Audit system",
@@ -83,24 +113,6 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
     connManager.withWriteTransaction((db) => {
       db.prepare("UPDATE tasks SET execution_status = 'review_required' WHERE task_id = 'task_100'").run();
     });
-
-    const flash2Ctx = {
-      authenticated: true,
-      principalId: "flash-02",
-      principalType: "agent",
-      displayName: "flash-02",
-      agentId: "flash-02",
-      scopes: new Set(["tasks:review", "tasks:transition"])
-    } as any;
-
-    const flash1Ctx = {
-      authenticated: true,
-      principalId: "flash-01",
-      principalType: "agent",
-      displayName: "flash-01",
-      agentId: "flash-01",
-      scopes: new Set(["tasks:review", "tasks:transition"])
-    } as any;
 
     assert.throws(
       () => ptService.reviewTask({ ctx: flash2Ctx, taskId: "task_100", decision: "completed" }),

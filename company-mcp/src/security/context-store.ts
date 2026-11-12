@@ -32,3 +32,73 @@ export function requireRequestContext(): PrincipalContext {
   }
   return ctx;
 }
+
+export function assertAuthenticatedContext(
+  ctx: PrincipalContext | null | undefined,
+  operation: string,
+  options?: { allowedPrincipalTypes?: Array<"human" | "agent" | "service"> }
+): asserts ctx is PrincipalContext {
+  if (!ctx || ctx.authenticated !== true) {
+    throw new Error(`AUTHENTICATION_REQUIRED: ${operation} requires an authenticated PrincipalContext (ctx.authenticated must be true)`);
+  }
+  if (typeof ctx.principalId !== "string" || ctx.principalId.trim().length === 0) {
+    throw new Error(`AUTHENTICATION_REQUIRED: ${operation} requires an authenticated PrincipalContext (valid principalId is required)`);
+  }
+  if (ctx.principalType !== "human" && ctx.principalType !== "agent" && ctx.principalType !== "service") {
+    throw new Error(`AUTHENTICATION_REQUIRED: ${operation} requires an authenticated PrincipalContext (valid principalType 'human' | 'agent' | 'service' is required)`);
+  }
+  if (options?.allowedPrincipalTypes && !options.allowedPrincipalTypes.includes(ctx.principalType)) {
+    throw new Error(
+      `PERMISSION_DENIED: ${operation} restricted to principal types [${options.allowedPrincipalTypes.join(", ")}] (got '${ctx.principalType}')`
+    );
+  }
+}
+
+export function isFounderHuman(ctx: PrincipalContext | null | undefined): boolean {
+  return Boolean(
+    ctx &&
+      ctx.authenticated === true &&
+      ctx.principalType === "human" &&
+      ctx.principalId === "founder-01" &&
+      ctx.agentId === null
+  );
+}
+
+export function isExecutiveLeadership(ctx: PrincipalContext | null | undefined): boolean {
+  if (!ctx || ctx.authenticated !== true) return false;
+  if (isFounderHuman(ctx)) return true;
+  return (
+    ctx.principalType === "agent" &&
+    ctx.agentId === ctx.principalId &&
+    (ctx.principalId === "flash-01" || ctx.principalId === "chatgpt-01")
+  );
+}
+
+export function isReviewLeadership(ctx: PrincipalContext | null | undefined): boolean {
+  if (isExecutiveLeadership(ctx)) return true;
+  return Boolean(
+    ctx &&
+      ctx.authenticated === true &&
+      ctx.principalType === "agent" &&
+      ctx.agentId === ctx.principalId &&
+      ctx.principalId === "flash-02"
+  );
+}
+
+export function isArchiveLeadership(ctx: PrincipalContext | null | undefined): boolean {
+  if (isFounderHuman(ctx)) return true;
+  return Boolean(
+    ctx &&
+      ctx.authenticated === true &&
+      ctx.principalType === "agent" &&
+      ctx.agentId === ctx.principalId &&
+      ctx.principalId === "flash-01"
+  );
+}
+
+export function hasPrincipalScope(ctx: PrincipalContext | null | undefined, scope: string): boolean {
+  if (!ctx || ctx.authenticated !== true || !ctx.scopes) return false;
+  const scopesLike = ctx.scopes as unknown as { has?: (s: string) => boolean };
+  if (typeof scopesLike.has !== "function") return false;
+  return scopesLike.has("*") || scopesLike.has(scope);
+}

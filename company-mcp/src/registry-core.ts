@@ -14,7 +14,7 @@ import { OrchestrationService } from "./services/orchestration-service.js";
 import { KnowledgeMemoryService } from "./services/knowledge-memory-service.js";
 import { ObservabilityQuotaService } from "./services/observability-quota-service.js";
 import { PUBLIC_TOOL_ALLOWLIST } from "./security/http-security-pipeline.js";
-import { getRequestContext } from "./security/context-store.js";
+import { getRequestContext, hasPrincipalScope, isFounderHuman, requireRequestContext } from "./security/context-store.js";
 import { CompanyKnowledgeMemoryOpsInputSchema } from "./contracts/mcp-tool-schemas.js";
 import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from "./contracts/query-limits.js";
 
@@ -126,7 +126,7 @@ export function formatAgent(row: AgentRow) {
   };
 }
 
-// Legacy 5-tool registration for base server compatibility
+// Legacy 5-tool registration for base server compatibility (authenticated fail-closed)
 export function registerCompanyTools(server: McpServer): void {
   // M01
   server.registerTool(
@@ -136,18 +136,21 @@ export function registerCompanyTools(server: McpServer): void {
       description: "Check AICO MCP connectivity and version.",
       inputSchema: z.object({ message: z.string().default("Hello AICO") })
     },
-    async ({ message }) => ({
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          success: true,
-          server: SERVER_NAME,
-          version: "2.2.1",
-          received: message,
-          timestamp: new Date().toISOString()
-        }, null, 2)
-      }]
-    })
+    async ({ message }) => {
+      requireRequestContext();
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            server: SERVER_NAME,
+            version: "2.2.1",
+            received: message,
+            timestamp: new Date().toISOString()
+          }, null, 2)
+        }]
+      };
+    }
   );
 
   // M02
@@ -159,6 +162,10 @@ export function registerCompanyTools(server: McpServer): void {
       inputSchema: z.object({})
     },
     async () => {
+      const ctx = requireRequestContext();
+      if (!hasPrincipalScope(ctx, "company:read")) {
+        throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
+      }
       const agents = readAgents();
       const pools = readQuotaPools();
       return {
@@ -189,6 +196,10 @@ export function registerCompanyTools(server: McpServer): void {
       inputSchema: z.object({})
     },
     async () => {
+      const ctx = requireRequestContext();
+      if (!hasPrincipalScope(ctx, "company:read")) {
+        throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
+      }
       const rows = readAgents();
       return {
         content: [{
@@ -214,6 +225,10 @@ export function registerCompanyTools(server: McpServer): void {
       })
     },
     async ({ agent_id }) => {
+      const ctx = requireRequestContext();
+      if (!hasPrincipalScope(ctx, "company:read")) {
+        throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
+      }
       const rows = readAgents(agent_id);
       if (rows.length === 0) {
         return {
@@ -242,6 +257,10 @@ export function registerCompanyTools(server: McpServer): void {
       inputSchema: z.object({})
     },
     async () => {
+      const ctx = requireRequestContext();
+      if (!hasPrincipalScope(ctx, "company:read")) {
+        throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
+      }
       const pools = readQuotaPools();
       return {
         content: [{
@@ -292,17 +311,17 @@ export const TOOL_REQUIRED_SCOPES: Record<string, (string | string[])[]> = {
   // M16
   company_decide_approval: ["approvals:decide"],
   // M17
-  company_get_workspace: ["workspace:read:self"],
+  company_get_workspace: [["workspace:read:self", "workspace:read:any"]],
   // M18
-  company_list_workspace_files: ["workspace:read:self"],
+  company_list_workspace_files: [["workspace:read:self", "workspace:read:any"]],
   // M19
-  company_read_workspace_file: ["workspace:read:self"],
+  company_read_workspace_file: [["workspace:read:self", "workspace:read:any"]],
   // M20
   company_write_workspace_file: ["workspace:write:self"],
   // M21
   company_share_workspace_artifact: [["workspace:write:self", "workspace:share"]],
   // M22
-  company_get_workspace_activity: [["workspace:audit:read", "workspace:audit", "workspace:read:any"]],
+  company_get_workspace_activity: [["workspace:audit:read", "workspace:audit"]],
   // M23
   company_git_sync_branch: ["git:mediate"],
   // M24
@@ -830,7 +849,10 @@ export function registerAllV221Tools(
     },
     async ({ target_agent_id }: { target_agent_id?: string }, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const agentId = target_agent_id || ctx.agentId || "flash-01";
+      const agentId = target_agent_id || ctx.agentId;
+      if (!agentId) {
+        throw new Error("VALIDATION_ERROR: target_agent_id is required when caller has no bound agent workspace");
+      }
       const meta = workspaceService.getWorkspaceMeta(agentId, ctx);
       return {
         content: [{ type: "text", text: JSON.stringify({ success: true, ...meta }, null, 2) }]
@@ -867,7 +889,10 @@ export function registerAllV221Tools(
       extra: any
     ) => {
       const ctx = resolvePrincipal(extra);
-      const agentId = target_agent_id || ctx.agentId || "flash-01";
+      const agentId = target_agent_id || ctx.agentId;
+      if (!agentId) {
+        throw new Error("VALIDATION_ERROR: target_agent_id is required when caller has no bound agent workspace");
+      }
       const listed = workspaceService.listFiles({
         agentId,
         relativeDir: subpath || "",
@@ -903,7 +928,10 @@ export function registerAllV221Tools(
     },
     async ({ relative_path, target_agent_id }: { relative_path: string; target_agent_id?: string }, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const agentId = target_agent_id || ctx.agentId || "flash-01";
+      const agentId = target_agent_id || ctx.agentId;
+      if (!agentId) {
+        throw new Error("VALIDATION_ERROR: target_agent_id is required when caller has no bound agent workspace");
+      }
       const res = workspaceService.readArtifact(agentId, relative_path, ctx);
       return { content: [{ type: "text", text: JSON.stringify({ success: true, ...res }, null, 2) }] };
     }
@@ -925,7 +953,10 @@ export function registerAllV221Tools(
     },
     async ({ relative_path, content, target_agent_id, overwrite }: { relative_path: string; content: string; target_agent_id?: string; overwrite: boolean }, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const agentId = target_agent_id || ctx.agentId || "flash-01";
+      const agentId = target_agent_id || ctx.agentId;
+      if (!agentId) {
+        throw new Error("VALIDATION_ERROR: target_agent_id is required when caller has no bound agent workspace");
+      }
       const res = workspaceService.writeArtifact({ agentId, relativePath: relative_path, content, overwrite, ctx });
       return { content: [{ type: "text", text: JSON.stringify({ success: true, ...res }, null, 2) }] };
     }
@@ -947,7 +978,10 @@ export function registerAllV221Tools(
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const fromAgentId = ctx.agentId || "flash-01";
+      const fromAgentId = ctx.agentId;
+      if (!fromAgentId) {
+        throw new Error("VALIDATION_ERROR: Source workspace agent identity required when caller has no bound agent_id");
+      }
       const res = workspaceService.shareArtifact({
         fromAgentId,
         toAgentId: args.to_agent_id,
@@ -973,7 +1007,7 @@ export function registerAllV221Tools(
     },
     async ({ agent_id, limit }: { agent_id?: string; limit: number }, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const activities = workspaceService.listActivities({ agentId: agent_id, limit });
+      const activities = workspaceService.listActivities({ agentId: agent_id, limit }, ctx);
       return {
         content: [{ type: "text", text: JSON.stringify({ success: true, count: activities.length, activities }, null, 2) }]
       };
@@ -994,7 +1028,10 @@ export function registerAllV221Tools(
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const agentId = ctx.agentId || "flash-01";
+      const agentId = ctx.agentId;
+      if (!agentId) {
+        throw new Error("VALIDATION_ERROR: Git branch sync requires a bound agent identity");
+      }
       const res = gitService.syncAgentBranch({
         ctx,
         agentId,
@@ -1228,7 +1265,8 @@ export function registerAllV221Tools(
         expectedVersion: args.expected_version,
         toStatus: args.to_status,
         reason: args.reason,
-        approvalId: args.approval_id
+        approvalId: args.approval_id,
+        allowReviewAndAdminTransitions: !isPublic
       });
 
       obsService.appendAuditEvent({
@@ -1456,7 +1494,6 @@ export function registerAllV221Tools(
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
-      const agentId = ctx.agentId || "flash-01";
 
       if (isPublic) {
         const forbiddenPublicOps = [
@@ -1496,29 +1533,30 @@ export function registerAllV221Tools(
         case "propose_knowledge_change": {
           identityService.assertAuthorized(ctx, [["knowledge:propose", "knowledge:write", "company:write"]]);
           const proposal = knowService.proposeKnowledgeChange({
+            ctx,
             docId: args.doc_id,
             proposedMarkdown: args.proposed_markdown,
-            rationale: args.rationale,
-            proposerId: ctx.principalId
+            rationale: args.rationale
           });
           return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "propose_knowledge_change", ...proposal }, null, 2) }] };
         }
         case "approve_knowledge_proposal": {
           identityService.assertAuthorized(ctx, [["knowledge:approve", "approvals:decide"]]);
-          if (ctx.principalId !== "founder-01" && ctx.principalId !== "flash-01") {
+          if (!isFounderHuman(ctx) && !(ctx.principalType === "agent" && ctx.agentId === "flash-01" && ctx.principalId === "flash-01")) {
             throw new Error("PERMISSION_DENIED: Only Founder or CTO can approve knowledge proposals");
           }
           const app = knowService.approveKnowledgeProposal({
+            ctx,
             proposalId: args.proposal_id,
-            decision: args.decision,
-            deciderId: ctx.principalId
+            decision: args.decision
           });
           return { content: [{ type: "text", text: JSON.stringify({ success: true, operation: "approve_knowledge_proposal", ...app }, null, 2) }] };
         }
         case "search_memory": {
           identityService.assertAuthorized(ctx, [["memory:read", "company:read"]]);
           const results = knowService.searchMemory({
-            callerAgentId: agentId,
+            ctx,
+            callerAgentId: ctx.agentId ?? undefined,
             query: args.query,
             scope: args.scope,
             projectId: args.project_id,
@@ -1533,7 +1571,9 @@ export function registerAllV221Tools(
             throw new Error("INVALID_ARGUMENT: write_memory requires 'content'");
           }
           const res = knowService.writeMemory({
-            callerAgentId: agentId,
+            ctx,
+            callerAgentId: ctx.agentId ?? undefined,
+            ownerAgentId: args.owner_agent_id,
             scope: args.scope || "agent_private",
             title: args.title,
             content: args.content,
@@ -1549,9 +1589,12 @@ export function registerAllV221Tools(
         }
         case "record_model_usage": {
           identityService.assertAuthorized(ctx, [["quota:record", "observability:write", "observability:admin"]]);
+          if (!ctx.agentId) {
+            throw new Error("VALIDATION_ERROR: record_model_usage requires an authenticated caller with a bound agent_id");
+          }
           obsService.recordModelUsage({
             ctx,
-            agentId,
+            agentId: ctx.agentId,
             taskId: args.task_id,
             inputTokens: args.input_tokens || args.prompt_tokens || 0,
             outputTokens: args.output_tokens || args.completion_tokens || 0,
