@@ -74,6 +74,9 @@ export class ApprovalService {
     expires_at: string;
   } {
     assertAuthenticatedContext(params.ctx, "createApprovalRequest", { allowedPrincipalTypes: ["human", "agent"] });
+    if (params.ctx.principalType !== "human" && params.ctx.principalType !== "agent") {
+      throw new Error("AUTHENTICATION_REQUIRED: createApprovalRequest requires human or agent principal");
+    }
     const actionType = params.actionType || params.action_type || "architecture_review";
     const requestedById = params.ctx.principalId;
     const requestedByType: "human" | "agent" = params.ctx.principalType;

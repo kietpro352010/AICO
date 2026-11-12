@@ -857,7 +857,7 @@ test("T20: P0 Security Remediation Suite (P0-01 to P0-04)", async (t) => {
     assert.throws(
       () =>
         obsService.appendAuditEvent({
-          eventCategory: "security",
+          eventCategory: "policy",
           actionName: "unattributed",
           targetResource: "test",
           outcome: "denied"
