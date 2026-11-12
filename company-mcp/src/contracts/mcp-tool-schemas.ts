@@ -483,8 +483,9 @@ export const TaskHeartbeatResultSchema = z.object({
 export const CompanyTransitionTaskInputSchema = z.object({
   task_id: z.string().min(1),
   to_status: z.string().min(1),
-  expected_version: z.number(),
+  expected_version: z.number().int().min(1),
   reason: z.string().optional(),
+  approval_id: z.string().optional(),
   approval_request_id: z.string().optional()
 });
 
@@ -498,9 +499,9 @@ export const TaskTransitionResultSchema = z.object({
 // M32: company_submit_task_result
 export const CompanySubmitTaskResultInputSchema = z.object({
   task_id: z.string().min(1),
-  expected_version: z.number(),
-  summary: z.string().min(1),
-  output_artifact_ids: z.array(z.string()).optional()
+  expected_version: z.number().int().min(1),
+  verification_evidence: z.string().min(1),
+  output_artifact_ids: z.array(z.string()).min(1)
 });
 
 export const TaskSubmitResultSchema = z.object({

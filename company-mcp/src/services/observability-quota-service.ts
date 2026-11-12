@@ -3,7 +3,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ConnectionManager } from "../db/connection-manager.js";
-import type { PrincipalContext } from "../security/context-store.js";
+import { assertAuthenticatedContext, isFounderHuman, type PrincipalContext } from "../security/context-store.js";
 
 export interface AppendAuditEventInput {
   requestId?: string;
@@ -123,8 +123,22 @@ export class ObservabilityQuotaService {
     const requestId = input.ctx?.requestId || input.requestId || "req_audit_" + crypto.randomBytes(6).toString("hex");
     const eventId = "evt_" + crypto.randomBytes(12).toString("hex");
     const sourceGateway = input.ctx?.sourceGateway || input.sourceGateway || "system";
-    const principalId = input.ctx?.principalId || input.principalId || input.actorId || "system";
-    const principalType = input.ctx?.principalType || input.principalType || (principalId === "founder-01" ? "human" : "agent");
+
+    let principalId: string;
+    let principalType: "human" | "agent" | "service" | "unauthenticated";
+    if (input.ctx && input.ctx.authenticated) {
+      principalId = input.ctx.principalId;
+      principalType = input.ctx.principalType;
+    } else if (input.principalType === "unauthenticated") {
+      principalId = input.principalId || "anonymous";
+      principalType = "unauthenticated";
+    } else if (input.principalId || input.actorId) {
+      principalId = (input.principalId || input.actorId)!;
+      principalType = input.principalType || (principalId === "founder-01" ? "human" : "agent");
+    } else {
+      throw new Error("AUTHENTICATION_REQUIRED: appendAuditEvent requires authenticated PrincipalContext or explicit actor attribution");
+    }
+
     const credentialId = input.ctx?.credentialId || input.credentialId || null;
     const actionName = input.actionName || input.action || "general_action";
     const targetResource = input.targetResource || (input.resourceType ? `${input.resourceType}:${input.resourceId || ""}` : "default_resource");
@@ -584,8 +598,13 @@ export class ObservabilityQuotaService {
     outcome: "succeeded" | "failed" | "denied";
     errorCode?: string;
   }): void {
-    const agentId = params.ctx?.agentId || "founder-01";
-    const requestId = params.ctx?.requestId || "req_mcp";
+    // Only bound agent identities satisfy agent_usage_events.agent_id FK;
+    // human and unauthenticated requests are recorded in audit_events without forging 'founder-01'.
+    if (!params.ctx || !params.ctx.authenticated || params.ctx.principalType !== "agent" || !params.ctx.agentId) {
+      return;
+    }
+    const agentId = params.ctx.agentId;
+    const requestId = params.ctx.requestId || "req_mcp";
     const nowIso = new Date().toISOString();
 
     try {
@@ -612,6 +631,16 @@ export class ObservabilityQuotaService {
     cachedTokens?: number;
     source?: "provider_api" | "operator_reported" | "client_estimated" | "manual";
   }): void {
+    assertAuthenticatedContext(params.ctx, "recordModelUsage", { allowedPrincipalTypes: ["human", "agent"] });
+    if (!params.agentId || typeof params.agentId !== "string" || params.agentId.trim().length === 0) {
+      throw new Error("VALIDATION_ERROR: recordModelUsage requires a valid agentId");
+    }
+    if (!isFounderHuman(params.ctx) && params.ctx.agentId !== params.agentId) {
+      throw new Error(
+        `PERMISSION_DENIED: Principal '${params.ctx.principalId}' cannot record model usage for agent '${params.agentId}'`
+      );
+    }
+
     const nowIso = new Date().toISOString();
     this.connManager.withWriteTransaction((db) => {
       db.prepare(`
@@ -621,7 +650,7 @@ export class ObservabilityQuotaService {
           source, confidence, recorded_at
         ) VALUES (?, ?, ?, ?, 'model_inference_usage', 'inference', 1, ?, ?, ?, ?, 'verified', ?)
       `).run(
-        params.ctx?.requestId || "req_model",
+        params.ctx!.requestId || "req_model",
         params.taskId || null,
         params.agentId,
         params.quotaPoolId || null,

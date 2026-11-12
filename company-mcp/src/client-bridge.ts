@@ -85,7 +85,8 @@ export async function forwardJsonRpc(
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(bodyStr).toString(),
-      "Authorization": `Bearer ${token}`
+      "Authorization": `Bearer ${token}`,
+      "Connection": "close"
     };
 
     const req = http.request(
@@ -95,6 +96,7 @@ export async function forwardJsonRpc(
         path: url.pathname,
         method: "POST",
         headers,
+        agent: false,
         timeout: timeoutMs
       },
       (res) => {

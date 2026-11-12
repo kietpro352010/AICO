@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { isAbsolute, normalize, resolve, sep } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { normalize, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AgentIdentity } from "./agent-identity-service.js";
+import { resolveCanonicalFilesystemPath } from "./db/migration-runner.js";
+import { isPathWithinBoundary, resolveContainedAbsoluteRootPath } from "./security/path-containment.js";
 
 export type WorkspaceInfo = {
   workspace_id: string;
@@ -92,46 +94,33 @@ export class WorkspaceManager {
       return { safePath: "", isAllowed: false, reason: `Workspace is ${callerWs.workspace_status}` };
     }
 
-    // 1. Chặn absolute paths, drive letters (e.g. C:, D:) và UNC paths (\\)
-    if (isAbsolute(targetRelativePath) || /^[a-zA-Z]:/.test(targetRelativePath) || targetRelativePath.startsWith("\\\\")) {
-      this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "denied", { error: "Absolute path forbidden" });
-      return { safePath: "", isAllowed: false, reason: "Security violation: Absolute or drive-qualified paths forbidden" };
-    }
-
-    // 2. Chặn rõ ràng chuỗi '..' trong đường dẫn (trước khi resolve)
-    const segments = targetRelativePath.replace(/\\/g, "/").split("/");
-    if (segments.includes("..")) {
-      this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "denied", { error: "Path traversal '..' detected" });
-      return { safePath: "", isAllowed: false, reason: "Security violation: Path traversal '..' detected" };
-    }
-
-    // 3. Resolve vào root workspace của caller
-    const candidatePath = normalize(resolve(callerWs.absolute_root, targetRelativePath));
-
-    const normalizedWsRoot = callerWs.absolute_root.endsWith(sep)
-      ? callerWs.absolute_root
-      : callerWs.absolute_root + sep;
-
-    if (!candidatePath.startsWith(normalizedWsRoot) && candidatePath !== callerWs.absolute_root) {
-      this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "denied", { error: "Out-of-bounds path" });
-      return { safePath: "", isAllowed: false, reason: "Security violation: Target is outside assigned workspace boundary" };
-    }
-
-    // 4. Kiểm tra symlink escape nếu file/parent đã tồn tại
-    if (existsSync(candidatePath)) {
-      try {
-        const real = realpathSync(candidatePath);
-        if (!real.startsWith(callerWs.absolute_root)) {
-          this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "denied", { error: "Symlink escape attempt" });
-          return { safePath: "", isAllowed: false, reason: "Security violation: Symlink escape detected" };
-        }
-      } catch (err: any) {
-        return { safePath: "", isAllowed: false, reason: `Filesystem resolution error: ${err.message}` };
+    try {
+      const canonicalCompanyRoot = resolveCanonicalFilesystemPath(this.companyRoot);
+      const canonicalWsRoot = resolveCanonicalFilesystemPath(callerWs.absolute_root);
+      if (!isPathWithinBoundary(canonicalWsRoot, canonicalCompanyRoot)) {
+        this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "denied", {
+          error: "Workspace root escapes company root"
+        });
+        return {
+          safePath: "",
+          isAllowed: false,
+          reason: "Security violation: Symlink or junction escape on workspace root"
+        };
       }
-    }
 
-    this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "allowed");
-    return { safePath: candidatePath, isAllowed: true };
+      const { safePath } = resolveContainedAbsoluteRootPath({
+        workspaceRoot: canonicalWsRoot,
+        relativePath: targetRelativePath
+      });
+      this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "allowed");
+      return { safePath, isAllowed: true };
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logActivity(caller.agent_id, callerWs.workspace_id, action, targetRelativePath, "denied", {
+        error: msg
+      });
+      return { safePath: "", isAllowed: false, reason: msg };
+    }
   }
 
   /**

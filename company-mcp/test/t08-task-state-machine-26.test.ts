@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSandboxTestContext } from "./helpers/test-context.js";
+import { createSandboxTestContext, issueTestPrincipalContext } from "./helpers/test-context.js";
 import { ConnectionManager } from "../src/db/connection-manager.js";
 import { MigrationRunner } from "../src/db/migration-runner.js";
 import { migrationV040 } from "../src/db/migrations/v040-agent-columns.js";
@@ -21,10 +21,33 @@ test("T08: Comprehensive 26-State Transition Matrix (TR-01 to TR-26) & Argon Gat
     const appService = new ApprovalService(conn);
     const taskService = new ProjectTaskService(conn, appService);
 
-    const founderCtx = idService.getPrincipalById("founder-01")!;
-    const flash1Ctx = idService.getPrincipalById("flash-01")!;
-    const flash2Ctx = idService.getPrincipalById("flash-02")!;
-    const codexCtx = idService.getPrincipalById("codex-01")!;
+    const founderCtx = issueTestPrincipalContext(idService, "founder-01", ["*"]);
+    const flash1Ctx = issueTestPrincipalContext(idService, "flash-01", [
+      "company:read",
+      "tasks:manage",
+      "tasks:transition",
+      "tasks:review",
+      "approvals:request",
+      "workspace:read:self",
+      "workspace:write:self"
+    ]);
+    const flash2Ctx = issueTestPrincipalContext(idService, "flash-02", [
+      "company:read",
+      "tasks:claim",
+      "tasks:transition",
+      "tasks:review",
+      "tasks:read:assigned",
+      "tasks:update:assigned"
+    ]);
+    const codexCtx = issueTestPrincipalContext(idService, "codex-01", [
+      "company:read",
+      "tasks:claim",
+      "tasks:transition",
+      "tasks:submit",
+      "tasks:read:assigned",
+      "tasks:update:assigned",
+      "approvals:request"
+    ]);
 
     const executedTransitions = new Set<string>();
 
@@ -179,8 +202,28 @@ test("T08: Comprehensive 26-State Transition Matrix (TR-01 to TR-26) & Argon Gat
     assert.equal(tr14.execution_status, "waiting_approval");
     executedTransitions.add("TR-14");
 
-    // TR-18: waiting_approval -> in_progress (for non-Argon)
-    const tr18 = taskService.transitionTask({ ctx: flash1Ctx, taskId: tWaitAppr.task_id, expectedVersion: 6, toStatus: "in_progress" });
+    // TR-18: waiting_approval -> in_progress (for non-Argon, requires explicit approval)
+    assert.throws(
+      () => taskService.transitionTask({ ctx: flash1Ctx, taskId: tWaitAppr.task_id, expectedVersion: 6, toStatus: "in_progress" }),
+      /TASK_APPROVAL_REQUIRED/
+    );
+    const tr18Appr = appService.createApprovalRequest({
+      ctx: codexCtx,
+      action_type: "architecture_review",
+      target_agent_id: "codex-01",
+      target_resource: `task:${tWaitAppr.task_id}`,
+      canonical_payload: { taskId: tWaitAppr.task_id, riskClass: "medium", priority: "P1" },
+      approval_tier: "technical"
+    });
+    appService.decideApproval({ ctx: flash1Ctx, approval_id: tr18Appr.approval_id, decision: "approved" });
+
+    const tr18 = taskService.transitionTask({
+      ctx: flash1Ctx,
+      taskId: tWaitAppr.task_id,
+      expectedVersion: 6,
+      toStatus: "in_progress",
+      approvalId: tr18Appr.approval_id
+    });
     assert.equal(tr18.execution_status, "in_progress");
     executedTransitions.add("TR-18");
 

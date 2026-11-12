@@ -7,7 +7,8 @@ import { RuntimeConfig } from "./config/runtime-config.js";
 import { IdentityAccessService } from "./services/identity-access-service.js";
 import {
   HttpSecurityPipeline,
-  PUBLIC_GATEWAY_PROFILE
+  PUBLIC_GATEWAY_PROFILE,
+  configureGatewayHttpServer
 } from "./security/http-security-pipeline.js";
 import { requestContextStore } from "./security/context-store.js";
 
@@ -53,11 +54,14 @@ app.all("/mcp", (req, res) => {
   }
 });
 
-export const httpServer = app.listen(PORT, HOST, () => {
-  console.log(`AICO Company MCP Public Gateway v2.2.1 started on http://${HOST}:${PORT}`);
-  console.log(`Health: http://${HOST}:${PORT}/health`);
-  console.log(`MCP:    http://${HOST}:${PORT}/mcp`);
-});
+export const httpServer = configureGatewayHttpServer(
+  app.listen(PORT, HOST, () => {
+    console.log(`AICO Company MCP Public Gateway v2.2.1 started on http://${HOST}:${PORT}`);
+    console.log(`Health: http://${HOST}:${PORT}/health`);
+    console.log(`MCP:    http://${HOST}:${PORT}/mcp`);
+  }),
+  PUBLIC_GATEWAY_PROFILE
+);
 
 httpServer.on("error", (error) => {
   console.error("AICO Public Gateway error:", error);

@@ -1,7 +1,7 @@
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
 import { SecretScanner } from "../security/secret-scanner.js";
-import type { PrincipalContext } from "../security/context-store.js";
+import { assertAuthenticatedContext, type PrincipalContext } from "../security/context-store.js";
 import { normalizeBoundedLimit } from "../contracts/query-limits.js";
 
 export interface SendMessageParams {
@@ -58,8 +58,9 @@ export class MessagingService {
   }
 
   public sendMessage(params: SendMessageParams): MessageView {
-    const fromPrincipalId = params.ctx?.principalId || params.fromPrincipalId || params.from_principal_id || "founder-01";
-    const fromPrincipalType = params.ctx?.principalType || (fromPrincipalId === "founder-01" ? "human" : "agent");
+    assertAuthenticatedContext(params.ctx, "sendMessage", { allowedPrincipalTypes: ["human", "agent"] });
+    const fromPrincipalId = params.ctx.principalId;
+    const fromPrincipalType = params.ctx.principalType;
     const toPrincipalId = params.toPrincipalId || params.to_principal_id;
     if (!toPrincipalId) {
       throw new Error("INVALID_ARGUMENT: toPrincipalId is required");

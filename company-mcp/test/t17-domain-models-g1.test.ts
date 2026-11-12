@@ -8,7 +8,8 @@ import { MigrationRunner } from "../src/db/migration-runner.js";
 import { migrationV040 } from "../src/db/migrations/v040-agent-columns.js";
 import { migrationV050Schema } from "../src/db/migrations/v050-target-schema.js";
 import { MessagingService } from "../src/services/messaging-service.js";
-import { createSandboxTestContext } from "./helpers/test-context.js";
+import { IdentityAccessService } from "../src/services/identity-access-service.js";
+import { createSandboxTestContext, issueTestPrincipalContext } from "./helpers/test-context.js";
 
 // Domain Model Index
 import {
@@ -2341,6 +2342,8 @@ test("T17 P2 Suite B: Public Text Entry Guards, Schema Rejection, MessagingServi
       const runner = new MigrationRunner(connManager);
       runner.runMigrations([migrationV040, migrationV050Schema]);
 
+      const idService = new IdentityAccessService(connManager);
+      const flash2Ctx = issueTestPrincipalContext(idService, "flash-02", ["messages:send", "messages:read"]);
       const messagingService = new MessagingService(connManager);
       const countMessages = () =>
         connManager.withReadTransaction((db) => {
@@ -2354,6 +2357,7 @@ test("T17 P2 Suite B: Public Text Entry Guards, Schema Rejection, MessagingServi
       assert.throws(
         () =>
           messagingService.sendMessage({
+            ctx: flash2Ctx,
             fromPrincipalId: "flash-02",
             toPrincipalId: "flash-01",
             subject: `Credential aico_flash-02_${"ab12cd34".repeat(6)}`,
@@ -2367,6 +2371,7 @@ test("T17 P2 Suite B: Public Text Entry Guards, Schema Rejection, MessagingServi
       assert.throws(
         () =>
           messagingService.sendMessage({
+            ctx: flash2Ctx,
             fromPrincipalId: "flash-02",
             toPrincipalId: "flash-01",
             subject: "Clean subject",
@@ -2378,6 +2383,7 @@ test("T17 P2 Suite B: Public Text Entry Guards, Schema Rejection, MessagingServi
 
       // Clean message succeeds and persists 1 row
       const sent = messagingService.sendMessage({
+        ctx: flash2Ctx,
         fromPrincipalId: "flash-02",
         toPrincipalId: "flash-01",
         subject: "Phase 2 Security Verification Complete",
@@ -2398,8 +2404,11 @@ test("T17 P2 Suite B: Public Text Entry Guards, Schema Rejection, MessagingServi
       const runner = new MigrationRunner(connManager);
       runner.runMigrations([migrationV040, migrationV050Schema]);
 
+      const idService = new IdentityAccessService(connManager);
+      const flash1Ctx = issueTestPrincipalContext(idService, "flash-01", ["messages:send", "messages:read"]);
       const messagingService = new MessagingService(connManager);
       const msg = messagingService.sendMessage({
+        ctx: flash1Ctx,
         fromPrincipalId: "flash-01",
         toPrincipalId: "flash-02",
         subject: "Clean handoff for ack test",

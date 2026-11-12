@@ -16,7 +16,12 @@ import { ProjectTaskService } from "../src/services/project-task-service.js";
 import { MessagingService } from "../src/services/messaging-service.js";
 import { OrchestrationService } from "../src/services/orchestration-service.js";
 import { createFullMcpServer } from "../src/registry-core.js";
-import { HttpSecurityPipeline, LOCAL_GATEWAY_PROFILE } from "../src/security/http-security-pipeline.js";
+import {
+  HttpSecurityPipeline,
+  LOCAL_GATEWAY_PROFILE,
+  configureGatewayHttpServer,
+  type GatewaySecurityProfile
+} from "../src/security/http-security-pipeline.js";
 import { requestContextStore } from "../src/security/context-store.js";
 import {
   CompanyClaimTaskInputSchema,
@@ -25,14 +30,22 @@ import {
   CompanyReviewTaskInputSchema
 } from "../src/contracts/mcp-tool-schemas.js";
 
-function startLocalApp(app: express.Express): Promise<{ port: number; close: () => Promise<void> }> {
+function startLocalApp(
+  app: express.Express,
+  profile: GatewaySecurityProfile = LOCAL_GATEWAY_PROFILE
+): Promise<{ port: number; server: http.Server; close: () => Promise<void> }> {
   return new Promise((resolve) => {
-    const server = http.createServer(app);
+    const server = configureGatewayHttpServer(http.createServer(app), profile);
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address() as any;
       resolve({
         port: addr.port,
-        close: () => new Promise<void>((res) => server.close(() => res()))
+        server,
+        close: () =>
+          new Promise<void>((res) => {
+            server.closeIdleConnections?.();
+            server.close(() => res());
+          })
       });
     });
   });
@@ -46,8 +59,14 @@ function parseJsonRpcOrSse(body: string): any {
   return JSON.parse(body);
 }
 
-function postMcpJsonRpc(port: number, token: string, payload: unknown): Promise<{ status: number; json: any }> {
+function postMcpJsonRpc(
+  port: number,
+  token: string,
+  payload: unknown,
+  options?: { agent?: http.Agent | false; connection?: string }
+): Promise<{ status: number; json: any }> {
   const bodyStr = JSON.stringify(payload);
+  const connectionHeader = options?.connection ?? (options?.agent ? "keep-alive" : "close");
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -55,12 +74,14 @@ function postMcpJsonRpc(port: number, token: string, payload: unknown): Promise<
         port,
         path: "/mcp",
         method: "POST",
+        agent: options?.agent ?? false,
         headers: {
           Host: `127.0.0.1:${port}`,
           "Content-Type": "application/json",
           Accept: "application/json, text/event-stream",
           "Content-Length": String(Buffer.byteLength(bodyStr)),
-          Authorization: `Bearer ${token}`
+          Authorization: `Bearer ${token}`,
+          Connection: connectionHeader
         }
       },
       (res) => {
@@ -154,8 +175,8 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
     const localPipeline = new HttpSecurityPipeline(localProfile, idService);
     const nodeHandler = toNodeHandler(createMcpHandler(() => localMcpServer));
     const app = express();
-    app.use(localPipeline.middleware());
     app.use(express.json({ limit: `${localProfile.maxBodySizeBytes}b` }));
+    app.use(localPipeline.middleware());
     app.post("/mcp", (req, res) => {
       const principal = (req as any).principalContext;
       requestContextStore.run(principal, () => {
@@ -198,7 +219,11 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
           /VALIDATION_ERROR: claimTask requires a positive integer expectedVersion/
         );
 
-        // Direct service reviewTask with invalid expectedVersion throws VALIDATION_ERROR
+        // Direct service reviewTask without or with invalid expectedVersion throws VALIDATION_ERROR
+        assert.throws(
+          () => (taskService as any).reviewTask({ ctx: flash1Ctx, taskId: task.task_id, decision: "completed" }),
+          /VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer/
+        );
         assert.throws(
           () => taskService.reviewTask({ ctx: flash1Ctx, taskId: task.task_id, expectedVersion: 0, decision: "completed" }),
           /VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer/
@@ -373,7 +398,7 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
           () => taskService.heartbeatTask({ ctx: flash2Ctx, taskId: hbTask.task_id }),
           /TASK_LEASE_EXPIRED/
         );
-        const stillExpired = taskService.getTask(hbTask.task_id)!;
+        const stillExpired = taskService.getTask(hbTask.task_id, flash2Ctx)!;
         assert.equal(stillExpired.lease_expires_at, expiredIso);
         assert.equal(stillExpired.execution_status, "in_progress");
 
@@ -406,7 +431,7 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
           /TASK_INVALID_STATE_TRANSITION/
         );
 
-        const afterRecovery = taskService.getTask(hbTask.task_id)!;
+        const afterRecovery = taskService.getTask(hbTask.task_id, flash2Ctx)!;
         assert.equal(afterRecovery.execution_status, "assigned");
         assert.equal(afterRecovery.lease_owner_agent_id, null);
         assert.equal(afterRecovery.lease_expires_at, null);
@@ -518,9 +543,9 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
         assert.equal(msgService.listInbox("flash-02", { limit: 1 }).length, 1);
         assert.equal(msgService.listInbox("flash-02", { limit: 100 }).length, 60);
 
-        assert.equal(wsService.listActivities({ agentId: "flash-01" }).length, 50);
-        assert.equal(wsService.listActivities({ agentId: "flash-01", limit: 7 }).length, 7);
-        assert.equal(wsService.listActivities({ agentId: "flash-01", limit: 100 }).length >= 60, true);
+        assert.equal(wsService.listActivities({ agentId: "flash-01" }, flash1Ctx).length, 50);
+        assert.equal(wsService.listActivities({ agentId: "flash-01", limit: 7 }, flash1Ctx).length, 7);
+        assert.equal(wsService.listActivities({ agentId: "flash-01", limit: 100 }, flash1Ctx).length >= 60, true);
 
         // Invalid limits rejected at service layer (cannot bypass via 0, -1, >100, float)
         for (const badLimit of [0, -1, -50, 101, 1.5, Number.NaN]) {
@@ -529,7 +554,7 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
             /VALIDATION_ERROR: limit must be an integer between 1 and 100/
           );
           assert.throws(
-            () => wsService.listActivities({ agentId: "flash-01", limit: badLimit }),
+            () => wsService.listActivities({ agentId: "flash-01", limit: badLimit }, flash1Ctx),
             /VALIDATION_ERROR: limit must be an integer between 1 and 100/
           );
         }
@@ -701,7 +726,7 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
         assert.equal(replay.idempotent_replay, true);
 
         // Persisted timestamps & task_events audit trail verified
-        const persistedTask = taskService.getTask(extTask.task_id)!;
+        const persistedTask = taskService.getTask(extTask.task_id, flash1Ctx)!;
         assert.equal(persistedTask.dispatch_status, "external_running");
         assert.ok(persistedTask.operator_delivered_at);
         assert.ok(persistedTask.external_invoked_at);
@@ -880,6 +905,56 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
           decision: "completed"
         });
         assert.equal(reviewed.execution_status, "completed");
+      });
+
+      // =====================================================================
+      // 7. Phase A Regression: HTTP keep-alive alignment > 5s default Node timeout
+      // =====================================================================
+      await t.test("Phase A: configureGatewayHttpServer prevents idle keep-alive ECONNRESET past 5s", async () => {
+        assert.ok(
+          httpSrv.server.keepAliveTimeout >= 65_000,
+          `Expected server.keepAliveTimeout >= 65000ms, got ${httpSrv.server.keepAliveTimeout}`
+        );
+        assert.ok(
+          httpSrv.server.headersTimeout > httpSrv.server.keepAliveTimeout,
+          `Expected headersTimeout (${httpSrv.server.headersTimeout}) > keepAliveTimeout (${httpSrv.server.keepAliveTimeout})`
+        );
+
+        const keepAliveAgent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+        try {
+          const first = await postMcpJsonRpc(
+            httpSrv.port,
+            flash2Token,
+            {
+              jsonrpc: "2.0",
+              method: "tools/call",
+              params: { name: "company_list_inbox", arguments: { limit: 1 } },
+              id: 701
+            },
+            { agent: keepAliveAgent }
+          );
+          assert.equal(first.status, 200);
+          assert.equal(first.json.result?.isError, undefined);
+
+          // Pause past Node's default 5000ms keepAliveTimeout while socket sits idle in pool
+          await new Promise((r) => setTimeout(r, 5200));
+
+          const second = await postMcpJsonRpc(
+            httpSrv.port,
+            flash2Token,
+            {
+              jsonrpc: "2.0",
+              method: "tools/call",
+              params: { name: "company_list_inbox", arguments: { limit: 1 } },
+              id: 702
+            },
+            { agent: keepAliveAgent }
+          );
+          assert.equal(second.status, 200);
+          assert.equal(second.json.result?.isError, undefined);
+        } finally {
+          keepAliveAgent.destroy();
+        }
       });
     } finally {
       await httpSrv.close();

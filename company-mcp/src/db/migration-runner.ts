@@ -41,7 +41,7 @@ export const DEFAULT_CANONICAL_PATH_FS: CanonicalPathFs = {
   statSync: (p: string, opts: { bigint: true }) => fs.statSync(p, opts)
 };
 
-function stripWindowsDevicePrefix(target: string): string {
+export function stripWindowsDevicePrefix(target: string): string {
   if (/^(?:\\\\\?|\\\?\?)\\UNC\\/i.test(target)) {
     return "\\\\" + target.slice(8);
   }
@@ -51,7 +51,7 @@ function stripWindowsDevicePrefix(target: string): string {
   return target;
 }
 
-function normalizeSegmentWin32Artifacts(segment: string, isDriveRoot: boolean): string {
+export function normalizeSegmentWin32Artifacts(segment: string, isDriveRoot: boolean): string {
   if (isDriveRoot || segment.length === 0) {
     return segment;
   }
@@ -62,7 +62,7 @@ function normalizeSegmentWin32Artifacts(segment: string, isDriveRoot: boolean): 
   return withoutAds.replace(/[. ]+$/, "");
 }
 
-function normalizePathForComparison(pathCandidate: string, forceLowerCase = false): string {
+export function normalizePathForComparison(pathCandidate: string, forceLowerCase = false): string {
   const withoutDevicePrefix = stripWindowsDevicePrefix(pathCandidate);
   const slashNormalized = withoutDevicePrefix.replace(/\\/g, "/");
   const segments = slashNormalized.split("/");

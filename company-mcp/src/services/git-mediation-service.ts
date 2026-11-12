@@ -1,7 +1,8 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import type { PrincipalContext } from "../security/context-store.js";
+import { assertAuthenticatedContext, isFounderHuman, type PrincipalContext } from "../security/context-store.js";
+import { assertValidSingleSegment } from "../security/path-containment.js";
 import { SecretScanner } from "../security/secret-scanner.js";
 
 export interface GitMediationConfig {
@@ -190,18 +191,21 @@ export class GitMediationService {
     direction: "push_agent_branch" | "pull_master";
     clonePath?: string;
   }): { success: boolean; branch_name: string; direction: string; commit_sha: string; status: string; message: string } {
-    // ABAC ownership check
-    if (params.ctx && params.ctx.principalType !== "human" && params.ctx.principalId !== "founder-01") {
-      if (params.ctx.agentId && params.ctx.agentId !== params.agentId) {
-        throw new Error(`PERMISSION_DENIED: Agent ${params.ctx.agentId} cannot sync branch for agent ${params.agentId}`);
+    assertAuthenticatedContext(params.ctx, "syncAgentBranch", { allowedPrincipalTypes: ["human", "agent"] });
+    const safeAgentId = assertValidSingleSegment(params.agentId, "agent identifier");
+
+    // ABAC ownership check (P0-04: fail-closed, never allow unauthenticated or cross-agent sync)
+    if (!isFounderHuman(params.ctx)) {
+      if (params.ctx.principalType !== "agent" || !params.ctx.agentId || params.ctx.agentId !== safeAgentId) {
+        throw new Error(`PERMISSION_DENIED: Principal ${params.ctx.principalId} cannot sync branch for agent ${safeAgentId}`);
       }
     }
 
-    if (!this.validateBranchName(params.agentId, params.branchName)) {
-      throw new Error(`GIT_BRANCH_NAMESPACE_VIOLATION: Branch '${params.branchName}' must match agent/${params.agentId}/[a-z0-9-]+`);
+    if (!this.validateBranchName(safeAgentId, params.branchName)) {
+      throw new Error(`GIT_BRANCH_NAMESPACE_VIOLATION: Branch '${params.branchName}' must match agent/${safeAgentId}/[a-z0-9-]+`);
     }
 
-    const effectiveClonePath = params.clonePath || path.resolve(this.workspacesRoot, params.agentId, "repo");
+    const effectiveClonePath = params.clonePath || path.resolve(this.workspacesRoot, safeAgentId, "repo");
 
     if (!fs.existsSync(effectiveClonePath)) {
       throw new Error(`GIT_CLONE_NOT_FOUND: Agent clone directory does not exist: ${effectiveClonePath}`);

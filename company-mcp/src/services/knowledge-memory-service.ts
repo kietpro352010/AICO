@@ -1,6 +1,6 @@
 import * as crypto from "node:crypto";
 import { ConnectionManager } from "../db/connection-manager.js";
-import type { PrincipalContext } from "../security/context-store.js";
+import { assertAuthenticatedContext, isFounderHuman, type PrincipalContext } from "../security/context-store.js";
 
 export function normalizeSearchTextV1(text: string): string {
   if (!text) return "";
@@ -134,11 +134,13 @@ export class KnowledgeMemoryService {
   }
 
   public proposeKnowledgeChange(params: {
+    ctx?: PrincipalContext;
     docId: string;
     proposedMarkdown: string;
     rationale: string;
     proposerId?: string;
   }): { proposal_id: string; doc_id: string; status: string } {
+    assertAuthenticatedContext(params.ctx, "proposeKnowledgeChange", { allowedPrincipalTypes: ["human", "agent"] });
     const proposalId = "prop_" + crypto.randomBytes(8).toString("hex");
     return {
       proposal_id: proposalId,
@@ -148,10 +150,18 @@ export class KnowledgeMemoryService {
   }
 
   public approveKnowledgeProposal(params: {
+    ctx?: PrincipalContext;
     proposalId: string;
     decision: "approved" | "rejected";
     deciderId?: string;
   }): { proposal_id: string; decision: string; status: string } {
+    assertAuthenticatedContext(params.ctx, "approveKnowledgeProposal", { allowedPrincipalTypes: ["human", "agent"] });
+    const isAuthorized =
+      isFounderHuman(params.ctx) ||
+      (params.ctx.principalType === "agent" && params.ctx.agentId === "flash-01" && params.ctx.principalId === "flash-01");
+    if (!isAuthorized) {
+      throw new Error("PERMISSION_DENIED: Only Founder or CTO can approve knowledge proposals");
+    }
     return {
       proposal_id: params.proposalId,
       decision: params.decision,
@@ -184,13 +194,17 @@ export class KnowledgeMemoryService {
   }
 
   public searchMemory(params: {
-    callerAgentId: string;
+    ctx?: PrincipalContext;
+    callerAgentId?: string;
     query?: string;
     scope?: string;
     projectId?: string;
     taskId?: string;
     limit?: number;
   }): any[] {
+    assertAuthenticatedContext(params.ctx, "searchMemory", { allowedPrincipalTypes: ["human", "agent"] });
+    const effectiveAgentId = params.ctx.principalType === "agent" ? params.ctx.agentId : "__human_no_agent_private__";
+
     return this.connManager.withReadTransaction((db) => {
       let sql = `
         SELECT * FROM memory_entries
@@ -201,7 +215,7 @@ export class KnowledgeMemoryService {
           (memory_scope = 'task_context' AND task_id = ?)
         )
       `;
-      const sqlParams: any[] = [params.callerAgentId, params.projectId || null, params.taskId || null];
+      const sqlParams: any[] = [effectiveAgentId, params.projectId || null, params.taskId || null];
 
       if (params.scope) {
         sql += " AND memory_scope = ?";
@@ -221,6 +235,7 @@ export class KnowledgeMemoryService {
   }
 
   public writeMemory(entry: {
+    ctx?: PrincipalContext;
     memoryId?: string;
     scope: "company" | "project" | "agent_private" | "task_context" | string;
     callerAgentId?: string;
@@ -232,13 +247,36 @@ export class KnowledgeMemoryService {
     content: string;
     provenanceSource?: string;
   }): { memory_id: string; scope: string; status: string } {
+    assertAuthenticatedContext(entry.ctx, "writeMemory", { allowedPrincipalTypes: ["human", "agent"] });
+
+    let ownerId: string | null;
+    if (entry.scope === "agent_private") {
+      if (isFounderHuman(entry.ctx)) {
+        if (!entry.ownerAgentId) {
+          throw new Error("VALIDATION_ERROR: ownerAgentId is required when human principal writes agent_private memory");
+        }
+        ownerId = entry.ownerAgentId;
+      } else {
+        if (!entry.ctx.agentId) {
+          throw new Error("PERMISSION_DENIED: Agent identity required to write agent_private memory");
+        }
+        if (entry.ownerAgentId && entry.ownerAgentId !== entry.ctx.agentId) {
+          throw new Error(
+            `PERMISSION_DENIED: Principal '${entry.ctx.principalId}' cannot write agent_private memory for '${entry.ownerAgentId}'`
+          );
+        }
+        ownerId = entry.ctx.agentId;
+      }
+    } else {
+      ownerId = entry.ownerAgentId || entry.ctx.agentId || null;
+    }
+
     const memoryId = entry.memoryId || "mem_" + crypto.randomBytes(12).toString("hex");
-    const ownerId = entry.scope === "agent_private" ? (entry.ownerAgentId || entry.callerAgentId || "flash-01") : (entry.ownerAgentId || null);
     const projectId = entry.scope === "project" ? (entry.projectId || "proj_aico_v221") : (entry.projectId || null);
     const taskId = entry.scope === "task_context" ? (entry.taskId || "task_default") : (entry.taskId || null);
     const title = entry.title || "Memory Entry " + memoryId.slice(0, 8);
     const summary = entry.summary || entry.content.slice(0, 100);
-    const provenance = entry.provenanceSource || (entry.callerAgentId ? `agent:${entry.callerAgentId}` : "operator");
+    const provenance = entry.provenanceSource || `${entry.ctx.principalType}:${entry.ctx.principalId}`;
     const nowIso = new Date().toISOString();
 
     return this.connManager.withWriteTransaction((db) => {

@@ -1,0 +1,111 @@
+# AICO Runtime Stabilization & P0 Security Remediation — Review & Handoff Report
+
+**Document ID:** AICO-RUNTIME-STAB-P0-HANDOFF  
+**Assigned Agent:** `flash-02` (Engineering & QA Lead)  
+**Reporting To:** `chatgpt-01` (CEO & Main Orchestrator) & **Founder**  
+**Branch:** `fix/runtime-stabilization-p0-remediation`  
+**Baseline Audited:** `98938a2de45788ff8b5a5522713ee979d789b03f`  
+**Pull Request (Unmerged, Targeting `main`):** https://github.com/kietpro352010/AICO/pull/1  
+**Commit Part 1 (Project Code & Regression Tests):** `afbc906` -> `7ae9f69` -> `5d3df69` -> `0f57b29`  
+**Commit Part 2 (Deliverables & Notes):** `cad9ac7` -> `8c5c1e2` -> `15a8904` -> final green CI handoff update (`docs/implementation/v3/runtime-stabilization-p0-remediation/P0_REMEDIATION_AND_STABILIZATION_HANDOFF.md`)
+
+> **Governance Note:** Per AICO directives, `flash-02` cannot self-approve its own security remediation. `main` and `master` have **not** been modified, pushed, or merged; this branch is ready for independent review by `chatgpt-01` and Founder approval.
+
+---
+
+## 1. Root-Cause Report — CI Failure (`T19 F-04 ECONNRESET`) & Rate-Limit Finding
+
+### 1.1 Observed CI Failure on `main` & `master` (`98938a2`)
+- **Failed Suite:** `T19: Runtime Stabilization Regressions (F-02 to F-06)` -> `✖ F-04: listInbox & listActivities enforce integer limits 1..100 (default 50) (9564.7214ms)`
+- **Observed Error:** `Error: read ECONNRESET` at `TCP.onStreamRead (node:internal/stream_base_commons:221:20)` (`errno: -4077`, `syscall: 'read'`), causing `tests 127 | pass 125 | fail 2`.
+- **Execution-Path & Request Analysis:**
+  - In baseline `98938a2` (`8c0d5b7`), `test/t19-runtime-stabilization-regressions.test.ts` (`postMcpJsonRpc()`) and `company-mcp/src/client-bridge.ts` (`forwardJsonRpc()`) called `http.request(...)` without `agent: false` or `Connection: "close"`, causing Node.js 24's default global agent to keep idle loopback TCP sockets open after `F-03`'s `M30` (`company_heartbeat_task`, `id: 301..302`) calls.
+  - Neither `company-mcp/src/http-registry.ts`, `company-mcp/src/http-public.ts`, nor `T19`'s `startLocalApp()` configured HTTP server timeouts, leaving Node's default `server.keepAliveTimeout` at **`5000ms`**.
+  - Inside `F-04`, synchronous SQLite setup (`60` `msgService.sendMessage` transactions + `60` `agent_workspace_activities` inserts + read/error checks) ran over `5s` on the `windows-latest` CI runner (`9564.7214ms` total test runtime). Because the CI traceback ends at `TCP.onStreamRead` without an inner `t19` line number, **execution order and timing indicate the stalled keep-alive socket was reused by `F-04`'s first HTTP JSON-RPC request (`m36Bad`: `POST /mcp`, `tools/call` `company_list_inbox` `{ limit: -1 }`, JSON-RPC `id: 201`)** (or an immediately subsequent `F-04` request `id: 201..204`), racing with the server's `5000ms` idle socket close and raising `read ECONNRESET`.
+  - Additionally, `T19` previously mounted `localPipeline.middleware()` before `express.json(...)`.
+
+### 1.2 Root Fixes Implemented (Phase A)
+1. **[`http-security-pipeline.ts`](../../../../company-mcp/src/security/http-security-pipeline.ts):** Added `configureGatewayHttpServer(server, profile)` setting:
+   - `server.keepAliveTimeout = Math.max(profile.requestTimeoutMs + 35_000, 65_000)` (`>= 65s`)
+   - `server.headersTimeout = keepAliveTimeoutMs + 5_000`
+   - `server.requestTimeout = Math.max(profile.requestTimeoutMs + 5_000, 35_000)`
+   Wired into [`http-registry.ts`](../../../../company-mcp/src/http-registry.ts), [`http-public.ts`](../../../../company-mcp/src/http-public.ts), and `T19` `startLocalApp()`.
+2. **[`client-bridge.ts`](../../../../company-mcp/src/client-bridge.ts) & [`t19-runtime-stabilization-regressions.test.ts`](../../../../company-mcp/test/t19-runtime-stabilization-regressions.test.ts):** `forwardJsonRpc()` and `postMcpJsonRpc()` default to `agent: false` + `Connection: "close"` for stateless calls, fixed middleware ordering (`express.json(...)` before `localPipeline.middleware()`), and added `T19 Phase A` regression verifying persistent `http.Agent({ keepAlive: true, maxSockets: 1 })` reuse survives past `5200ms`.
+3. **Secondary Stabilization Finding (`HttpSecurityPipeline` + `TokenBucketRateLimiter`):** During full-suite bursts (`<2s` on `127.0.0.1`), Step 6 in `HttpSecurityPipeline.middleware()` previously called `this.ipLimiter.consume(clientIp)` even on valid Bearer requests, depleting `unauthenticatedRateLimit.burstCapacity` (`15` on `LOCAL_GATEWAY_PROFILE`) and triggering intermittent `429 RATE_LIMIT_EXCEEDED` at request #17 (`T19 F-05 wireM34Replay`). Added read-only `check()` to [`rate-limiter.ts`](../../../../company-mcp/src/security/rate-limiter.ts); Step 6 now calls `check(clientIp)` when an `Authorization: Bearer ...` header is present and only calls `consume(clientIp)` when the header is missing or `authenticateToken()` fails in Step 7, leaving authenticated traffic governed by `credLimiter` (`120/min`, burst `30` local; `60/min`, burst `15` public).
+
+---
+
+## 2. P0 Remediation Matrix (`P0-01` to `P0-04`)
+
+| ID | Risk Closed | Key Files & Functions Changed | Verification Focus (`T20` & Existing Suites) |
+| :--- | :--- | :--- | :--- |
+| **`P0-01`** | Per-agent workspace path traversal, Win32 filename/ADS/UNC aliases, root/ancestor junction & dangling symlink escapes, and TOCTOU symlink/junction swaps during file I/O | - [`path-containment.ts`](../../../../company-mcp/src/security/path-containment.ts): `assertValidSingleSegment()`, `isPathWithinBoundary()`, `assertLexicalRelativePathSafe()`, `resolveContainedWorkspacePath()`, `resolveContainedAbsoluteRootPath()`<br>- [`migration-runner.ts`](../../../../company-mcp/src/db/migration-runner.ts): exported `resolveCanonicalFilesystemPath()`, Win32 normalization helpers<br>- [`workspace-artifact-service.ts`](../../../../company-mcp/src/services/workspace-artifact-service.ts): `validateAndResolveSafePath()`, `resolveScopedWorkspaceTarget()`, `assertCanonicalDirectoryChain()`, `assertContainedLeafTarget()`, `writeFileAtomically()` (`O_EXCL`/`O_NOFOLLOW`, pre/post-commit containment + `onBeforeIoStage`), `safeReadArtifact()` (`O_NOFOLLOW`, post-open `fstatSync`/`lstatSync` & canonical checks), `readArtifact()`, `writeArtifact()`, `listFiles()`, `getWorkspaceMeta()`, `shareArtifact()` (`overwrite: false`)<br>- [`workspace-manager.ts`](../../../../company-mcp/src/workspace-manager.ts): `resolveSecurePath()` | Blocks `../other-agent/...`, null bytes/`%00`, trailing dots/spaces (`file.`), ADS (`:`), drive/UNC/`\??\`, agent-root/subdir NTFS junctions (`fs.symlinkSync(..., "junction")`), synthetic dangling/nested symlinks (`fakeFs` `ENOENT`), deterministic TOCTOU junction swaps (`pre_write_open`, `pre_write_commit`, `pre_read_open`, `post_read_verify`, `shareArtifact`, `overwrite: false` exclusive race), and 60-op concurrent async junction-swap stress race (`T20 P0-01b`). |
+| **`P0-02`** | Scope conflation (`workspace:read:any` / `workspace:audit:read` able to write/share), unauthenticated `M01`–`M05` and broad task reads | - [`context-store.ts`](../../../../company-mcp/src/security/context-store.ts): `assertAuthenticatedContext()`, `isFounderHuman()`, `isExecutiveLeadership()`, `isReviewLeadership()`, `isArchiveLeadership()`, `hasPrincipalScope()`<br>- [`workspace-artifact-service.ts`](../../../../company-mcp/src/services/workspace-artifact-service.ts): `authorizeWorkspaceAccess(ctx, targetAgentId, "read"\|"write"\|"audit")`, `checkOwnershipOrScope()`, all artifact/listing/meta/share/activity methods<br>- [`registry-core.ts`](../../../../company-mcp/src/registry-core.ts): `registerCompanyTools()` (`M01`–`M05` require context + `company:read` on `M02`–`M05`), `TOOL_REQUIRED_SCOPES` (`M17`–`M19` `read:self\|read:any`; `M22` `audit:read\|audit` only)<br>- [`project-task-service.ts`](../../../../company-mcp/src/services/project-task-service.ts): `listTasks()`, `getTask()` unconditionally call `assertAuthenticatedContext()` and remove `!callerCtx` broad-read bypass | Unauthenticated service & HTTP `M01`–`M05`/`M17`–`M22`/`listTasks`/`getTask` fail closed; `workspace:read:any` reads cross-agent files but cannot write or read audit logs; `workspace:audit:read` reads audit logs via `M22` but cannot read/write files. |
+| **`P0-03`** | Bypassed approvals (`TR-04`/`TR-18` on non-critical tasks, `TR-06`/`TR-10` on critical tasks), cross-agent active lease hijack (`TR-12`), optional service/schema CAS versions, missing state/ABAC guards, Public Gateway `M31` escalation | - [`project-task-service.ts`](../../../../company-mcp/src/services/project-task-service.ts): `assertValidExpectedVersion()`, mandatory `expectedVersion: number` on `claimTask()`, `submitTaskResult()`, `reviewTask()`, `transitionTask()` (evaluated even before same-status short-circuit), SQL CAS `WHERE task_id = ? AND version = ? AND execution_status = ?` + `changes !== 1` `TASK_VERSION_CONFLICT`, `verifyAndConsumeTaskApproval()`, `TransitionInput.allowReviewAndAdminTransitions`<br>- [`mcp-tool-schemas.ts`](../../../../company-mcp/src/contracts/mcp-tool-schemas.ts) & [`registry-core.ts`](../../../../company-mcp/src/registry-core.ts): `M31`/`M32` `expected_version: z.number().int().min(1)`, `allowReviewAndAdminTransitions: !isPublic` (`M30`/`M34` remain optional for non-status updates) | `TR-04`/`TR-18` require valid approval + non-self-approval + executive role across all priorities/risks; `TR-12` rejects breaking another agent's active non-expired lease; `TR-11`/`TR-22` block expired leases; `TR-15` evaluates before `TR-13`; all state-changing service & `M31`/`M32` HTTP calls reject omitted/zero/negative/float/same-status/stale versions (`T20 P0-03b`); Public Gateway `M31` blocks `TR-04`, `TR-18`, `TR-23`, `TR-25`, `TR-26`. |
+| **`P0-04`** | Implicit `"founder-01"`, `"chatgpt-01"`, `"flash-01"` identity fallbacks & unauthenticated principal synthesis | - [`identity-access-service.ts`](../../../../company-mcp/src/services/identity-access-service.ts): disabled `getPrincipalById()` (`SECURITY_VIOLATION`); repo-wide call-site audit confirmed **zero callers** outside definition (`:80`) and `T20` negative test<br>- [`messaging-service.ts`](../../../../company-mcp/src/services/messaging-service.ts): `sendMessage()`<br>- [`approval-service.ts`](../../../../company-mcp/src/services/approval-service.ts): `createApprovalRequest()`<br>- [`project-task-service.ts`](../../../../company-mcp/src/services/project-task-service.ts): `createProject()`, `createTask()`, `heartbeatTask()`, `claimTask()`, `transitionTask()`<br>- [`git-mediation-service.ts`](../../../../company-mcp/src/services/git-mediation-service.ts): `syncAgentBranch()`<br>- [`knowledge-memory-service.ts`](../../../../company-mcp/src/services/knowledge-memory-service.ts): `proposeKnowledgeChange()`, `approveKnowledgeProposal()`, `searchMemory()`, `writeMemory()`<br>- [`observability-quota-service.ts`](../../../../company-mcp/src/services/observability-quota-service.ts): `appendAuditEvent()`, `recordMcpActivity()`, `recordModelUsage()`<br>- [`registry-core.ts`](../../../../company-mcp/src/registry-core.ts): removed `"flash-01"` fallbacks on `M17`–`M21`, `M23`, `company_knowledge_memory_ops` (`search_memory`, `write_memory`, `record_model_usage`) | `getPrincipalById()` throws unconditionally with zero compatibility breakage across `src/**`, `scripts/**`, and `test/**`; spoofed `actorId`/`from_principal_id`/`created_by` cannot override verified `PrincipalContext`; human `recordMcpActivity()` does not forge `"founder-01"`; audit chain records authentic `principal_id`/`principal_type`; fail-closed `VALIDATION_ERROR` for human callers without `target_agent_id` / `ownerAgentId` / bound `agent_id`. |
+
+---
+
+## 3. Regression Test & Verification Evidence
+
+### 3.1 Full Test Suite (`D:\AI-COMPANY\company-mcp`)
+Command executed after the final code and test edit (on isolated temporary sandbox SQLite databases; production DB untouched):
+```powershell
+Set-Location d:\AI-COMPANY\company-mcp
+npm.cmd test   # node --import tsx --test "test/**/*.test.ts"
+```
+Observed output (local `npm.cmd test` at `0f57b29` AND `windows-latest` GitHub Actions CI run [#43166164787](https://github.com/kietpro352010/AICO/actions/runs/43166164787)):
+- **Local `npm.cmd test`:** Exit code `0`, **`tests 135 | suites 1 | pass 135 | fail 0 | cancelled 0 | skipped 0 | todo 0`** (`duration_ms 17667.0653`).
+- **`windows-latest` PR CI (`43166164787`):** **PASS (`1m26s`)** — Baseline Fixture Integrity (`2F73A960...`), `TypeScript Typecheck` (`tsc --noEmit`), and `Execute Full Test Suite` (**`tests 135 | suites 1 | pass 135 | fail 0 | cancelled 0 | skipped 0`**) all passed cleanly.
+- Covers all **15 test files** (`baseline.test.ts`, `t01`–`t05`, `t07`–`t10`, `t16`–`t20`), including:
+  - [`t19-runtime-stabilization-regressions.test.ts`](../../../../company-mcp/test/t19-runtime-stabilization-regressions.test.ts): `F-02`..`F-06` + `Phase A: configureGatewayHttpServer prevents idle keep-alive ECONNRESET past 5s` (**6 subtests + parent suite PASS**, including omitted/zero `expectedVersion` checks on `reviewTask`).
+  - [`t20-p0-security-remediation.test.ts`](../../../../company-mcp/test/t20-p0-security-remediation.test.ts): **`P0-01`..`P0-04` + `P0-01b` (TOCTOU race tests) + `P0-03b` (mandatory service CAS & M31/M32 JSON-RPC tests)** (**6 subtests + parent suite PASS**; `P0-02` `createBaseMcpServer({ dbPath: sandbox.dbPath })` isolated from absent/production `data/aico.db`).
+
+### 3.2 TypeScript Typecheck Status & Windows PR CI Catch
+- Local workstation `tsc --noEmit` (`node ./node_modules/typescript/bin/tsc --noEmit`, TypeScript `^7.0.2` native binary `tsc.exe`) stalled past `20s` under Windows SmartScreen and was cancelled.
+- PR #1 CI run `43165399360` caught two `tsc --noEmit` errors (`approval-service.ts:79` narrowing `"human" | "agent"` and `t20:860` `eventCategory` literal `"security"` -> `"policy"`), fixed in `5d3df69`.
+- PR #1 CI run `43165752617` passed `tsc --noEmit` and caught `createBaseMcpServer()` reading default `data/aico.db` in `T20 P0-02` on a clean checkout without git-ignored `data/aico.db`, fixed with `{ dbPath: sandbox.dbPath }` in `0f57b29`.
+- PR #1 CI run [`43166164787`](https://github.com/kietpro352010/AICO/actions/runs/43166164787) at `0f57b29` passed both `tsc --noEmit` and all `135/135` tests on `windows-latest`.
+
+### 3.3 Production & Policy Guardrails Verified
+- `D:\AI-COMPANY\data\aico.db` verified byte-for-byte untouched (`Length: 45056`, `LastWriteTimeUtc: 11/5/2026 9:22:39 AM`, `SHA256: 17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`, matching `.github/workflows/ci.yml`).
+- Zero migrations run against production; `G3`, `G4`, `G7` remain locked; Public Gateway / ngrok not enabled; `argon-01`/`argon-02` not invoked; V3 24-entity runtime integration (`F-01`) not implemented.
+
+---
+
+## 4. CI Links (`PR #1`, `main` & `master`)
+
+- **PR #1 (`fix/runtime-stabilization-p0-remediation` -> `main`, unmerged):** https://github.com/kietpro352010/AICO/pull/1
+- **`windows-latest` PR CI (`0f57b29`):** https://github.com/kietpro352010/AICO/actions/runs/43166164787 (job: https://github.com/kietpro352010/AICO/actions/runs/43166164787/job/131008424278) — **`success`** (`tsc --noEmit` PASS, `135/135` tests PASS)
+
+Latest baseline CI runs on untouched `main` & `master` (`98938a2de45788ff8b5a5522713ee979d789b03f`):
+- **`main`:** https://github.com/kietpro352010/AICO/actions/runs/43055969943 (job: https://github.com/kietpro352010/AICO/actions/runs/43055969943/job/130645389741) — `failure`
+- **`master`:** https://github.com/kietpro352010/AICO/actions/runs/43055969854 (job: https://github.com/kietpro352010/AICO/actions/runs/43055969854/job/130645389864) — `failure`
+
+---
+
+## 5. Remaining Risks & Unaddressed Findings
+
+Per the Task Directive scope (Phase A CI fix + P0 remediation only; V3 integration & P1–P3 out of scope unless noted), the following pre-existing and newly observed items remain open for subsequent phases:
+
+1. **V3 Runtime Integration Gap (`F-01`):** `0/24` V3 entities wired into production services/tools (explicitly deferred by restriction).
+2. **`P1-02` to `P1-09` (from Audit `0996278`):**
+   - `P1-02` / `P1-03`: Separate mutation/audit transactions + post-commit anchor file writes (`AUDIT_ANCHOR_WRITE_FAILURE`); `backup-db.ts` writing incompatible records into `audit_anchors.jsonl`.
+   - `P1-04`: `decideApproval()` / `consumeApproval()` writing `status = 'expired'` inside a throwing transaction that rolls back.
+   - `P1-05`: `KnowledgeMemoryService.writeMemory()` secret check before storage, `searchMemory()` project/task ACL & expiry filters, and `listInbox` defense-in-depth redaction.
+   - `P1-06`: `PUBLIC_GATEWAY_PROFILE` fail-open `Origin` behavior when `allowedOrigins` is empty.
+   - `P1-07`: `ConnectionManager` SQLite WAL mode / retry busy-wait / nested write transaction deadlock.
+   - `P1-08` / `P1-09`: Stateless `proposeKnowledgeChange`/`approveKnowledgeProposal` stubs, `initSchema()` DDL drift, and `M38` Zod schema field stripping in `mcp-tool-schemas.ts`.
+3. **`P2-02` to `P2-07` & `P3-01` to `P3-04`:** Idempotent `createTask` crash on duplicate `idempotency_key`, Ed25519 approval signatures, automated `recoverStaleLeases()` scheduler, `GitMediationService` wiring & `CompanyRegistryService` handle cleanup, `M08`/`M26` contract drift cleanup.
+4. **Legacy Helper Observations Surfaced During `T20`:**
+   - `WorkspaceManager.logActivity()` (`src/workspace-manager.ts:138`) inserts into `agent_workspace_activities` without `request_id`, triggering caught console errors (`NOT NULL constraint failed: agent_workspace_activities.request_id`) during standalone `WorkspaceManager` unit calls (`WorkspaceArtifactService` already provides `request_id`).
+   - `AgentIdentityService.generateToken()` (`src/agent-identity-service.ts:29`) leaves `expiresInHours` optional (`null`), which violates `agent_credentials.expires_at NOT NULL` unless callers explicitly supply an expiry (as updated in `T20`).
+5. **Local Workstation Typecheck:** Native TypeScript `7.0.2` (`tsc.exe`) stalled locally under Windows SmartScreen; verified independently via `windows-latest` PR CI targeting `main`.
+
+---
+
+## 6. Final Handoff to `chatgpt-01` & Founder
+
+- **Recommended Next Step 1:** `chatgpt-01` (with `flash-01` CTO review) inspects commits `afbc906`, `7ae9f69`, `5d3df69`, `0f57b29`, and this report on unmerged Pull Request #1 (`https://github.com/kietpro352010/AICO/pull/1`, `fix/runtime-stabilization-p0-remediation` -> `main`), verified by green `windows-latest` CI run `43166164787`.
+- **Recommended Next Step 2:** Upon Founder/`chatgpt-01` approval, merge the PR to `main` and fast-forward/sync `master` (and enable GitHub Branch Protection + required status checks on `main` and `master`).
+- **Recommended Next Step 3:** Keep `V3-G3`, `V3-G4`, and `V3-G7` locked until Phase 1B resolves `P1-02`..`P1-09` and `P1-06`.

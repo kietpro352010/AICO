@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import type { PrincipalContext } from "../../src/security/context-store.js";
+import type { IdentityAccessService } from "../../src/services/identity-access-service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,4 +61,19 @@ export function createSandboxTestContext(prefix = "aico-test-"): TestContext {
   };
 
   return { tempDir, dbPath, anchorPath, cleanup };
+}
+
+/**
+ * Issue an authenticated PrincipalContext backed by a real stored credential
+ * instead of synthesizing internal contexts without credentials.
+ */
+export function issueTestPrincipalContext(
+  idService: IdentityAccessService,
+  principalId: string,
+  scopes: string[] = ["*"],
+  sourceGateway: "local" | "public" | "stdio" = "local",
+  requestId = `test_${principalId}`
+): PrincipalContext {
+  const { token } = idService.issueCredential(principalId, scopes);
+  return idService.authenticateToken(token, sourceGateway, requestId);
 }

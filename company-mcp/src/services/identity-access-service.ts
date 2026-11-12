@@ -77,33 +77,10 @@ export class IdentityAccessService {
     });
   }
 
-  public getPrincipalById(principalId: string): PrincipalContext | null {
-    const p = this.getPrincipal(principalId);
-    if (!p) return null;
-
-    const scopesSet = new Set<string>(
-      p.is_human
-        ? ["*"]
-        : ["company:read", "workspace:read:self", "workspace:write:self", "tasks:read:assigned", "tasks:update:assigned"]
+  public getPrincipalById(_principalId: string): PrincipalContext | null {
+    throw new Error(
+      "SECURITY_VIOLATION: Unauthenticated principal synthesis via getPrincipalById() is disabled; authenticate using an active credential via authenticateToken()"
     );
-
-    return {
-      authenticated: true,
-      principalId: p.principal_id,
-      principalType: p.is_human ? "human" : "agent",
-      displayName: p.name,
-      agentId: p.is_human ? null : p.principal_id,
-      scopes: scopesSet,
-      credentialId: "cred_internal",
-      role: p.role,
-      department: p.department,
-      accessProfile: p.is_human ? "human_owner" : "local_agent_physical",
-      workspaceId: p.is_human ? null : `ws_${p.principal_id}`,
-      allowPublicGateway: !p.is_human,
-      sourceGateway: "local",
-      requestId: "req_internal",
-      authenticatedAt: new Date().toISOString()
-    };
   }
 
   public issueCredential(
