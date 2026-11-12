@@ -5,8 +5,9 @@
 **Reporting To:** `chatgpt-01` (CEO & Main Orchestrator) & **Founder**  
 **Branch:** `fix/runtime-stabilization-p0-remediation`  
 **Baseline Audited:** `98938a2de45788ff8b5a5522713ee979d789b03f`  
-**Commit Part 1 (Project Code & Regression Tests):** `afbc906` (`fix(security): stabilize HTTP keep-alive/rate-limiting and remediate P0-01 to P0-04`), followed by `7ae9f69` (`fix(security): enforce mandatory service CAS and workspace TOCTOU defense`)  
-**Commit Part 2 (Deliverables & Notes):** `cad9ac7` + follow-up handoff update (`docs/implementation/v3/runtime-stabilization-p0-remediation/P0_REMEDIATION_AND_STABILIZATION_HANDOFF.md`)
+**Pull Request (Unmerged, Targeting `main`):** https://github.com/kietpro352010/AICO/pull/1  
+**Commit Part 1 (Project Code & Regression Tests):** `afbc906` -> `7ae9f69` -> `5d3df69`  
+**Commit Part 2 (Deliverables & Notes):** `cad9ac7` + `8c5c1e2` + final PR CI & verification update (`docs/implementation/v3/runtime-stabilization-p0-remediation/P0_REMEDIATION_AND_STABILIZATION_HANDOFF.md`)
 
 > **Governance Note:** Per AICO directives, `flash-02` cannot self-approve its own security remediation. `main` and `master` have **not** been modified, pushed, or merged; this branch is ready for independent review by `chatgpt-01` and Founder approval.
 
@@ -53,16 +54,16 @@ Command executed after the final code and test edit (on isolated temporary sandb
 Set-Location d:\AI-COMPANY\company-mcp
 npm.cmd test   # node --import tsx --test "test/**/*.test.ts"
 ```
-Observed output:
+Observed output (`5d3df69`):
 - **Exit code:** `0`
-- **Total assertions/cases:** **`tests 135` | `suites 1` | `pass 135` | `fail 0` | `cancelled 0` | `skipped 0` | `todo 0`** (`duration_ms 17867.3702`)
+- **Total assertions/cases:** **`tests 135` | `suites 1` | `pass 135` | `fail 0` | `cancelled 0` | `skipped 0` | `todo 0`** (`duration_ms 19527.5533`)
 - Covers all **15 test files** (`baseline.test.ts`, `t01`–`t05`, `t07`–`t10`, `t16`–`t20`), including:
   - [`t19-runtime-stabilization-regressions.test.ts`](../../../../company-mcp/test/t19-runtime-stabilization-regressions.test.ts): `F-02`..`F-06` + `Phase A: configureGatewayHttpServer prevents idle keep-alive ECONNRESET past 5s` (**6 subtests + parent suite PASS**, including omitted/zero `expectedVersion` checks on `reviewTask`).
   - [`t20-p0-security-remediation.test.ts`](../../../../company-mcp/test/t20-p0-security-remediation.test.ts): **`P0-01`..`P0-04` + `P0-01b` (TOCTOU race tests) + `P0-03b` (mandatory service CAS & M31/M32 JSON-RPC tests)** (**6 subtests + parent suite PASS**).
 
-### 3.2 TypeScript Typecheck Status & Windows Local Behavior
-- Attempted bounded local verification of `tsc --noEmit` (`node ./node_modules/typescript/bin/tsc --noEmit`, using TypeScript `^7.0.2` native binary `@typescript/typescript-win32-x64\lib\tsc.exe`).
-- **Observed result:** Process stalled past `20s` on the local Windows workstation (`SmartScreen` gating `tsc.exe` startup) and was cleanly cancelled. To provide independent typecheck + test evidence without modifying `main`/`master`, a **Pull Request (unmerged)** from `fix/runtime-stabilization-p0-remediation` into `main` triggers `.github/workflows/ci.yml` on `windows-latest` (`npm run typecheck` + `npm test`).
+### 3.2 TypeScript Typecheck Status & Windows PR CI Catch
+- Local workstation `tsc --noEmit` (`node ./node_modules/typescript/bin/tsc --noEmit`, TypeScript `^7.0.2` native binary `tsc.exe`) stalled past `20s` under Windows SmartScreen and was cancelled.
+- Initial PR #1 CI run (`43165399360` at `8c5c1e2`) caught two `tsc --noEmit` errors missed during runtime execution (`approval-service.ts:79` narrowing `"human" | "agent"` and `t20:860` `eventCategory` literal `"security"` -> `"policy"`), both resolved cleanly in commit `5d3df69`.
 
 ### 3.3 Production & Policy Guardrails Verified
 - `D:\AI-COMPANY\data\aico.db` verified byte-for-byte untouched (`Length: 45056`, `LastWriteTimeUtc: 11/5/2026 9:22:39 AM`, `SHA256: 17BD93214291E33260DF4A3D0B7DAD417BCA05C137770443D4D3FA965595E416`, matching `.github/workflows/ci.yml`).
@@ -102,6 +103,6 @@ Per the Task Directive scope (Phase A CI fix + P0 remediation only; V3 integrati
 
 ## 6. Final Handoff to `chatgpt-01` & Founder
 
-- **Recommended Next Step 1:** `chatgpt-01` (with `flash-01` CTO review) inspects commits `afbc906` + `7ae9f69` and this report on the unmerged Pull Request (`fix/runtime-stabilization-p0-remediation` -> `main`), along with the live `windows-latest` CI run.
+- **Recommended Next Step 1:** `chatgpt-01` (with `flash-01` CTO review) inspects commits `afbc906`, `7ae9f69`, `5d3df69`, and this report on unmerged Pull Request #1 (`https://github.com/kietpro352010/AICO/pull/1`, `fix/runtime-stabilization-p0-remediation` -> `main`), along with the `windows-latest` CI check.
 - **Recommended Next Step 2:** Upon Founder/`chatgpt-01` approval, merge the PR to `main` and fast-forward/sync `master` (and enable GitHub Branch Protection + required status checks on `main` and `master`).
 - **Recommended Next Step 3:** Keep `V3-G3`, `V3-G4`, and `V3-G7` locked until Phase 1B resolves `P1-02`..`P1-09` and `P1-06`.
