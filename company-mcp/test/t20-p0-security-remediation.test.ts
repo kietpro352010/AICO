@@ -1341,6 +1341,17 @@ test("T20: P0 Security Remediation Suite (P0-01 to P0-04)", async (t) => {
       scopes: ["company:read", "tasks:claim", "tasks:transition", "tasks:submit"],
       allow_public_gateway: false
     }).token;
+    const codexCtx = issueTestPrincipalContext(idService, "codex-01", [
+      "company:read",
+      "tasks:claim",
+      "tasks:transition",
+      "tasks:submit"
+    ]);
+    const codexToken = idService.issueCredential({
+      principal_id: "codex-01",
+      scopes: ["company:read", "tasks:claim", "tasks:transition", "tasks:submit"],
+      allow_public_gateway: false
+    }).token;
 
     // 1. Contract schema enforcement for M31 & M32
     assert.equal(
@@ -1356,12 +1367,56 @@ test("T20: P0 Security Remediation Suite (P0-01 to P0-04)", async (t) => {
       false
     );
     assert.equal(
-      CompanySubmitTaskResultInputSchema.safeParse({ task_id: "t_1", summary: "done" }).success,
+      CompanyTransitionTaskInputSchema.safeParse({
+        task_id: "t_1",
+        to_status: "queued",
+        expected_version: 1,
+        approval_id: "appr_1"
+      }).success,
+      true
+    );
+    assert.equal(
+      CompanyTransitionTaskInputSchema.safeParse({
+        task_id: "t_1",
+        to_status: "queued",
+        expected_version: 1,
+        approval_request_id: "appr_1"
+      }).success,
+      true
+    );
+    assert.equal(
+      CompanySubmitTaskResultInputSchema.safeParse({
+        task_id: "t_1",
+        verification_evidence: "done",
+        output_artifact_ids: ["art_1"]
+      }).success,
       false
     );
     assert.equal(
-      CompanySubmitTaskResultInputSchema.safeParse({ task_id: "t_1", expected_version: -1, summary: "done" }).success,
+      CompanySubmitTaskResultInputSchema.safeParse({
+        task_id: "t_1",
+        expected_version: -1,
+        verification_evidence: "done",
+        output_artifact_ids: ["art_1"]
+      }).success,
       false
+    );
+    assert.equal(
+      CompanySubmitTaskResultInputSchema.safeParse({
+        task_id: "t_1",
+        expected_version: 1,
+        summary: "done"
+      } as any).success,
+      false
+    );
+    assert.equal(
+      CompanySubmitTaskResultInputSchema.safeParse({
+        task_id: "t_1",
+        expected_version: 1,
+        verification_evidence: "tests pass",
+        output_artifact_ids: ["art_1"]
+      }).success,
+      true
     );
 
     const localApp = buildGatewayHttpApp({
@@ -1553,6 +1608,81 @@ test("T20: P0 Security Remediation Suite (P0-01 to P0-04)", async (t) => {
       });
       assert.equal(reviewed.execution_status, "completed");
       assert.equal(reviewed.version, 7);
+
+      // 6. Same-status idempotent replay (fromStatus === toStatus) must NOT bypass ABAC / SoD / gateway checks
+      assert.throws(
+        () =>
+          taskService.transitionTask({
+            ctx: codexCtx,
+            taskId: task.task_id,
+            expectedVersion: 7,
+            toStatus: "completed"
+          }),
+        /ABAC_OWNERSHIP_OR_SOD_VIOLATION/
+      );
+      assert.throws(
+        () =>
+          taskService.transitionTask({
+            ctx: flash2Ctx,
+            taskId: task.task_id,
+            expectedVersion: 7,
+            toStatus: "completed"
+          }),
+        /ABAC_OWNERSHIP_OR_SOD_VIOLATION/
+      );
+      assert.throws(
+        () =>
+          taskService.transitionTask({
+            ctx: flash1Ctx,
+            taskId: task.task_id,
+            expectedVersion: 7,
+            toStatus: "completed",
+            allowReviewAndAdminTransitions: false
+          }),
+        /TOOL_NOT_EXPOSED_ON_PUBLIC_GATEWAY/
+      );
+
+      const m31SameStatusDenied = await postJsonRpc(localSrv.port, codexToken, {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          name: "company_transition_task",
+          arguments: { task_id: task.task_id, to_status: "completed", expected_version: 7 }
+        },
+        id: 507
+      });
+      assert.equal(m31SameStatusDenied.json.result?.isError, true);
+      assert.match(m31SameStatusDenied.json.result.content[0].text, /ABAC_OWNERSHIP_OR_SOD_VIOLATION/);
+
+      // Authorized executive reviewer idempotent replay still succeeds
+      const replayedCompleted = taskService.transitionTask({
+        ctx: flash1Ctx,
+        taskId: task.task_id,
+        expectedVersion: 7,
+        toStatus: "completed"
+      });
+      assert.equal(replayedCompleted.execution_status, "completed");
+      assert.equal(replayedCompleted.version, 7);
+
+      // Archive (7 -> 8) and ensure non-archive caller cannot replay archived -> archived
+      const archived = taskService.transitionTask({
+        ctx: flash1Ctx,
+        taskId: task.task_id,
+        expectedVersion: 7,
+        toStatus: "archived"
+      });
+      assert.equal(archived.execution_status, "archived");
+      assert.equal(archived.version, 8);
+      assert.throws(
+        () =>
+          taskService.transitionTask({
+            ctx: flash2Ctx,
+            taskId: task.task_id,
+            expectedVersion: 8,
+            toStatus: "archived"
+          }),
+        /PERMISSION_DENIED/
+      );
     } finally {
       await localSrv.close();
       sandbox.cleanup();

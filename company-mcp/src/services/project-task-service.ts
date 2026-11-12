@@ -759,12 +759,10 @@ export class ProjectTaskService {
       const fromStatus: TaskExecutionStatus = task.execution_status;
       const toStatus: TaskExecutionStatus = input.toStatus;
 
-      if (fromStatus === toStatus) {
-        return task as TaskRecord;
-      }
-
       if (input.allowReviewAndAdminTransitions === false) {
-        const isReviewDecision = fromStatus === "review_required" && (toStatus === "completed" || toStatus === "rework");
+        const isReviewDecision =
+          (fromStatus === "review_required" && (toStatus === "completed" || toStatus === "rework")) ||
+          (fromStatus === toStatus && (toStatus === "completed" || toStatus === "rework"));
         const isArchiveTransition = toStatus === "archived";
         const isApprovalGateResolution =
           fromStatus === "waiting_approval" && (toStatus === "queued" || toStatus === "in_progress");
@@ -781,8 +779,47 @@ export class ProjectTaskService {
       const isLeaseOwner = Boolean(
         task.lease_owner_agent_id && callerAgentId && callerAgentId === task.lease_owner_agent_id
       );
+      const isDesignatedReviewer = Boolean(
+        task.reviewer_agent_id && callerAgentId && callerAgentId === task.reviewer_agent_id
+      );
       const leaseExpiresMs = task.lease_expires_at ? Date.parse(task.lease_expires_at) : Number.NaN;
       const isLeaseExpired = Boolean(task.lease_expires_at && (Number.isNaN(leaseExpiresMs) || leaseExpiresMs <= now.getTime()));
+
+      // Authorize even when fromStatus === toStatus so idempotent replays cannot bypass ABAC/SoD/role checks
+      if (fromStatus === toStatus) {
+        if (toStatus === "archived") {
+          if (!isArchiveLead) {
+            throw new Error("PERMISSION_DENIED: Only executive leadership (founder-01 or flash-01) can archive tasks");
+          }
+        } else if (toStatus === "completed" || toStatus === "rework") {
+          if (isAssigned && !isFounder) {
+            throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Agent cannot review own task (Separation of Duties)");
+          }
+          if (task.reviewer_agent_id) {
+            if (!isDesignatedReviewer && !isReviewerLead) {
+              throw new Error(
+                `ABAC_OWNERSHIP_OR_SOD_VIOLATION: Only designated reviewer '${task.reviewer_agent_id}' or executive leadership can review task`
+              );
+            }
+          } else if (!isReviewerLead) {
+            throw new Error("ABAC_OWNERSHIP_OR_SOD_VIOLATION: Tasks without designated reviewer can only be reviewed by executive leadership");
+          }
+        } else if (toStatus === "draft" || toStatus === "waiting_approval" || toStatus === "cancelled") {
+          if (!isExecutive && !isCreator) {
+            throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' is not authorized to transition task in '${fromStatus}' state`);
+          }
+        } else {
+          if (!isExecutive && !isCreator && !isAssigned && !isLeaseOwner) {
+            throw new Error(`ABAC_OWNERSHIP_OR_SOD_VIOLATION: Caller '${actorId}' is not authorized to transition task '${input.taskId}'`);
+          }
+          if (task.lease_owner_agent_id && !isLeaseOwner && !isExecutive) {
+            throw new Error(
+              `ABAC_OWNERSHIP_OR_SOD_VIOLATION: Task lease is held by '${task.lease_owner_agent_id}', not '${callerAgentId || actorId}'`
+            );
+          }
+        }
+        return task as TaskRecord;
+      }
 
       // Authorization guard for task cancellation across all cancel transitions
       if (toStatus === "cancelled") {

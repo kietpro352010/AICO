@@ -15,7 +15,11 @@ import { KnowledgeMemoryService } from "./services/knowledge-memory-service.js";
 import { ObservabilityQuotaService } from "./services/observability-quota-service.js";
 import { PUBLIC_TOOL_ALLOWLIST } from "./security/http-security-pipeline.js";
 import { getRequestContext, hasPrincipalScope, isFounderHuman, requireRequestContext } from "./security/context-store.js";
-import { CompanyKnowledgeMemoryOpsInputSchema } from "./contracts/mcp-tool-schemas.js";
+import {
+  CompanyKnowledgeMemoryOpsInputSchema,
+  CompanySubmitTaskResultInputSchema,
+  CompanyTransitionTaskInputSchema
+} from "./contracts/mcp-tool-schemas.js";
 import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from "./contracts/query-limits.js";
 
 export const DB_PATH = RuntimeConfig.getDbPath();
@@ -1249,13 +1253,7 @@ export function registerAllV221Tools(
     {
       title: "Transition Task",
       description: "Transition a task according to the 26-state transition matrix.",
-      inputSchema: z.object({
-        task_id: z.string().min(1),
-        to_status: z.string().min(1),
-        expected_version: z.number().int().min(1),
-        reason: z.string().optional(),
-        approval_id: z.string().optional()
-      })
+      inputSchema: CompanyTransitionTaskInputSchema
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
@@ -1265,7 +1263,7 @@ export function registerAllV221Tools(
         expectedVersion: args.expected_version,
         toStatus: args.to_status,
         reason: args.reason,
-        approvalId: args.approval_id,
+        approvalId: args.approval_id ?? args.approval_request_id,
         allowReviewAndAdminTransitions: !isPublic
       });
 
@@ -1299,12 +1297,7 @@ export function registerAllV221Tools(
     {
       title: "Submit Task Result",
       description: "Submit task result for review.",
-      inputSchema: z.object({
-        task_id: z.string().min(1),
-        expected_version: z.number().int().min(1),
-        verification_evidence: z.string().min(1),
-        output_artifact_ids: z.array(z.string()).min(1)
-      })
+      inputSchema: CompanySubmitTaskResultInputSchema
     },
     async (args: any, extra: any) => {
       const ctx = resolvePrincipal(extra);
