@@ -115,12 +115,12 @@ test("T04-T08 Comprehensive Verification: Git, Knowledge FTS5, Task State Machin
     });
 
     assert.throws(
-      () => ptService.reviewTask({ ctx: flash2Ctx, taskId: "task_100", decision: "completed" }),
+      () => ptService.reviewTask({ ctx: flash2Ctx, taskId: "task_100", expectedVersion: 1, decision: "completed" }),
       /ABAC_OWNERSHIP_OR_SOD_VIOLATION/
     );
 
     // Founder or CTO can review
-    const reviewed = ptService.reviewTask({ ctx: flash1Ctx, taskId: "task_100", decision: "completed" });
+    const reviewed = ptService.reviewTask({ ctx: flash1Ctx, taskId: "task_100", expectedVersion: 1, decision: "completed" });
     assert.equal(reviewed.execution_status, "completed");
 
     // 4. ObservabilityQuotaService & HMAC Audit Chain

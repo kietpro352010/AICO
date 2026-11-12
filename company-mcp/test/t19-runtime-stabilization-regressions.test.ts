@@ -219,7 +219,11 @@ test("T19: Runtime Stabilization Regressions (F-02 to F-06)", async (t) => {
           /VALIDATION_ERROR: claimTask requires a positive integer expectedVersion/
         );
 
-        // Direct service reviewTask with invalid expectedVersion throws VALIDATION_ERROR
+        // Direct service reviewTask without or with invalid expectedVersion throws VALIDATION_ERROR
+        assert.throws(
+          () => (taskService as any).reviewTask({ ctx: flash1Ctx, taskId: task.task_id, decision: "completed" }),
+          /VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer/
+        );
         assert.throws(
           () => taskService.reviewTask({ ctx: flash1Ctx, taskId: task.task_id, expectedVersion: 0, decision: "completed" }),
           /VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer/

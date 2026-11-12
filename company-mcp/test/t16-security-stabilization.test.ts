@@ -659,6 +659,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
         () => taskService.reviewTask({
           ctx: { authenticated: false, principalId: "flash-01", principalType: "agent" } as any,
           taskId: tAuth.task_id,
+          expectedVersion: 1,
           decision: "completed"
         }),
         /AUTHENTICATION_REQUIRED.*ctx\.authenticated must be true/
@@ -669,6 +670,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
         () => taskService.reviewTask({
           ctx: { authenticated: true, principalId: "", principalType: "agent" } as any,
           taskId: tAuth.task_id,
+          expectedVersion: 1,
           decision: "completed"
         }),
         /AUTHENTICATION_REQUIRED.*valid principalId/
@@ -677,6 +679,7 @@ test("T16: Critical Security Stabilization & P0/P1 Remediation Suite", async (t)
         () => taskService.reviewTask({
           ctx: { authenticated: true, principalId: "flash-01", principalType: "system" } as any,
           taskId: tAuth.task_id,
+          expectedVersion: 1,
           decision: "completed"
         }),
         /AUTHENTICATION_REQUIRED.*valid principalType/

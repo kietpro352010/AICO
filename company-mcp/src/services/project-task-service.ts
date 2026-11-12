@@ -627,6 +627,16 @@ export class ProjectTaskService {
     });
   }
 
+  private assertValidExpectedVersion(expectedVersion: unknown, message: string): asserts expectedVersion is number {
+    if (
+      typeof expectedVersion !== "number" ||
+      !Number.isInteger(expectedVersion) ||
+      expectedVersion < 1
+    ) {
+      throw new Error(message);
+    }
+  }
+
   public claimTask(params: {
     ctx?: PrincipalContext;
     taskId: string;
@@ -638,9 +648,10 @@ export class ProjectTaskService {
     if (!claimerId) {
       throw new Error("VALIDATION_ERROR: Agent ID or Founder principal required to claim task");
     }
-    if (typeof params.expectedVersion !== "number" || !Number.isInteger(params.expectedVersion) || params.expectedVersion < 1) {
-      throw new Error("VALIDATION_ERROR: claimTask requires a positive integer expectedVersion");
-    }
+    this.assertValidExpectedVersion(
+      params.expectedVersion,
+      "VALIDATION_ERROR: claimTask requires a positive integer expectedVersion"
+    );
 
     return this.transitionTask({
       ctx: params.ctx,
@@ -658,6 +669,11 @@ export class ProjectTaskService {
     outputArtifactIds: string[];
     verificationEvidence: string;
   }): TaskRecord {
+    assertAuthenticatedContext(params.ctx, "submitTaskResult", { allowedPrincipalTypes: ["human", "agent"] });
+    this.assertValidExpectedVersion(
+      params.expectedVersion,
+      "VALIDATION_ERROR: submitTaskResult requires a positive integer expectedVersion"
+    );
     if (!params.outputArtifactIds || params.outputArtifactIds.length === 0) {
       throw new Error("INVALID_ARGUMENT: submitTaskResult requires at least one output artifact ID");
     }
@@ -679,7 +695,7 @@ export class ProjectTaskService {
   public reviewTask(params: {
     ctx?: PrincipalContext;
     taskId: string;
-    expectedVersion?: number;
+    expectedVersion: number;
     decision: "completed" | "rework";
     reason?: string;
     reviewerId?: string;
@@ -697,14 +713,10 @@ export class ProjectTaskService {
       throw new Error("AUTHENTICATION_REQUIRED: reviewTask requires a valid principalType ('human' | 'agent') in PrincipalContext");
     }
 
-    if (
-      params.expectedVersion !== undefined &&
-      (typeof params.expectedVersion !== "number" ||
-        !Number.isInteger(params.expectedVersion) ||
-        params.expectedVersion < 1)
-    ) {
-      throw new Error("VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer");
-    }
+    this.assertValidExpectedVersion(
+      params.expectedVersion,
+      "VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer"
+    );
 
     const reviewerId = params.ctx.principalId;
     const toStatus: TaskExecutionStatus = params.decision === "completed" ? "completed" : "rework";
@@ -712,7 +724,7 @@ export class ProjectTaskService {
     return this.transitionTask({
       ctx: params.ctx,
       taskId: params.taskId,
-      expectedVersion: params.expectedVersion as any,
+      expectedVersion: params.expectedVersion,
       toStatus,
       reason: params.reason,
       note: `Task review decision: ${params.decision} by ${reviewerId}`
@@ -721,6 +733,10 @@ export class ProjectTaskService {
 
   public transitionTask(input: TransitionInput): TaskRecord {
     assertAuthenticatedContext(input.ctx, "transitionTask", { allowedPrincipalTypes: ["human", "agent"] });
+    this.assertValidExpectedVersion(
+      input.expectedVersion,
+      "VALIDATION_ERROR: transitionTask requires a positive integer expectedVersion"
+    );
     const now = new Date();
     const nowIso = now.toISOString();
     const actorId = input.ctx.principalId;
@@ -735,8 +751,8 @@ export class ProjectTaskService {
       const task = db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(input.taskId) as any;
       if (!task) throw new Error(`RESOURCE_NOT_FOUND: Task ${input.taskId} not found`);
 
-      // Optimistic locking
-      if (input.expectedVersion !== undefined && task.version !== input.expectedVersion) {
+      // Mandatory optimistic locking (CAS)
+      if (task.version !== input.expectedVersion) {
         throw new Error(`TASK_VERSION_CONFLICT: Optimistic lock failure: expected version ${input.expectedVersion}, but found ${task.version}`);
       }
 
@@ -1092,14 +1108,14 @@ export class ProjectTaskService {
         ? input.verificationEvidence
         : task.verification_evidence;
 
-      db.prepare(`
+      const updateResult = db.prepare(`
         UPDATE tasks
         SET execution_status = ?, dispatch_status = ?, lease_owner_agent_id = ?,
             lease_expires_at = ?, retry_count = ?, started_at = ?, completed_at = ?,
             output_artifact_ids_json = ?, verification_evidence = ?,
             approval_request_id = ?,
             version = version + 1, updated_at = ?
-        WHERE task_id = ?
+        WHERE task_id = ? AND version = ? AND execution_status = ?
       `).run(
         toStatus,
         newDispatchStatus,
@@ -1112,8 +1128,15 @@ export class ProjectTaskService {
         verificationEvidence,
         newApprovalRequestId,
         nowIso,
-        input.taskId
+        input.taskId,
+        input.expectedVersion,
+        fromStatus
       );
+      if (updateResult.changes !== 1) {
+        throw new Error(
+          `TASK_VERSION_CONFLICT: Concurrent state modification detected for task ${input.taskId} at expected version ${input.expectedVersion}`
+        );
+      }
 
       // Append immutable task_events record
       db.prepare(`

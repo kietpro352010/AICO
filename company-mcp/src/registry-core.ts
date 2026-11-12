@@ -1252,7 +1252,7 @@ export function registerAllV221Tools(
       inputSchema: z.object({
         task_id: z.string().min(1),
         to_status: z.string().min(1),
-        expected_version: z.number(),
+        expected_version: z.number().int().min(1),
         reason: z.string().optional(),
         approval_id: z.string().optional()
       })
@@ -1301,7 +1301,7 @@ export function registerAllV221Tools(
       description: "Submit task result for review.",
       inputSchema: z.object({
         task_id: z.string().min(1),
-        expected_version: z.number(),
+        expected_version: z.number().int().min(1),
         verification_evidence: z.string().min(1),
         output_artifact_ids: z.array(z.string()).min(1)
       })

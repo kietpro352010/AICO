@@ -24,6 +24,10 @@ import { AgentIdentityService } from "../src/agent-identity-service.js";
 import { WorkspaceManager } from "../src/workspace-manager.js";
 import { createBaseMcpServer, createFullMcpServer } from "../src/registry-core.js";
 import {
+  CompanyTransitionTaskInputSchema,
+  CompanySubmitTaskResultInputSchema
+} from "../src/contracts/mcp-tool-schemas.js";
+import {
   HttpSecurityPipeline,
   LOCAL_GATEWAY_PROFILE,
   PUBLIC_GATEWAY_PROFILE,
@@ -1037,6 +1041,518 @@ test("T20: P0 Security Remediation Suite (P0-01 to P0-04)", async (t) => {
       } finally {
         await bruteSrv.close();
       }
+    } finally {
+      await localSrv.close();
+      sandbox.cleanup();
+    }
+  });
+
+  await t.test("P0-01b: TOCTOU symlink/junction defense during read/write/share & concurrent race stress", async () => {
+    const sandbox = createSandboxTestContext("aico-t20-toctou-");
+    const conn = new ConnectionManager(sandbox.dbPath);
+    const runner = new MigrationRunner(conn);
+    runner.runMigrations([migrationV040, migrationV050Schema]);
+
+    const idService = new IdentityAccessService(conn);
+    const flash1Ctx = issueTestPrincipalContext(idService, "flash-01", [
+      "workspace:read:self",
+      "workspace:write:self"
+    ]);
+    const flash2Ctx = issueTestPrincipalContext(idService, "flash-02", [
+      "workspace:read:self",
+      "workspace:write:self"
+    ]);
+
+    const wsRoot = path.join(sandbox.tempDir, "ws-toctou");
+    const outsideDir = path.join(sandbox.tempDir, "outside-vault");
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, "secret.txt"), "OUTSIDE-SECRET-LEAK", "utf8");
+
+    try {
+      // 1. Deterministic write TOCTOU: parent dir swapped to external junction right before commit rename
+      let armedWriteSwap = false;
+      const writeSwapSvc = new WorkspaceArtifactService(wsRoot, conn, {
+        onBeforeIoStage: (stage, targetPath) => {
+          if (armedWriteSwap && stage === "pre_write_commit" && targetPath.endsWith("payload.txt")) {
+            armedWriteSwap = false;
+            const parent = path.dirname(targetPath);
+            fs.rmSync(parent, { recursive: true, force: true });
+            fs.symlinkSync(outsideDir, parent, "junction");
+          }
+        }
+      });
+      writeSwapSvc.writeArtifact({
+        agentId: "flash-01",
+        relativePath: "toctou-w/seed.txt",
+        content: "seed",
+        ctx: flash1Ctx
+      });
+      armedWriteSwap = true;
+      assert.throws(
+        () =>
+          writeSwapSvc.writeArtifact({
+            agentId: "flash-01",
+            relativePath: "toctou-w/payload.txt",
+            content: "pwned-outside",
+            overwrite: true,
+            ctx: flash1Ctx
+          }),
+        /WORKSPACE_PATH_SECURITY_VIOLATION/
+      );
+      assert.equal(fs.existsSync(path.join(outsideDir, "payload.txt")), false);
+
+      // 2. Deterministic overwrite=false TOCTOU: parent swapped at pre_write_open + exclusive create race
+      let armedExclJunction = false;
+      const exclSwapSvc = new WorkspaceArtifactService(wsRoot, conn, {
+        onBeforeIoStage: (stage, targetPath) => {
+          if (armedExclJunction && stage === "pre_write_open" && targetPath.endsWith("excl.txt")) {
+            armedExclJunction = false;
+            const parent = path.dirname(targetPath);
+            fs.rmSync(parent, { recursive: true, force: true });
+            fs.symlinkSync(outsideDir, parent, "junction");
+          }
+        }
+      });
+      exclSwapSvc.writeArtifact({
+        agentId: "flash-01",
+        relativePath: "toctou-excl/seed.txt",
+        content: "seed",
+        ctx: flash1Ctx
+      });
+      armedExclJunction = true;
+      assert.throws(
+        () =>
+          exclSwapSvc.writeArtifact({
+            agentId: "flash-01",
+            relativePath: "toctou-excl/excl.txt",
+            content: "should-not-write",
+            overwrite: false,
+            ctx: flash1Ctx
+          }),
+        /WORKSPACE_PATH_SECURITY_VIOLATION/
+      );
+      assert.equal(fs.existsSync(path.join(outsideDir, "excl.txt")), false);
+
+      let armedExclFileRace = false;
+      const exclRaceSvc = new WorkspaceArtifactService(wsRoot, conn, {
+        onBeforeIoStage: (stage, targetPath) => {
+          if (armedExclFileRace && stage === "pre_write_commit" && targetPath.endsWith("race.txt")) {
+            armedExclFileRace = false;
+            fs.writeFileSync(targetPath, "winner-content", "utf8");
+          }
+        }
+      });
+      armedExclFileRace = true;
+      assert.throws(
+        () =>
+          exclRaceSvc.writeArtifact({
+            agentId: "flash-01",
+            relativePath: "toctou-race/race.txt",
+            content: "loser-overwrite",
+            overwrite: false,
+            ctx: flash1Ctx
+          }),
+        /FILE_ALREADY_EXISTS/
+      );
+      assert.equal(
+        exclRaceSvc.readArtifact("flash-01", "toctou-race/race.txt", flash1Ctx).content,
+        "winner-content"
+      );
+
+      // 3. Deterministic read TOCTOU: swap before openSync and before return
+      for (const hookStage of ["pre_read_open", "post_read_verify"] as const) {
+        let armedReadSwap = false;
+        const dirName = `toctou-r-${hookStage}`;
+        const readSwapSvc = new WorkspaceArtifactService(wsRoot, conn, {
+          onBeforeIoStage: (stage, targetPath) => {
+            if (armedReadSwap && stage === hookStage && targetPath.endsWith("secret.txt")) {
+              armedReadSwap = false;
+              const parent = path.dirname(targetPath);
+              fs.rmSync(parent, { recursive: true, force: true });
+              fs.symlinkSync(outsideDir, parent, "junction");
+            }
+          }
+        });
+        readSwapSvc.writeArtifact({
+          agentId: "flash-01",
+          relativePath: `${dirName}/secret.txt`,
+          content: "SAFE-INTERNAL",
+          ctx: flash1Ctx
+        });
+        armedReadSwap = true;
+        assert.throws(
+          () => readSwapSvc.readArtifact("flash-01", `${dirName}/secret.txt`, flash1Ctx),
+          /WORKSPACE_PATH_SECURITY_VIOLATION/
+        );
+      }
+
+      // 4. Deterministic shareArtifact TOCTOU: recipient inbox swapped to external junction mid-write
+      let armedShareSwap = false;
+      const shareSwapSvc = new WorkspaceArtifactService(wsRoot, conn, {
+        onBeforeIoStage: (stage, targetPath) => {
+          if (armedShareSwap && stage === "pre_write_commit" && targetPath.endsWith("_shared.md")) {
+            armedShareSwap = false;
+            const recipientInbox = path.dirname(targetPath);
+            fs.rmSync(recipientInbox, { recursive: true, force: true });
+            fs.symlinkSync(outsideDir, recipientInbox, "junction");
+          }
+        }
+      });
+      shareSwapSvc.writeArtifact({
+        agentId: "flash-01",
+        relativePath: "artifacts/shared.md",
+        content: "INTERNAL-SHARE",
+        ctx: flash1Ctx
+      });
+      shareSwapSvc.writeArtifact({
+        agentId: "flash-02",
+        relativePath: "inbox/placeholder.txt",
+        content: "placeholder",
+        ctx: flash2Ctx
+      });
+      armedShareSwap = true;
+      assert.throws(
+        () =>
+          shareSwapSvc.shareArtifact({
+            fromAgentId: "flash-01",
+            toAgentId: "flash-02",
+            sourceRelativePath: "artifacts/shared.md",
+            ctx: flash1Ctx
+          }),
+        /WORKSPACE_PATH_SECURITY_VIOLATION/
+      );
+      assert.equal(
+        fs.readdirSync(outsideDir).some((f) => f.endsWith("_shared.md")),
+        false
+      );
+
+      // 5. Concurrent async junction-swap stress test
+      const plainSvc = new WorkspaceArtifactService(wsRoot, conn);
+      const raceFolder = path.join(wsRoot, "workspaces", "flash-01", "concurrent-race");
+      fs.mkdirSync(raceFolder, { recursive: true });
+      fs.writeFileSync(path.join(raceFolder, "secret.txt"), "SAFE-CONCURRENT-INTERNAL", "utf8");
+
+      let stopSwapping = false;
+      const swapperPromise = (async () => {
+        for (let i = 0; i < 60 && !stopSwapping; i++) {
+          try {
+            fs.rmSync(raceFolder, { recursive: true, force: true });
+            if (i % 2 === 0) {
+              fs.symlinkSync(outsideDir, raceFolder, "junction");
+            } else {
+              fs.mkdirSync(raceFolder, { recursive: true });
+              fs.writeFileSync(path.join(raceFolder, "secret.txt"), "SAFE-CONCURRENT-INTERNAL", "utf8");
+            }
+          } catch {
+            // Ignore transient OS handle contention during concurrent swap
+          }
+          await new Promise((r) => setTimeout(r, 1));
+        }
+      })();
+
+      const ops: Array<Promise<void>> = [];
+      for (let i = 0; i < 30; i++) {
+        ops.push(
+          (async () => {
+            await new Promise((r) => setTimeout(r, i % 4));
+            try {
+              plainSvc.writeArtifact({
+                agentId: "flash-01",
+                relativePath: `concurrent-race/write-${i}.txt`,
+                content: `race-payload-${i}`,
+                ctx: flash1Ctx
+              });
+            } catch (err: any) {
+              const msg = String(err?.message || err);
+              assert.ok(
+                msg.includes("WORKSPACE_PATH_SECURITY_VIOLATION") ||
+                  ["ENOENT", "EEXIST", "EPERM", "EBUSY", "ENOTDIR"].includes(err?.code),
+                `Unexpected write error during race: ${msg}`
+              );
+            }
+          })()
+        );
+        ops.push(
+          (async () => {
+            await new Promise((r) => setTimeout(r, (i + 1) % 4));
+            try {
+              const res = plainSvc.readArtifact("flash-01", "concurrent-race/secret.txt", flash1Ctx);
+              assert.equal(res.content, "SAFE-CONCURRENT-INTERNAL");
+              assert.equal(res.content.includes("OUTSIDE-SECRET-LEAK"), false);
+            } catch (err: any) {
+              const msg = String(err?.message || err);
+              assert.ok(
+                msg.includes("WORKSPACE_PATH_SECURITY_VIOLATION") ||
+                  msg.includes("RESOURCE_NOT_FOUND") ||
+                  ["ENOENT", "EPERM", "EBUSY"].includes(err?.code),
+                `Unexpected read error during race: ${msg}`
+              );
+            }
+          })()
+        );
+      }
+
+      await Promise.all(ops);
+      stopSwapping = true;
+      await swapperPromise;
+
+      const outsideFiles = fs.readdirSync(outsideDir);
+      assert.equal(
+        outsideFiles.some((f) => f.startsWith("write-") || f.endsWith(".tmp")),
+        false,
+        `External directory leaked files during TOCTOU race: ${outsideFiles.join(", ")}`
+      );
+      assert.equal(fs.readFileSync(path.join(outsideDir, "secret.txt"), "utf8"), "OUTSIDE-SECRET-LEAK");
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  await t.test("P0-03b: Mandatory service-layer expectedVersion CAS & M31/M32 JSON-RPC schema enforcement", async () => {
+    const sandbox = createSandboxTestContext("aico-t20-cas-");
+    const conn = new ConnectionManager(sandbox.dbPath);
+    const runner = new MigrationRunner(conn);
+    runner.runMigrations([migrationV040, migrationV050Schema]);
+
+    const idService = new IdentityAccessService(conn);
+    const appService = new ApprovalService(conn);
+    const taskService = new ProjectTaskService(conn, appService);
+
+    const flash1Ctx = issueTestPrincipalContext(idService, "flash-01", [
+      "company:read",
+      "tasks:manage",
+      "tasks:transition",
+      "tasks:review"
+    ]);
+    const flash2Ctx = issueTestPrincipalContext(idService, "flash-02", [
+      "company:read",
+      "tasks:claim",
+      "tasks:transition",
+      "tasks:submit",
+      "tasks:review"
+    ]);
+    const flash1Token = idService.issueCredential({
+      principal_id: "flash-01",
+      scopes: ["company:read", "tasks:manage", "tasks:transition", "tasks:review"],
+      allow_public_gateway: false
+    }).token;
+    const flash2Token = idService.issueCredential({
+      principal_id: "flash-02",
+      scopes: ["company:read", "tasks:claim", "tasks:transition", "tasks:submit"],
+      allow_public_gateway: false
+    }).token;
+
+    // 1. Contract schema enforcement for M31 & M32
+    assert.equal(
+      CompanyTransitionTaskInputSchema.safeParse({ task_id: "t_1", to_status: "queued" }).success,
+      false
+    );
+    assert.equal(
+      CompanyTransitionTaskInputSchema.safeParse({ task_id: "t_1", to_status: "queued", expected_version: 0 }).success,
+      false
+    );
+    assert.equal(
+      CompanyTransitionTaskInputSchema.safeParse({ task_id: "t_1", to_status: "queued", expected_version: 1.5 }).success,
+      false
+    );
+    assert.equal(
+      CompanySubmitTaskResultInputSchema.safeParse({ task_id: "t_1", summary: "done" }).success,
+      false
+    );
+    assert.equal(
+      CompanySubmitTaskResultInputSchema.safeParse({ task_id: "t_1", expected_version: -1, summary: "done" }).success,
+      false
+    );
+
+    const localApp = buildGatewayHttpApp({
+      isPublicGateway: false,
+      conn,
+      idService,
+      workspaceRoot: sandbox.tempDir,
+      anchorFilePath: sandbox.anchorPath,
+      hmacKey: TEST_HMAC_KEY
+    });
+    const localSrv = await startGatewayServer(localApp, { ...LOCAL_GATEWAY_PROFILE, allowedHosts: ["127.0.0.1"] });
+
+    try {
+      const task = taskService.createTask({
+        ctx: flash1Ctx,
+        taskId: "task_cas_p03b",
+        title: "Mandatory Service CAS Task",
+        assignedAgentId: "flash-02",
+        riskClass: "low"
+      });
+      assert.equal(task.version, 1);
+
+      // 2. Service layer rejects missing/invalid expectedVersion on ALL state-changing methods
+      for (const badVer of [undefined, 0, -1, 1.5, NaN]) {
+        assert.throws(
+          () =>
+            (taskService as any).transitionTask({
+              ctx: flash1Ctx,
+              taskId: task.task_id,
+              expectedVersion: badVer,
+              toStatus: "queued"
+            }),
+          /VALIDATION_ERROR: transitionTask requires a positive integer expectedVersion/
+        );
+        assert.throws(
+          () =>
+            (taskService as any).claimTask({
+              ctx: flash2Ctx,
+              taskId: task.task_id,
+              expectedVersion: badVer
+            }),
+          /VALIDATION_ERROR: claimTask requires a positive integer expectedVersion/
+        );
+        assert.throws(
+          () =>
+            (taskService as any).submitTaskResult({
+              ctx: flash2Ctx,
+              taskId: task.task_id,
+              expectedVersion: badVer,
+              outputArtifactIds: ["art_1"],
+              verificationEvidence: "ok"
+            }),
+          /VALIDATION_ERROR: submitTaskResult requires a positive integer expectedVersion/
+        );
+        assert.throws(
+          () =>
+            (taskService as any).reviewTask({
+              ctx: flash1Ctx,
+              taskId: task.task_id,
+              expectedVersion: badVer,
+              decision: "completed"
+            }),
+          /VALIDATION_ERROR: reviewTask expectedVersion must be a positive integer/
+        );
+      }
+
+      // Advance draft(1) -> queued(2)
+      const q = taskService.transitionTask({
+        ctx: flash1Ctx,
+        taskId: task.task_id,
+        expectedVersion: 1,
+        toStatus: "queued"
+      });
+      assert.equal(q.version, 2);
+
+      // Same-status call with stale version must still fail with TASK_VERSION_CONFLICT
+      assert.throws(
+        () =>
+          taskService.transitionTask({
+            ctx: flash1Ctx,
+            taskId: task.task_id,
+            expectedVersion: 1,
+            toStatus: "queued"
+          }),
+        /TASK_VERSION_CONFLICT/
+      );
+
+      // 3. HTTP JSON-RPC M31 missing/invalid/stale expected_version
+      const m31Missing = await postJsonRpc(localSrv.port, flash1Token, {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { name: "company_transition_task", arguments: { task_id: task.task_id, to_status: "assigned" } },
+        id: 501
+      });
+      assert.equal(m31Missing.json.result?.isError, true);
+
+      const m31Zero = await postJsonRpc(localSrv.port, flash1Token, {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          name: "company_transition_task",
+          arguments: { task_id: task.task_id, to_status: "assigned", expected_version: 0 }
+        },
+        id: 502
+      });
+      assert.equal(m31Zero.json.result?.isError, true);
+
+      const m31Stale = await postJsonRpc(localSrv.port, flash1Token, {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          name: "company_transition_task",
+          arguments: { task_id: task.task_id, to_status: "assigned", expected_version: 1 }
+        },
+        id: 503
+      });
+      assert.equal(m31Stale.json.result?.isError, true);
+      assert.match(m31Stale.json.result.content[0].text, /TASK_VERSION_CONFLICT/);
+
+      // Move queued(2) -> assigned(3) -> claimed(4) -> in_progress(5)
+      taskService.transitionTask({ ctx: flash1Ctx, taskId: task.task_id, expectedVersion: 2, toStatus: "assigned" });
+      taskService.claimTask({ ctx: flash2Ctx, taskId: task.task_id, expectedVersion: 3 });
+      taskService.transitionTask({ ctx: flash2Ctx, taskId: task.task_id, expectedVersion: 4, toStatus: "in_progress" });
+
+      // 4. HTTP JSON-RPC M32 missing/invalid/stale expected_version, then valid expected_version=5
+      const m32Missing = await postJsonRpc(localSrv.port, flash2Token, {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          name: "company_submit_task_result",
+          arguments: { task_id: task.task_id, verification_evidence: "tests pass", output_artifact_ids: ["art_1"] }
+        },
+        id: 504
+      });
+      assert.equal(m32Missing.json.result?.isError, true);
+
+      const m32Stale = await postJsonRpc(localSrv.port, flash2Token, {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          name: "company_submit_task_result",
+          arguments: {
+            task_id: task.task_id,
+            expected_version: 4,
+            verification_evidence: "tests pass",
+            output_artifact_ids: ["art_1"]
+          }
+        },
+        id: 505
+      });
+      assert.equal(m32Stale.json.result?.isError, true);
+      assert.match(m32Stale.json.result.content[0].text, /TASK_VERSION_CONFLICT/);
+
+      const m32Valid = await postJsonRpc(localSrv.port, flash2Token, {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          name: "company_submit_task_result",
+          arguments: {
+            task_id: task.task_id,
+            expected_version: 5,
+            verification_evidence: "tests pass",
+            output_artifact_ids: ["art_1"]
+          }
+        },
+        id: 506
+      });
+      assert.equal(m32Valid.json.result?.isError, undefined);
+      const m32Parsed = JSON.parse(m32Valid.json.result.content[0].text);
+      assert.equal(m32Parsed.execution_status, "review_required");
+      assert.equal(m32Parsed.version, 6);
+
+      // 5. reviewTask requires exact version 6 (stale 5 rejected, 6 succeeds -> version 7)
+      assert.throws(
+        () =>
+          taskService.reviewTask({
+            ctx: flash1Ctx,
+            taskId: task.task_id,
+            expectedVersion: 5,
+            decision: "completed"
+          }),
+        /TASK_VERSION_CONFLICT/
+      );
+      const reviewed = taskService.reviewTask({
+        ctx: flash1Ctx,
+        taskId: task.task_id,
+        expectedVersion: 6,
+        decision: "completed"
+      });
+      assert.equal(reviewed.execution_status, "completed");
+      assert.equal(reviewed.version, 7);
     } finally {
       await localSrv.close();
       sandbox.cleanup();
