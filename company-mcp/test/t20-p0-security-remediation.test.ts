@@ -401,7 +401,7 @@ test("T20: P0 Security Remediation Suite (P0-01 to P0-04)", async (t) => {
     }
 
     // 2. Base 5-tool MCP server M01-M05 fail-closed check
-    const baseServer = createBaseMcpServer();
+    const baseServer = createBaseMcpServer({ dbPath: sandbox.dbPath });
     const baseTools = (baseServer as any)._registeredTools;
     for (const toolName of ["company_ping", "company_get_info", "company_list_agents", "company_get_agent", "company_list_quota_pools"]) {
       const handler = baseTools[toolName].handler;

@@ -53,8 +53,8 @@ export type QuotaPoolRow = {
   agent_ids: string;
 };
 
-export function readAgents(agentId?: string): AgentRow[] {
-  const db = new DatabaseSync(RuntimeConfig.getDbPath());
+export function readAgents(agentId?: string, dbPath?: string): AgentRow[] {
+  const db = new DatabaseSync(dbPath ?? RuntimeConfig.getDbPath());
   try {
     db.exec("PRAGMA busy_timeout = 5000;");
     if (agentId) {
@@ -67,8 +67,8 @@ export function readAgents(agentId?: string): AgentRow[] {
   }
 }
 
-export function readQuotaPools(): QuotaPoolRow[] {
-  const db = new DatabaseSync(RuntimeConfig.getDbPath());
+export function readQuotaPools(dbPath?: string): QuotaPoolRow[] {
+  const db = new DatabaseSync(dbPath ?? RuntimeConfig.getDbPath());
   try {
     db.exec("PRAGMA busy_timeout = 5000;");
     return db.prepare(`
@@ -127,7 +127,7 @@ export function formatAgent(row: AgentRow) {
 }
 
 // Legacy 5-tool registration for base server compatibility (authenticated fail-closed)
-export function registerCompanyTools(server: McpServer): void {
+export function registerCompanyTools(server: McpServer, options?: { dbPath?: string }): void {
   // M01
   server.registerTool(
     "company_ping",
@@ -166,8 +166,8 @@ export function registerCompanyTools(server: McpServer): void {
       if (!hasPrincipalScope(ctx, "company:read")) {
         throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
       }
-      const agents = readAgents();
-      const pools = readQuotaPools();
+      const agents = readAgents(undefined, options?.dbPath);
+      const pools = readQuotaPools(options?.dbPath);
       return {
         content: [{
           type: "text",
@@ -200,7 +200,7 @@ export function registerCompanyTools(server: McpServer): void {
       if (!hasPrincipalScope(ctx, "company:read")) {
         throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
       }
-      const rows = readAgents();
+      const rows = readAgents(undefined, options?.dbPath);
       return {
         content: [{
           type: "text",
@@ -229,7 +229,7 @@ export function registerCompanyTools(server: McpServer): void {
       if (!hasPrincipalScope(ctx, "company:read")) {
         throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
       }
-      const rows = readAgents(agent_id);
+      const rows = readAgents(agent_id, options?.dbPath);
       if (rows.length === 0) {
         return {
           isError: true,
@@ -261,7 +261,7 @@ export function registerCompanyTools(server: McpServer): void {
       if (!hasPrincipalScope(ctx, "company:read")) {
         throw new Error("PERMISSION_DENIED: Missing required scope 'company:read'");
       }
-      const pools = readQuotaPools();
+      const pools = readQuotaPools(options?.dbPath);
       return {
         content: [{
           type: "text",
@@ -1618,12 +1618,12 @@ export function registerAllV221Tools(
   );
 }
 
-export function createBaseMcpServer(): McpServer {
+export function createBaseMcpServer(options?: { dbPath?: string }): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
     version: REGISTRY_VERSION
   });
-  registerCompanyTools(server);
+  registerCompanyTools(server, options);
   return server;
 }
 
